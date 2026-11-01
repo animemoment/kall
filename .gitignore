@@ -1,0 +1,44 @@
+# Godot 4 engine cache
+.godot/
+
+# C# / .NET build artifacts
+bin/
+obj/
+*.tmp
+*.TMP
+*.bak
+*.bak_*
+*.user
+*.userprefs
+*.suo
+
+# Visual Studio / Rider / VSCode IDE cache
+.vs/
+.idea/
+.vscode/
+*.sln.docstates
+
+# Temporary / helper scripts
+powershell.cmd
+cde.txt# --- bundled tools / artifacts (не в репозиторий) ---
+.venv/
+__pycache__/
+*.pyc
+dependency_graph_visualizer/build/
+*.exe
+*.exe.bak
+powershell.exe
+*.zip
+*.log
+*.tmp
+
+# --- генерируемые артефакты инструментов ---
+build_status.json
+build_history.jsonl
+.viz_cache.json
+dependency_graph_visualizer/__pycache__/
+shots/live/
+.live_bridge.json
+
+# check_all logs
+_reports/check/
