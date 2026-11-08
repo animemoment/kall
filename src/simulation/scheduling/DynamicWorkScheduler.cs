@@ -62,6 +62,19 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 
 	private int _lastPhaseErrors;
 
+	/// <summary>
+	/// B-04: сколько ЭЛЕМЕНТОВ фазы осталось необработанным из-за исключения в body
+	/// или нулевого прогресса. Раньше такие батчи молча засчитывались как
+	/// выполненные (`processed += Count`), поэтому фаза «успешно» завершалась,
+	/// потеряв работу, и отличить это от честной обработки было нельзя даже по
+	/// счётчику ошибок — ошибки никуда не выводились. Теперь потерянный объём
+	/// публикуется отдельно, а вызывающий код обязан его залогировать.
+	/// </summary>
+	private int _lastPhaseLostWork;
+
+	/// <summary>B-04: элементы, потерянные в последней фазе (исключение/нулевой прогресс).</summary>
+	public int LastPhaseLostWork => Volatile.Read(ref _lastPhaseLostWork);
+
 	// Finding 3 (вариант 1, zero-risk): переиспользуемый ParallelOptions на DOP.
 	// Было: new ParallelOptions на каждую фазу (48+ раз за тик при 100x) —
 	// аллокация + лишняя работа планировщика. Кэш по dop: слоты пишут только
@@ -193,6 +206,8 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 			}
 			double wallMs = (Stopwatch.GetTimestamp() - wall0) * 1000.0 / Stopwatch.Frequency;
 			Volatile.Write(ref _lastPhaseErrors, errors);
+			// B-04: исключение = элемент НЕ обработан; публикуем объём потерь.
+			Volatile.Write(ref _lastPhaseLostWork, errors);
 			// FIX круг-2 №5: fast-path обязан кормить EMA — один RecordWorkerBatch
 			// на всю фазу, иначе MaxBatchMs/Straggler/EMA нулевые/протухшие.
 			_monitor.RecordWorkerBatch(wallMs, count);
@@ -655,6 +670,8 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 		int processed = 0;
 		long totalCpuTicks = 0;
 		int phaseErrors = 0;
+		// B-04: объём потерянной работы (исключение в body / нулевой прогресс).
+		int phaseLost = 0;
 		var deques = GetDeques(dop);
 		var overflow = _sharedOverflow;
 		double quantumMs = EffectiveQuantumMs();
@@ -670,6 +687,8 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 			long localCpuTicks = 0;
 			// FIX круг-2 №7: локальный счётчик — один Add в конце потока.
 			int localErrors = 0;
+			// B-04: объём работы, потерянной потоком (исключение/нулевой прогресс).
+			int localLost = 0;
 
 			while (true)
 			{
@@ -720,8 +739,10 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 					catch
 					{
 						// Исключение НЕ роняет фазу и НЕ отравляет очередь:
-						// батч считается обработанным целиком (без requeue).
+						// батч снимается с очереди, но НЕ считается выполненным —
+						// его объём уходит в lostWork (B-04).
 						localErrors++;
+						localLost += item.Count;
 						done = item.Count;
 					}
 					done = Math.Clamp(done, 0, item.Count);
@@ -740,7 +761,11 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 					// Requeue). Засчитать батч обработанным целиком + errors++.
 					if (done <= 0)
 					{
+						// B-04: нулевой прогресс — работа НЕ выполнена, а брошена.
+						// Считаем её потерянной (и в счётчик ошибок), чтобы вызывающий
+						// код мог сообщить об этом, а не считать фазу успешной.
 						localErrors++;
+						localLost += item.Count;
 						localProcessed += item.Count;
 						continue;
 					}
@@ -820,6 +845,9 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 			// FIX круг-2 №7: один ADD на поток вместо CAS на исключение.
 			if (localErrors > 0)
 				Interlocked.Add(ref phaseErrors, localErrors);
+			// B-04: потерянная работа агрегируется отдельно от «обработано».
+			if (localLost > 0)
+				Interlocked.Add(ref phaseLost, localLost);
 		});
 
 		Array.Clear(deques, 0, dop);
@@ -828,6 +856,7 @@ public sealed class DynamicWorkScheduler : IDynamicWorkScheduler
 		double wallMs2 = (Stopwatch.GetTimestamp() - wall0) * 1000.0 / Stopwatch.Frequency;
 		double cpuMs = totalCpuTicks * 1000.0 / Stopwatch.Frequency;
 		Volatile.Write(ref _lastPhaseErrors, Volatile.Read(ref phaseErrors));
+		Volatile.Write(ref _lastPhaseLostWork, Volatile.Read(ref phaseLost));
 		_monitor.EndPhase(wallMs2, cpuMs, dop);
 		Publish(profilerScope, wallMs2, cpuMs);
 

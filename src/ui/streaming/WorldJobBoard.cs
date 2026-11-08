@@ -3,6 +3,10 @@ using System.Collections.Generic;
 using Game.Core.WorldStreaming;
 using Game.Core.WorldStreaming.Integration;
 
+// L-02: МЁРТВЫЙ КОД (2026-11-05). очередь мировых планов НЕ подключена: ни одного `new WorldJobBoard(` в игре (только тесты). Планы мира сейчас идут через StreamingToolPlacement/WorldModel, минуя доску.
+
+// Удаление — отдельная задача чистки (см. _plan/DEFECTS_MASTER.md). Не подключать без решения владельца.
+
 namespace Game.UI.Streaming;
 
 /// <summary>
@@ -19,8 +23,6 @@ public sealed class WorldJobBoard
 	// Ключ с PlanKind: CutTreePlan/MinedStonePlan НЕ входят в WorldDeltaKind.BlockingKinds,
 	// поэтому на одной клетке могут стоять два разных плана — претензии на них независимы.
 	private readonly HashSet<(byte Kind, long X, long Y)> _claimed = new();
-	private readonly Dictionary<(byte Kind, long X, long Y), int> _attempts = new();
-	private const int MaxCompletionAttempts = 3;
 
 	public WorldJobBoard(StreamingWorldView view, StreamingWorldManager manager)
 	{
@@ -41,12 +43,7 @@ public sealed class WorldJobBoard
 
 	/// <summary>Обновить очередь: только загруженные чанки, ближайшие к фокусу первыми.</summary>
 	public void Refresh(long focusX, long focusY, int max = 256)
-	{
-		// Claims для выгруженных чанков и исчезнувших планов не должны блокировать очередь.
-		_claimed.RemoveWhere(key => !_manager.IsChunkLoaded(WorldCoordinates.ChunkForTile(key.X, key.Y))
-			|| !_view.HasBlock(key.Kind, key.X, key.Y));
-		PendingCount = _view.CollectPendingPlans(_pending, focusX, focusY, max);
-	}
+		=> PendingCount = _view.CollectPendingPlans(_pending, focusX, focusY, max);
 
 	/// <summary>
 	/// Взять ближайшую незанятую задачу (клетка помечается занятой). <paramref name="allow"/>
@@ -61,8 +58,6 @@ public sealed class WorldJobBoard
 		for (int i = 0; i < _pending.Count; i++)
 		{
 			WorldPlan candidate = _pending[i];
-			if (!IsStillPlanned(candidate))
-				continue;
 			if (_claimed.Contains((candidate.PlanKind, candidate.CellX, candidate.CellY)))
 				continue;
 			if (allow != null && !allow(candidate))
@@ -87,29 +82,10 @@ public sealed class WorldJobBoard
 	/// </summary>
 	public bool Complete(WorldPlan plan)
 	{
-		var key = (plan.PlanKind, plan.CellX, plan.CellY);
-		bool completed = _manager.TryReplaceBlock(plan.PlanKind, plan.DoneKind, plan.CellX, plan.CellY);
-		_claimed.Remove(key);
-		if (completed)
-		{
-			_attempts.Remove(key);
-			_pending.RemoveAll(p => p.PlanKind == key.PlanKind && p.CellX == key.CellX && p.CellY == key.CellY);
-			PendingCount = Math.Max(0, PendingCount - 1);
+		_claimed.Remove((plan.PlanKind, plan.CellX, plan.CellY));
+		if (_manager.TryReplaceBlock(plan.PlanKind, plan.DoneKind, plan.CellX, plan.CellY))
 			return true;
-		}
-
 		LostPlans++;
-		int attempts = _attempts.TryGetValue(key, out int previous) ? previous + 1 : 1;
-		if (attempts >= MaxCompletionAttempts || !IsStillPlanned(plan))
-		{
-			_attempts.Remove(key);
-			_pending.RemoveAll(p => p.PlanKind == key.PlanKind && p.CellX == key.CellX && p.CellY == key.CellY);
-			PendingCount = Math.Max(0, PendingCount - 1);
-		}
-		else
-		{
-			_attempts[key] = attempts;
-		}
 		return false;
 	}
 
@@ -125,17 +101,7 @@ public sealed class WorldJobBoard
 	}
 
 	/// <summary>Человек бросил задачу (чертёж снят или чанк выгрузился): снять пометку.</summary>
-	public void Release(WorldPlan plan)
-	{
-		var key = (plan.PlanKind, plan.CellX, plan.CellY);
-		_claimed.Remove(key);
-		if (!IsStillPlanned(plan))
-		{
-			_attempts.Remove(key);
-			_pending.RemoveAll(p => p.PlanKind == key.PlanKind && p.CellX == key.CellX && p.CellY == key.CellY);
-			PendingCount = Math.Max(0, PendingCount - 1);
-		}
-	}
+	public void Release(WorldPlan plan) => _claimed.Remove((plan.PlanKind, plan.CellX, plan.CellY));
 
 	/// <summary>Метка ещё актуальна: чанк загружен и чертёж на месте.</summary>
 	public bool IsStillPlanned(WorldPlan plan)

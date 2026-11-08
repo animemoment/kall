@@ -47,9 +47,6 @@ public partial class Main : Node2D
 	private StreamingWorldManager _worldManager;
 	private WorldGameRules _worldRules;
 	private StreamingToolPlacement _worldPlacement;
-	// §123: мост «мировые планы → JobDispatcher» — агенты берут работу за кромкой 1024.
-	private Game.UI.Streaming.WorldJobBoard _worldJobBoard;
-	private Game.Simulation.WorldJobBridge _worldJobBridge;
 	private PackedScene _worldMapScene;
 	private WorldMapOverlay _mapOverlay;
 	// §118 фаза 3: реестр активных зон (поселение = зона 1024² в мировых координатах).
@@ -59,6 +56,8 @@ public partial class Main : Node2D
 	private IslandOverrideStore _islandDeltas;
 	private IslandMutationMirror _islandMirror;
 	private string _islandZoneId;
+	// FIX (bughunt 04-4): зона, которой принадлежит текущее содержимое _islandDeltas.
+	private string _islandStoreZoneId;
 	// §119 P7б (task-17): origin активной зоны (нужен state-replay/snapshot в мировых клетках).
 	private long _islandOriginX;
 	private long _islandOriginY;
@@ -72,6 +71,7 @@ public partial class Main : Node2D
 	private RegionKey _spawnRegion = new(-1, -1);
 	private bool _spawnPending = false;
 	private int _activeGenerationId = 0;
+	private Label _colonyBannerLabel;
 
 	[Export] public int AgentCount = 10000;
 	[Export] public HUDController HUD;
@@ -116,7 +116,45 @@ public partial class Main : Node2D
 	private IslandOverrideStore PrepareIslandStore(string zoneId, ulong seed, uint generatorVersion)
 	{
 		InitIslandMutationChannel();
+
+		// FIX (bughunt 04-4): один стор на все колонии. Ключ сида (seed ^ version) при
+		// смене ЗОНЫ не меняется, поэтому дельты прошлой колонии оставались в памяти:
+		// её прогресс терялся (сохранение на выходе уходило в файл ПОСЛЕДНЕЙ зоны),
+		// а её метки дописывались в файл новой. Зона — единица персистентности:
+		// перед переключением СОХРАНЯЕМ старую колонию в ЕЁ файл и очищаем стор.
+		if (!string.IsNullOrEmpty(_islandStoreZoneId)
+			&& !string.Equals(_islandStoreZoneId, zoneId, StringComparison.Ordinal))
+		{
+			try
+			{
+				// C-1 (task-14): перед сохранением дельт разворачиваем текущее состояние
+				// культур в payload'ы — иначе состояние за сессию уходит с payload=null
+				// и после загрузки все грядки становятся пшеницей.
+				IslandStateSnapshot.RefreshPayloads(_islandDeltas, _islandOriginX, _islandOriginY);
+			}
+			catch (Exception ex)
+			{
+				GD.PrintErr($"[World] {_islandStoreZoneId}: state snapshot перед сменой колонии — {ex.Message}");
+			}
+
+			try
+			{
+				if (_islandDeltas.TrySave(IslandDeltaPath(_islandStoreZoneId), out string switchSaveError))
+					GD.Print($"[World] {_islandStoreZoneId}: дельты сохранены перед сменой колонии");
+				else if (!string.IsNullOrEmpty(switchSaveError))
+					GD.PrintErr($"[World] {_islandStoreZoneId}: не сохранено при смене колонии — {switchSaveError}");
+			}
+			catch (Exception ex)
+			{
+				GD.PrintErr($"[World] {_islandStoreZoneId}: ошибка сохранения при смене колонии — {ex.Message}");
+			}
+			int dropped = _islandDeltas.Clear();
+			if (dropped > 0)
+				GD.Print($"[World] стор острова очищен: {dropped} дельт ушло в файл прежней зоны");
+		}
+
 		_islandZoneId = zoneId;
+		_islandStoreZoneId = zoneId;
 
 		uint seedKey = unchecked((uint)(seed ^ (seed >> 32)) ^ (generatorVersion * 0x9E3779B9u));
 		_islandDeltas.RebindSeed(seedKey);
@@ -146,29 +184,32 @@ public partial class Main : Node2D
 		{
 			GD.PrintErr($"[World] {zoneId}: островные дельты не загружены — {ex.Message}");
 		}
-		// §119 P7б (task-17 п.3): зоны колонии (.zones.json) грузятся НЕ здесь.
-		// 10-02/15-04: PrepareIslandStore зовётся ДО ResetColonyState(), а тот делает
-		// ZoneManager.ClearAll() — загруженные зоны стирались сразу же, и при смене
-		// региона игрок терял все Work-зоны. Загрузка переехала в RestoreColonyZones(),
-		// которая вызывается ПОСЛЕ сброса состояния колонии.
 		return _islandDeltas;
 	}
 
 	/// <summary>
-	/// Восстановить Work-зоны колонии из .zones.json. ОБЯЗАН вызываться после
-	/// <see cref="ResetColonyState"/> (иначе ClearAll сотрёт загруженное) и до
-	/// IslandStateReplay — реплею нужны зоны для грядок/привязок.
+	/// P0 (bughunt 04-3): восстановление Work-зон колонии с диска.
+	/// ОБЯЗАН вызываться ПОСЛЕ <see cref="ResetColonyState"/>: он зовёт
+	/// ZoneManager.ClearAll() и стирает всё, что загружено раньше. Раньше зоны
+	/// грузились в PrepareIslandStore (до очистки) и молча исчезали, а SaveZones
+	/// на выходе перезаписывал файл пустым списком.
+	/// Файл зон не зависит от версии генератора (чистый seed).
 	/// </summary>
-	private void RestoreColonyZones(string zoneId, ulong seed)
+	private static void RestoreZonesFromDisk(string zoneId, ulong seed)
 	{
 		try
 		{
-			if (ZonePersistence.TryLoadZones(zoneId, seed, out string zonesError) || zonesError == null)
+			// Аудит M-2: раньше условие было `TryLoadZones(...) || zonesError == null` —
+			// при отсутствии файла (error == null) код уходил в ветку «восстановлены»,
+			// писал 0 зон и врал в логе. Теперь ветки строго по факту загрузки.
+			bool loaded = ZonePersistence.TryLoadZones(zoneId, seed, out string zonesError);
+			if (loaded)
 			{
+				// Считаем все рабочие зоны-отрасли, а не только легаси Work.
 				int restored = 0;
 				foreach (Zone z in ZoneManager.Instance.GetAllZones())
-					if (z.Kind == ZoneKind.Work) restored++;
-				GD.Print($"[World] {zoneId}: зоны восстановлены ({restored} Work-зон)");
+					if (ZoneKindExtensions.IsWorkZone(z.Kind)) restored++;
+				GD.Print($"[World] {zoneId}: зоны восстановлены ({restored} рабочих зон)");
 			}
 			else if (zonesError != null)
 			{
@@ -311,14 +352,6 @@ public partial class Main : Node2D
 			_worldRules = new WorldGameRules(_worldView, seed, WorldGeneratorVersion);
 			_worldPlacement = new StreamingToolPlacement(_worldManager, _worldRules, ColonySizeTiles, ColonySizeTiles);
 
-			// §123: мост «мировые планы → JobDispatcher».
-			// Планы (чертежи) в загруженных чанках становятся JobData;
-			// WorldPlanHandler ведёт агента к цели и Complete(plan) по завершении.
-			_worldJobBoard = new Game.UI.Streaming.WorldJobBoard(_worldView, _worldManager);
-			_worldJobBridge = new Game.Simulation.WorldJobBridge(_worldJobBoard, JobDispatcher.Instance);
-			Game.Simulation.JobRegistry.Register(new Game.Simulation.WorldPlanHandler(_worldJobBoard));
-			GD.Print("[MAIN] §123: WorldJobBridge подключён — агенты работают за кромкой 1024.");
-
 			if (HUD != null)
 				HUD.WorldPlacement = _worldPlacement;
 			else if (HUDController.Instance != null)
@@ -352,6 +385,11 @@ public partial class Main : Node2D
 		{
 			WorldSeed = newSeed;
 			UnifiedWorldGenerator.ActiveWorldSeed = newSeed;
+			// FIX (bughunt 02-1): WorldModel кэширует сид и версию генератора, а Configure
+			// раньше звался ТОЛЬКО из _Ready (:185). После R мир за кромкой острова, CellAt,
+			// тултипы и агентский world-terrain продолжали отвечать про СТАРЫЙ мир —
+			// отсюда видимый шов у кромки после reroll.
+			Game.Core.World.WorldModel.Configure(WorldSeed, WorldGeneratorVersion);
 			if (_worldView != null)
 				_worldView.WorldSeed = newSeed;
 
@@ -376,13 +414,23 @@ public partial class Main : Node2D
 			var mapData = await Task.Run(() =>
 			{
 				var registry = _activeAreaRegistry ??= new ActiveAreaRegistry();
-				registry.RegisterZone(zoneId,
+				// P0 (bughunt 04-2): зона = 1024 клетки, шаг региона = 512, поэтому соседний
+				// регион всегда пересекается с прежней зоной. Строгий RegisterZone
+				// возвращал false, TryGetZone отдавал null → NullReferenceException.
+				registry.RegisterOrReplaceZone(zoneId,
 					UnifiedWorldGenerator.WorldOriginX, UnifiedWorldGenerator.WorldOriginY);
-				registry.TryGetZone(zoneId, out ActiveArea area);
+				if (!registry.TryGetZone(zoneId, out ActiveArea area) || area == null)
+					throw new InvalidOperationException($"[World] {zoneId}: зона не материализовалась " +
+						$"(origin={UnifiedWorldGenerator.WorldOriginX},{UnifiedWorldGenerator.WorldOriginY})");
 				area.Fill(WorldSeed, WorldGeneratorVersion);
 				IslandDeltaApplyResult deltaResult = IslandDeltaApplicator.Apply(area, islandStore);
 				GD.Print($"[World] {zoneId}: островные дельты — {deltaResult}");
 				registry.SetActiveZone(zoneId);
+				// FIX (bughunt 04-8): активная зона теперь одна. Прежние материализованные
+				// зоны (~15 МБ каждая) держать незачем — их дельты уже на диске
+				// (IslandOverrideStore), данные не теряются. Иначе смена региона на
+				// далёкий (без пересечения) оставляла старую зону в реестре навсегда.
+				registry.ClearInactive();
 				return MapDataShim.ToMapData(area);
 			});
 
@@ -402,7 +450,12 @@ public partial class Main : Node2D
 			// идемпотентный домен-реплей + разворачивание payload'ов (стадия культур,
 			// содержимое склада, доставка стройки, прогресс монтажа/рубки, кучи на земле).
 			// Порядок валиден только здесь: ResetColonyState затирал реплей из Task.Run.
+			// C-1 (task-14): зоны загружаем ДО replay — иначе фолбэк культуры
+			// по zoneId не работает: старые дельты получали бы только пшеницу.
+			RestoreZonesFromDisk(zoneId, WorldSeed);
 			IslandStateReplay.Replay(islandStore, _islandOriginX, _islandOriginY);
+			// P0 (bughunt 04-3): зоны грузим ПОСЛЕ очистки менеджеров, иначе
+			// ResetColonyState выше стирает только что прочитанные Work-зоны.
 
 			_mapRenderer.ExternalPendingMap = mapData;
 			_mapRenderer.StartAsync();
@@ -454,13 +507,23 @@ public partial class Main : Node2D
 			var mapData = await Task.Run(() =>
 			{
 				var registry = _activeAreaRegistry ??= new ActiveAreaRegistry();
-				registry.RegisterZone(zoneId,
+				// P0 (bughunt 04-2): зона = 1024 клетки, шаг региона = 512, поэтому соседний
+				// регион всегда пересекается с прежней зоной. Строгий RegisterZone
+				// возвращал false, TryGetZone отдавал null → NullReferenceException.
+				registry.RegisterOrReplaceZone(zoneId,
 					UnifiedWorldGenerator.WorldOriginX, UnifiedWorldGenerator.WorldOriginY);
-				registry.TryGetZone(zoneId, out ActiveArea area);
+				if (!registry.TryGetZone(zoneId, out ActiveArea area) || area == null)
+					throw new InvalidOperationException($"[World] {zoneId}: зона не материализовалась " +
+						$"(origin={UnifiedWorldGenerator.WorldOriginX},{UnifiedWorldGenerator.WorldOriginY})");
 				area.Fill(seed, version);
 				IslandDeltaApplyResult deltaResult = IslandDeltaApplicator.Apply(area, islandStore);
 				GD.Print($"[World] {zoneId}: островные дельты — {deltaResult}");
 				registry.SetActiveZone(zoneId);
+				// FIX (bughunt 04-8): активная зона теперь одна. Прежние материализованные
+				// зоны (~15 МБ каждая) держать незачем — их дельты уже на диске
+				// (IslandOverrideStore), данные не теряются. Иначе смена региона на
+				// далёкий (без пересечения) оставляла старую зону в реестре навсегда.
+				registry.ClearInactive();
 				return MapDataShim.ToMapData(area);
 			});
 
@@ -476,13 +539,14 @@ public partial class Main : Node2D
 
 			ResetColonyState();
 
-			// 10-02/15-04: зоны — ПОСЛЕ сброса (иначе ClearAll стирает загруженное)
-			// и ДО реплея состояния (грядки/привязки ссылаются на зоны).
-			RestoreColonyZones(zoneId, seed);
-
 			// §119 P7б (task-17 п.4): СОСТОЯНИЕ колонии после очистки менеджеров
 			// (идемпотентный домен-реплей + payload'ы) — до старта сима.
+			// C-1 (task-14): зоны загружаем ДО replay — иначе фолбэк культуры
+			// по zoneId не работает: старые дельты получали бы только пшеницу.
+			RestoreZonesFromDisk(zoneId, WorldSeed);
 			IslandStateReplay.Replay(islandStore, _islandOriginX, _islandOriginY);
+			// P0 (bughunt 04-3): зоны грузим ПОСЛЕ очистки менеджеров, иначе
+			// ResetColonyState выше стирает только что прочитанные Work-зоны.
 
 			_mapRenderer.ExternalPendingMap = mapData;
 			_mapRenderer.StartAsync();
@@ -516,31 +580,14 @@ public partial class Main : Node2D
 		// Мост A (PLAN.md §112.2): инъекция MapData в симуляцию —
 		// GroundItemManager.TrySpillItemsAdjacent больше не зависит от Game.UI.
 		GroundItemManager.Instance.SetMapData(_mapRenderer.MapData);
+		// task-21: гейт «не строить на руде» в ConstructionManager тоже нуждается
+		// в MapData (вызовы без mapData, напр. BlueprintManager.AddBlueprint).
+		ConstructionManager.Instance.SetMapData(_mapRenderer.MapData);
+		// task-8: добытая в прошлых сессиях руда острова не «возвращается» —
+		// накладываем сохранённые мутации (из чанк-стора) на свежие массивы.
+		_mapRenderer.ApplyWorldOreStateToIsland();
 
 		_interactionManager.Initialize(_mapRenderer.WallLayer, _selection, _camera);
-
-		if (_agentThread == null && _mapRenderer.MapData != null)
-		{
-			_agentThread = new AgentSimulationThread();
-			_agentThread.Start(AgentCount, _mapRenderer.MapData.Ground, _mapRenderer.MapData.TreeOnGrass, 0, _mapRenderer.MapData.Humidity, _mapRenderer.MapData.StoneOnGrass, _mapRenderer.MapData.Fertility);
-
-			if (_timeManager != null)
-			{
-				_agentThread.IsPaused = _timeManager.IsPaused;
-				_agentThread.SpeedMultiplier = _timeManager.SpeedMultiplier;
-			}
-
-			// Стартовый спавн 100 зёрен: центр РЕАЛЬНО применённой карты (§117.2),
-			// со спиральным поиском суши — центр колонии 1024² может попасть в озеро/реку.
-			SpawnStarterGrain(_mapRenderer.MapData);
-
-			if (_agentRenderer == null)
-			{
-				_agentRenderer = new AgentRenderer { Name = "AgentRenderer" };
-				AddChild(_agentRenderer);
-			}
-			_agentRenderer.Initialize(_agentThread, AgentCount);
-		}
 
 		HUDController hud = HUD
 							?? FindChild("hud_tscn", true, false) as HUDController
@@ -550,14 +597,59 @@ public partial class Main : Node2D
 		if (hud != null)
 		{
 			hud.Setup(_interactionManager, _mapRenderer, AgentCount);
-			// §28: инструменты получают доступ к миру за кромкой острова.
 			if (_worldManager != null && _worldRules != null)
 			{
 				_worldPlacement ??= new StreamingToolPlacement(_worldManager, _worldRules, ColonySizeTiles, ColonySizeTiles);
 				hud.WorldPlacement = _worldPlacement;
-				// §113.5/B2: SelectTool больше не удаляет по ПКМ — инъекция не нужна.
 				GD.Print("[MAIN] §28: мир за кромкой подключён к инструментам (стены/склад/ферма/камень/лес)");
 			}
+		}
+
+		if (_agentThread == null && _mapRenderer.MapData != null)
+		{
+			_agentThread = new AgentSimulationThread();
+			_agentThread.Start(AgentCount, _mapRenderer.MapData.Ground, _mapRenderer.MapData.TreeOnGrass, 0, _mapRenderer.MapData.Humidity, _mapRenderer.MapData.StoneOnGrass, _mapRenderer.MapData.Fertility,
+				_mapRenderer.MapData.OreType, _mapRenderer.MapData.OreState, _mapRenderer.MapData.OreReserve, _mapRenderer.MapData.OreReserveInitial);
+
+			if (_timeManager != null)
+			{
+				_agentThread.IsPaused = _timeManager.IsPaused;
+				_agentThread.SpeedMultiplier = _timeManager.SpeedMultiplier;
+			}
+
+			// Стартовый спавн: центр РЕАЛЬНО применённой карты (§117.2),
+			// со спиральным поиском суши — центр колонии 1024² может попасть в озеро/реку.
+			var spawnSpot = FindColonyCenterSpot(_mapRenderer.MapData);
+			if (_camera != null && spawnSpot.HasValue)
+			{
+				_camera.Position = new Vector2(
+					spawnSpot.Value.X * MapRenderer.TileSizePx,
+					spawnSpot.Value.Y * MapRenderer.TileSizePx);
+			}
+
+			SpawnStarterResources(_mapRenderer.MapData, spawnSpot);
+
+			if (_agentRenderer == null)
+			{
+				_agentRenderer = new AgentRenderer { Name = "AgentRenderer" };
+				AddChild(_agentRenderer);
+			}
+			_agentRenderer.Initialize(_agentThread, AgentCount);
+		}
+
+
+		if (_agentThread == null && _mapRenderer.MapData != null)
+		{
+
+
+
+
+
+
+
+
+
+
 		}
 	}
 
@@ -567,9 +659,46 @@ public partial class Main : Node2D
 	/// 1024×1024 центр легко попадает в озеро или реку. Кольцевой поиск от центра,
 	/// радиус 256 тайлов; размеры берём из реально применённого MapData.
 	/// </summary>
-	private static void SpawnStarterGrain(MapData map)
+	private static (int X, int Y)? FindColonyCenterSpot(MapData map)
+	{
+		if (map?.Ground == null) return null;
+		int cx = map.Width / 2;
+		int cy = map.Height / 2;
+		const int MaxRadius = 256;
+		for (int r = 0; r <= MaxRadius; r++)
+		{
+			for (int oy = -r; oy <= r; oy++)
+			{
+				for (int ox = -r; ox <= r; ox++)
+				{
+					if (Math.Max(Math.Abs(ox), Math.Abs(oy)) != r) continue;
+					int x = cx + ox;
+					int y = cy + oy;
+					if (x < 2 || y < 2 || x >= map.Width - 2 || y >= map.Height - 2) continue;
+					if (map.Ground[x, y] == TileType.Grass
+						&& !map.TreeOnGrass[x, y]
+						&& !map.StoneOnGrass[x, y])
+					{
+						return (x, y);
+					}
+				}
+			}
+		}
+		return (cx, cy);
+	}
+
+	private static void SpawnStarterResources(MapData map, (int X, int Y)? spawnPoint)
 	{
 		if (map?.Ground == null) return;
+		// FIX (bughunt 04-5): стартовое зерно — только «с нуля». Кучи на земле теперь
+		// переживают перезапуск (IslandStateReplay восстанавливает их ДО этого вызова),
+		// а спавн был безусловным: каждое открытие колонии добавляло ещё 100 —
+		// 100 → 200 → 300 … Если зерна на земле уже есть, значит его восстановили.
+		if (Game.Simulation.GroundItemManager.Instance.HasAvailableItemsOfType(ItemId.Grain))
+		{
+			GD.Print("[MAIN] Стартовые ресурсы не выдаются: на карте уже есть восстановленные ресурсы (SKIP)");
+			return;
+		}
 		int cx = map.Width / 2;
 		int cy = map.Height / 2;
 		const int MaxRadius = 256;
@@ -588,15 +717,36 @@ public partial class Main : Node2D
 						&& !map.TreeOnGrass[x, y]
 						&& !map.StoneOnGrass[x, y])
 					{
-						GroundItemManager.Instance.SpawnItems(x, y, ItemId.Grain, 100);
+						if (!StructureManager.Instance.HasStructureAt(x, y))
+						{
+							StructureManager.Instance.AddStructure(x, y, StructureRegistry.CentralBlock);
+						}
+						GroundItemManager.Instance.SpawnItems(x, y, ItemId.Bread, 30);
+						GroundItemManager.Instance.SpawnItems(x + 1, y, ItemId.Grain, 100);
+						GroundItemManager.Instance.SpawnItems(x, y + 1, ItemId.Log, 50);
+						GroundItemManager.Instance.SpawnItems(x + 1, y + 1, ItemId.Stone, 30);
+						GD.Print($"[MAIN] Основание колонии: 100 поселенцев и стартовые ресурсы выгружены в точку ({x}, {y})");
 						return;
 					}
 				}
 			}
 		}
 		// Вырожденный мир (суши возле центра нет): старое поведение — центр как есть.
-		GD.PrintErr("[MAIN] SpawnStarterGrain: проходимая суша возле центра не найдена — спавн зерна в центр без проверки.");
-		GroundItemManager.Instance.SpawnItems(cx, cy, ItemId.Grain, 100);
+		// Ресурсы выгружены выше
+		var pt = spawnPoint ?? FindColonyCenterSpot(map) ?? (map.Width / 2, map.Height / 2);
+		int sx = pt.X;
+		int sy = pt.Y;
+
+		// Высадка колонистов: стартовые ресурсы для выживания и строительства
+		if (!StructureManager.Instance.HasStructureAt(sx, sy))
+		{
+			StructureManager.Instance.AddStructure(sx, sy, StructureRegistry.CentralBlock);
+		}
+		GroundItemManager.Instance.SpawnItems(sx, sy, ItemId.Grain, 100);
+		GroundItemManager.Instance.SpawnItems(sx + 1, sy, ItemId.Bread, 30);
+		GroundItemManager.Instance.SpawnItems(sx, sy + 1, ItemId.Log, 50);
+		GroundItemManager.Instance.SpawnItems(sx + 1, sy + 1, ItemId.Stone, 30);
+		GD.Print($"[MAIN] Основание колонии: 100 поселенцев и стартовые ресурсы выгружены в точку ({sx}, {sy})");
 	}
 
 	public override void _Process(double delta)
@@ -640,16 +790,6 @@ public partial class Main : Node2D
 		{
 			long camTileX = (long)(_camera.Position.X / MapRenderer.TileSizePx);
 			long camTileY = (long)(_camera.Position.Y / MapRenderer.TileSizePx);
-
-			// §123: тик моста «мировые планы → JobDispatcher» (~1 раз/с).
-			if (_worldJobBridge != null)
-			{
-				using (GameProfiler.Scope("Simulation.WorldJobBridge"))
-				{
-					_worldJobBridge.Tick(camTileX, camTileY);
-				}
-			}
-
 			ulong nowMsec = Time.GetTicksMsec();
 			if ((Math.Abs(camTileX - _lastStreamerTileX) >= 8 || Math.Abs(camTileY - _lastStreamerTileY) >= 8)
 				&& nowMsec - _lastStreamerUpdateMsec >= StreamingUpdateMinIntervalMs)
@@ -669,13 +809,84 @@ public partial class Main : Node2D
 				_worldView.Update(visible);
 			}
 		}
+		// S-07 / W-05 / L-04: помпа мировых чертежей за кромкой 1024
+		PumpWorldPlans((float)delta);
+	}
+
+
+
+	private float _worldPlanPumpTimer;
+	private readonly List<WorldPlan> _reusableWorldPlans = new(64);
+
+	private void PumpWorldPlans(float delta)
+	{
+		if (_worldView == null || _worldManager == null)
+			return;
+
+		_worldPlanPumpTimer += delta;
+		if (_worldPlanPumpTimer < 0.5f)
+			return;
+		_worldPlanPumpTimer = 0f;
+
+		long focusX = _camera != null ? (long)(_camera.Position.X / MapRenderer.TileSizePx) : 512;
+		long focusY = _camera != null ? (long)(_camera.Position.Y / MapRenderer.TileSizePx) : 512;
+
+		int planCount = _worldView.CollectPendingPlans(_reusableWorldPlans, focusX, focusY, 64);
+		if (planCount == 0)
+			return;
+
+		for (int i = 0; i < planCount; i++)
+		{
+			WorldPlan plan = _reusableWorldPlans[i];
+			long x = plan.CellX;
+			long y = plan.CellY;
+
+			// Островные клетки обрабатываются внутри острова
+			if (x >= 0 && y >= 0 && x < ColonySizeTiles && y < ColonySizeTiles)
+				continue;
+
+			// Отсекаем координаты за пределами разумного int-диапазона
+			if (x < int.MinValue / 2 || x > int.MaxValue / 2 || y < int.MinValue / 2 || y > int.MaxValue / 2)
+				continue;
+
+			int ix = (int)x;
+			int iy = (int)y;
+
+			switch (plan.PlanKind)
+			{
+				case WorldDeltaKind.WallPlan:
+					if (!ConstructionManager.Instance.TryGetSiteOrigin(ix, iy, out _, out _))
+					{
+						ConstructionManager.Instance.StartSitesBatch(
+							new List<(int X, int Y)> { (ix, iy) },
+							StructureRegistry.WoodWall,
+							mapData: null);
+					}
+					break;
+
+				case WorldDeltaKind.CutTreePlan:
+					if (!Game.Simulation.TreeJobManager.Instance.IsTreeMarked(ix, iy))
+					{
+						Game.Simulation.TreeJobManager.Instance.MarkTreesBatch(new List<(int X, int Y)> { (ix, iy) });
+					}
+					break;
+
+				case WorldDeltaKind.MinedStonePlan:
+					if (!Game.Simulation.StoneJobManager.Instance.IsStoneMarked(ix, iy))
+					{
+						Game.Simulation.StoneJobManager.Instance.MarkStonesBatch(new List<(int X, int Y)> { (ix, iy) });
+					}
+					break;
+			}
+		}
 	}
 
 	public override void _UnhandledInput(InputEvent @event)
 	{
 		if (@event is InputEventKey key && key.Pressed && !key.Echo)
 		{
-			if (key.Keycode == Key.M || key.PhysicalKeycode == Key.M)
+			var code = key.Keycode != Key.None ? key.Keycode : key.PhysicalKeycode;
+			if (code == Key.M)
 			{
 				ToggleWorldMap();
 				GetViewport().SetInputAsHandled();
@@ -706,6 +917,8 @@ public partial class Main : Node2D
 		FarmJobManager.Instance.ClearAll();
 		TreeJobManager.Instance.ClearAll();
 		StoneJobManager.Instance.ClearAll();
+		// task-4: метки/прогресс добычи руды умирают вместе с картой.
+		OreJobManager.Instance.ClearAll();
 		GroundItemManager.Instance.ClearAll();
 		CropGrowthManager.Instance.ClearAll();
 		ZoneManager.Instance.ClearAll();

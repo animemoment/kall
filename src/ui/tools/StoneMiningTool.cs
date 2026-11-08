@@ -64,8 +64,12 @@ public class StoneMiningTool : ITool
         int minY = Mathf.Min(startTile.Y, endTile.Y);
         int maxY = Mathf.Max(startTile.Y, endTile.Y);
 
-        long cellCount = ((long)maxX - minX + 1) * ((long)maxY - minY + 1);
-        if (cellCount > WorldPlacementPass.MaxScannedCells) return;
+        long cellCount = (long)(maxX - minX + 1) * (maxY - minY + 1);
+        if (cellCount > 250_000)
+        {
+            HUDController.ShowFloatingWarning("Выделенная область слишком велика");
+            return;
+        }
 
         _cellBuffer.Clear();
 
@@ -75,14 +79,11 @@ public class StoneMiningTool : ITool
             {
                 for (int y = minY; y <= maxY; y++)
                 {
-                    bool islandCell = WorldPlacementPass.IsOnIsland(x, y, WorldPlacement);
-                    if (islandCell)
+                    if (_mapData != null && _mapData.HasStone(x, y))
                     {
-                        if (_mapData != null && (uint)x < (uint)_mapData.Width && (uint)y < (uint)_mapData.Height
-                            && _mapData.HasStone(x, y))
-                            _cellBuffer.Add((x, y));
+                        _cellBuffer.Add((x, y));
                     }
-                    else if (WorldPlacement != null)
+                    else if (WorldPlacement != null && !WorldPlacementPass.IsIslandCell(x, y))
                     {
                         WorldPlacement.TryMineStone(x, y);
                     }
@@ -100,8 +101,10 @@ public class StoneMiningTool : ITool
             {
                 for (int y = minY; y <= maxY; y++)
                 {
-                    if (WorldPlacementPass.IsOnIsland(x, y, WorldPlacement))
+                    if (WorldPlacementPass.IsIslandCell(x, y))
+                    {
                         _cellBuffer.Add((x, y));
+                    }
                     else if (WorldPlacement != null)
                     {
                         WorldPlacement.TryCancelMineStone(x, y);

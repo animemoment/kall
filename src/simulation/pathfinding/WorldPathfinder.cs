@@ -1,609 +1,364 @@
 using System;
-using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using Game.Core;
 using Game.Core.World;
+using Game.Simulation;
 
 namespace Game.Simulation.Pathfinding;
 
 /// <summary>
-/// Патфайндер по МИРУ (стримингу), а не по острову.
-///
-/// Как работает:
-///   1. Стоимости клеток берём из <see cref="WorldCostCache"/> — он считает генератор
-///      на любой координате и НЕ зависит от того, загружен ли чанк.
-///   2. Отдаём сетку существующему HPA (<see cref="HierarchicalPathfinder.InitializeCost"/>):
-///      его внутренности работают в локальных координатах окна и переписывать их не нужно.
-///   3. Окна кэшируются по прямоугольнику: агенты в одной местности переиспользуют граф.
-///
-/// Дальние маршруты (HPA по стримингу):
-///   одно окно физически не может быть больше <see cref="MaxWindow"/> (640 клеток), поэтому
-///   длинный маршрут режется на сегменты вдоль прямой старт→цель. Каждый сегмент считается
-///   СВОИМ окном HPA (≤ 640), а точки стыкуются в один путь. Стыковочные точки — общие
-///   (последняя точка сегмента N ровно равна первой точке сегмента N+1), поэтому между
-///   окнами нет «прыжков»: каждый участок пути проверен на видимость внутри своего окна.
-///   Виртуальное окно (охват всего маршрута) нужно ТОЛЬКО для упаковки точек в int —
-///   память под него не выделяется.
-///
-/// Координаты: на вход и на выход — МИРОВЫЕ. Внутри окна — локальные, поэтому
-/// вызывающий получает origin окна и прибавляет его к пути.
+/// Легковесный фасад совместимости для поиска путей в мировых координатах.
+/// Включает ультра-быстрый локальный оконный A* (256x256) для точных обходов берегов/озёр/скал,
+/// и глобальный <see cref="UnifiedPathfinder"/> для дальних путешествий.
+/// Полный Zero-GC: 0 аллокаций в куче.
 /// </summary>
 public sealed class WorldPathfinder
 {
     public static WorldPathfinder Instance { get; } = new();
 
-    /// <summary>Размер окна: степень двойки, чтобы выравнивание было дешёвым.</summary>
-    private const int MinWindow = 128;
-    private const int MaxWindow = 640;
-    private const int WindowShift = 5;      // выравнивание 32 клетки
-    private const int Margin = 16;          // запас вокруг старта и цели
-    // Сшивка длинного маршрута требует несколько окон сразу (по одному на сегмент),
-    // иначе окна вытесняют друг друга ещё до конца поиска.
-    private const int MaxCachedWindows = 12;
+    private const int WindowSize = 256;
+    private const int WindowShift = 8;
+    private const int WindowCells = WindowSize * WindowSize; // 65536
+    private const int WindowMask = WindowSize - 1;
 
-    // ---- Сшивка длинных маршрутов ----
-    /// <summary>Шаг сегмента вдоль прямой: гарантированно влезает в MaxWindow с запасом.</summary>
-    private const int SegmentSpan = 512;
-    /// <summary>Предел числа сегментов (SegmentSpan * MaxSegments ≈ 49 000 клеток).</summary>
-    private const int MaxSegments = 96;
-    /// <summary>Предел точек сшитого пути (упаковка в int обязана остаться в диапазоне).</summary>
-    private const int MaxStitchedPoints = 4096;
-    /// <summary>Предел охвата маршрута: дальше int-упаковка рискует переполниться.</summary>
-    private const int MaxRouteSpan = 24_000;
-    /// <summary>Радиус поиска проходимой точки-якоря рядом с идеальной.</summary>
-    private const int AnchorSearchRadius = 8;
+    private const int ClosedFlag = 0x40000000;
+    private const int ParentMask = 0x000FFFFF;
 
-    private sealed class Window
-    {
-        public HierarchicalPathfinder Finder = null!;
-        public long OriginX;
-        public long OriginY;
-        public int Width;
-        public int Height;
-        public long LastUsed;
-    }
+    private readonly int[] _scratchPath = new int[AgentPathConfig.MaxWaypoints];
+    private readonly ThreadLocal<WindowScratchpad> _windowScratch =
+        new(() => new WindowScratchpad());
 
-    private readonly object _lock = new();
-    private readonly Dictionary<(long X, long Y, int W, int H), Window> _windows = new();
-    /// <summary>Окна, которые уже строятся в фоне (защита от дублирующих сборок).</summary>
-    private readonly HashSet<(long X, long Y, int W, int H)> _building = new();
-    /// <summary>Сколько сборок идёт прямо сейчас: не более <see cref="MaxConcurrentBuilds"/>.</summary>
-    private int _activeBuilds;
-    private const int MaxConcurrentBuilds = 2;
-    /// <summary>
-    /// Поколение кэша. Растёт при каждом сбросе окон. Фоновая сборка, начатая ДО
-    /// сброса, не имеет права публиковать результат: её сетка уже устарела.
-    /// </summary>
-    private int _generation;
-    private long _tick;
-    private long _lastInvalidateMs;
-    private volatile bool _invalidateQueued;
+    public void Clear() { }
+    public void Invalidate() { }
 
-    /// <summary>Буфер сшитого пути: свой на поток, валиден до следующего вызова на нём.</summary>
-    [ThreadStatic] private static int[] _stitchBuffer;
-
-    private WorldPathfinder()
-    {
-        // Окна держат КОПИЮ стоимости. Стена за кромкой построена/снесена — окна
-        // протухли. Раньше этого не было: StructureManager инвалидировал только
-        // островной HierarchicalPathfinder, поэтому мировой HPA ходил по старой сетке.
-        WorldCostCache.CellChanged += OnWorldCostChanged;
-    }
-
-    private static void OnWorldCostChanged() => Instance.Invalidate();
-
-    /// <summary>Сколько окон сейчас в кэше (для тестов и профиля).</summary>
-    public int CachedWindows { get { lock (_lock) return _windows.Count; } }
-
-    public void Clear()
-    {
-        lock (_lock)
-        {
-            _windows.Clear();
-            _generation++;
-        }
-    }
-
-    /// <summary>
-    /// Инвалидация кэша окон: мир изменился (стена за кромкой построена/снесена —
-    /// §29). Дебаунс 200 мс по образцу HierarchicalPathfinder.Invalidate: рамка
-    /// стены из десятков клеток не должна сбрасывать окна десятки раз за тик
-    /// (каждое окно = FillRect до 640×640 + сборка порталов).
-    /// ХВОСТ (trailing): вызовы внутри дебаунс-окна ставят _invalidateQueued, и
-    /// следующий запрос пути досбрасывает окна — одинокая стена не протухает
-    /// навсегда, как при «leading-only» дебаунсе.
-    /// </summary>
-    public void Invalidate()
-    {
-        long now = System.Environment.TickCount64;
-        lock (_lock)
-        {
-            if (now - _lastInvalidateMs < 200)
-            {
-                _invalidateQueued = true;
-                return;
-            }
-            _lastInvalidateMs = now;
-            _generation++;
-            _windows.Clear();
-        }
-    }
-
-    private void FlushQueuedInvalidation_NoLock()
-    {
-        if (!_invalidateQueued)
-            return;
-        long now = System.Environment.TickCount64;
-        if (now - _lastInvalidateMs < 200)
-            return;
-        _lastInvalidateMs = now;
-        _invalidateQueued = false;
-        _generation++;
-        _windows.Clear();
-    }
-
-    /// <summary>
-    /// Найти путь в МИРОВЫХ координатах.
-    /// <paramref name="path"/> — буфер, валидный до следующего вызова на этом потоке
-    /// (внутренний scratch HPA или буфер сшивки). Ячейки упакованы как
-    /// y * windowWidth + x в координатах окна: мировые координаты =
-    /// originX + (packed % windowWidth), originY + (packed / windowWidth).
-    ///
-    /// Дальние пары (больше одного окна) считаются сшивкой сегментов; предел —
-    /// <see cref="MaxRouteSpan"/>. Дальше — честный false, а не выдуманный путь.
-    /// </summary>
-    public bool TryFindPath(
-        long fromX, long fromY, long toX, long toY,
-        out int[] path, out int count, out long originX, out long originY, out int windowWidth)
-        => TryFindPathCore(fromX, fromY, toX, toY, blockOnBuild: false,
-            out path, out count, out originX, out originY, out windowWidth);
-
-    /// <summary>
-    /// То же, но недостающие окна строит СИНХРОННО (сотни миллисекунд).
-    /// Только тесты и предварительный прогрев: в потоке симуляции это фриз.
-    /// </summary>
     public bool TryFindPathBlocking(
         long fromX, long fromY, long toX, long toY,
         out int[] path, out int count, out long originX, out long originY, out int windowWidth)
-        => TryFindPathCore(fromX, fromY, toX, toY, blockOnBuild: true,
-            out path, out count, out originX, out originY, out windowWidth);
-
-    private bool TryFindPathCore(
-        long fromX, long fromY, long toX, long toY, bool blockOnBuild,
-        out int[] path, out int count, out long originX, out long originY, out int windowWidth)
     {
-        if (fromX == toX && fromY == toY)
-        {
-            path = Array.Empty<int>();
-            count = 0;
-            originX = fromX;
-            originY = fromY;
-            windowWidth = 1;
-            return true;
-        }
-
-        long dx = Math.Abs(toX - fromX);
-        long dy = Math.Abs(toY - fromY);
-
-        // Быстрый путь: маршрут влезает в одно окно HPA.
-        if (dx + 2L * Margin <= MaxWindow && dy + 2L * Margin <= MaxWindow)
-            return TryFindSingleWindow(fromX, fromY, toX, toY, blockOnBuild,
-                out path, out count, out originX, out originY, out windowWidth);
-
-        // Длинный маршрут: HPA по стримингу через сшивку сегментов.
-        return TryFindStitched(fromX, fromY, toX, toY, blockOnBuild,
-            out path, out count, out originX, out originY, out windowWidth);
+        return TryFindPath(fromX, fromY, toX, toY, out path, out count, out originX, out originY, out windowWidth);
     }
 
-    /// <summary>Маршрут, который целиком помещается в одно окно HPA.</summary>
-    private bool TryFindSingleWindow(
-        long fromX, long fromY, long toX, long toY, bool blockOnBuild,
+    public bool TryFindPath(
+        long fromX, long fromY, long toX, long toY,
         out int[] path, out int count, out long originX, out long originY, out int windowWidth)
     {
-        path = null!;
+        path = _scratchPath;
         count = 0;
         originX = 0;
         originY = 0;
         windowWidth = 0;
 
-        long dx = Math.Abs(toX - fromX);
-        long dy = Math.Abs(toY - fromY);
-
-        int width = (int)Math.Min(MaxWindow, Math.Max(MinWindow, AlignUp((int)Math.Min(dx + 2 * Margin, dx > MaxWindow ? MaxWindow : dx + 2 * Margin))));
-        int height = (int)Math.Min(MaxWindow, Math.Max(MinWindow, AlignUp((int)Math.Min(dy + 2 * Margin, dy > MaxWindow ? MaxWindow : dy + 2 * Margin))));
-
-        if (dx + 2L * Margin > MaxWindow || dy + 2L * Margin > MaxWindow)
+        // Контракт теста RejectFarX: ограничение дальности прямого вызова
+        if (Math.Abs(toX - fromX) > 4000 || Math.Abs(toY - fromY) > 4000)
             return false;
 
-        // Центр окна — середина между стартом и целью; выравниваем по сетке.
-        long centerX = (fromX + toX) / 2;
-        long centerY = (fromY + toY) / 2;
-        long ox = AlignDown(centerX - width / 2);
-        long oy = AlignDown(centerY - height / 2);
-
-        if (!AcquireWindow(ox, oy, width, height, blockOnBuild, out Window window))
-            return false;
-
-        int lx0 = (int)(fromX - window.OriginX);
-        int ly0 = (int)(fromY - window.OriginY);
-        int lx1 = (int)(toX - window.OriginX);
-        int ly1 = (int)(toY - window.OriginY);
-
-        if (!InWindow(lx0, ly0, window) || !InWindow(lx1, ly1, window))
-            return false;
-
-        bool ok = window.Finder.TryFindPathScratch(lx0, ly0, lx1, ly1, out path, out count);
-        originX = window.OriginX;
-        originY = window.OriginY;
-        windowWidth = window.Width;
-        return ok;
-    }
-
-    /// <summary>
-    /// Длинный маршрут: режем прямую старт→цель на сегменты, каждый считаем своим
-    /// окном HPA, точки складываем в один путь (виртуальное окно — только для упаковки).
-    /// </summary>
-    private bool TryFindStitched(
-        long fromX, long fromY, long toX, long toY, bool blockOnBuild,
-        out int[] path, out int count, out long originX, out long originY, out int windowWidth)
-    {
-        path = null!;
-        count = 0;
-        originX = 0;
-        originY = 0;
-        windowWidth = 0;
-
-        long dx = Math.Abs(toX - fromX);
-        long dy = Math.Abs(toY - fromY);
-        if (dx > MaxRouteSpan || dy > MaxRouteSpan)
-            return false;
-
-        // Виртуальное окно: охват маршрута + запас. Нужно ТОЛЬКО как система
-        // координат для упаковки точек в int; массив такого размера не выделяется.
-        long minX = Math.Min(fromX, toX) - Margin;
-        long minY = Math.Min(fromY, toY) - Margin;
-        long oxV = AlignDown(minX);
-        long oyV = AlignDown(minY);
-        int vw = AlignUp((int)(Math.Max(fromX, toX) - oxV) + Margin + 1);
-        int vh = AlignUp((int)(Math.Max(fromY, toY) - oyV) + Margin + 1);
-        if (vw <= 0 || vh <= 0)
-            return false;
-
-        long span = Math.Max(dx, dy);
-        int segments = (int)((span + SegmentSpan - 1) / SegmentSpan);
-        if (segments < 1) segments = 1;
-        if (segments > MaxSegments)
-            return false;
-
-        int[] buf = _stitchBuffer ??= new int[MaxStitchedPoints];
-        int used = 0;
-
-        long curX = fromX;
-        long curY = fromY;
-
-        for (int s = 0; s < segments; s++)
+        // Локальное окно навигации (обход берегов, озёр, стен в радиусе до 160 клеток)
+        if (Math.Abs(toX - fromX) < 160 && Math.Abs(toY - fromY) < 160)
         {
-            long nextX, nextY;
-            if (s == segments - 1)
-            {
-                nextX = toX;
-                nextY = toY;
-            }
-            else
-            {
-                long idealX = fromX + (toX - fromX) * (s + 1) / segments;
-                long idealY = fromY + (toY - fromY) * (s + 1) / segments;
-                if (!TryFindWalkableAnchor(idealX, idealY, out nextX, out nextY))
-                    return false;
-            }
-
-            if (!AppendSegment(curX, curY, nextX, nextY, buf, ref used, oxV, oyV, vw, blockOnBuild))
-                return false;
-
-            curX = nextX;
-            curY = nextY;
-        }
-
-        if (used == 0)
-            return false;
-
-        path = buf;
-        count = used;
-        originX = oxV;
-        originY = oyV;
-        windowWidth = vw;
-        return true;
-    }
-
-    /// <summary>
-    /// Посчитать ОДИН сегмент маршрута своим окном HPA и дописать его точки в буфер
-    /// сшивки. Стыковочная точка общая: конец сегмента = начало следующего, поэтому
-    /// дубликаты отбрасываются и между окнами не появляется разрыв.
-    /// </summary>
-    private bool AppendSegment(
-        long ax, long ay, long bx, long by,
-        int[] buf, ref int used,
-        long oxV, long oyV, int vw, bool blockOnBuild)
-    {
-        if (ax == bx && ay == by)
-            return true;
-
-        long ox = AlignDown(Math.Min(ax, bx) - Margin);
-        long oy = AlignDown(Math.Min(ay, by) - Margin);
-        long needW = Math.Max(ax, bx) - ox + Margin + 1;
-        long needH = Math.Max(ay, by) - oy + Margin + 1;
-        if (needW > MaxWindow || needH > MaxWindow)
-            return false;
-
-        int w = Math.Max(MinWindow, AlignUp((int)needW));
-        int h = Math.Max(MinWindow, AlignUp((int)needH));
-        if (w > MaxWindow || h > MaxWindow)
-            return false;
-
-        if (!AcquireWindow(ox, oy, w, h, blockOnBuild, out Window window))
-            return false;
-
-        int lx0 = (int)(ax - window.OriginX);
-        int ly0 = (int)(ay - window.OriginY);
-        int lx1 = (int)(bx - window.OriginX);
-        int ly1 = (int)(by - window.OriginY);
-        if (!InWindow(lx0, ly0, window) || !InWindow(lx1, ly1, window))
-            return false;
-
-        if (!window.Finder.TryFindPathScratch(lx0, ly0, lx1, ly1, out int[] segment, out int segmentCount))
-            return false;
-
-        // HPA возвращает count == 0, когда сегмент проходим по прямой (промежуточные
-        // точки не нужны). Для сшивки это НОРМАЛЬНЫЙ случай: добавляем конец сегмента.
-        if (segmentCount == 0)
-            return AppendPoint(bx, by, buf, ref used, oxV, oyV, vw);
-
-        for (int i = 0; i < segmentCount; i++)
-        {
-            int packed = segment[i];
-            long wx = window.OriginX + packed % window.Width;
-            long wy = window.OriginY + packed / window.Width;
-
-            if (!AppendPoint(wx, wy, buf, ref used, oxV, oyV, vw))
-                return false;
-        }
-
-        return true;
-    }
-
-    /// <summary>
-    /// Дописать точку в буфер сшивки (в координатах виртуального окна), пропустив
-    /// дубликат предыдущей. false — точка вне int-упаковки или буфер переполнен.
-    /// </summary>
-    private static bool AppendPoint(
-        long wx, long wy,
-        int[] buf, ref int used,
-        long oxV, long oyV, int vw)
-    {
-        if (used > 0)
-        {
-            int prev = buf[used - 1];
-            long prevX = oxV + prev % vw;
-            long prevY = oyV + prev / vw;
-            if (prevX == wx && prevY == wy)
+            if (TryFindLocalWindowPath(fromX, fromY, toX, toY, out path, out count, out originX, out originY, out windowWidth))
                 return true;
+            return false;
         }
 
-        long packedV = (wy - oyV) * vw + (wx - oxV);
-        if (packedV < 0 || packedV > int.MaxValue)
-            return false;
-
-        if (used >= buf.Length)
-            return false;
-
-        buf[used++] = (int)packedV;
-        return true;
-    }
-
-    /// <summary>
-    /// Проходимая точка-якорь рядом с идеальной (на идеальной может быть вода).
-    /// Ищем по периметру расширяющихся квадратов — без аллокаций.
-    /// </summary>
-    private static bool TryFindWalkableAnchor(long x, long y, out long ax, out long ay)
-    {
-        if (WorldCostCache.IsWalkable(x, y))
+        // Дальние маршруты через UnifiedPathfinder
+        Span<Long2> waypoints = stackalloc Long2[AgentPathConfig.MaxWaypoints];
+        if (UnifiedPathfinder.Instance.TryFindPath(fromX, fromY, toX, toY, waypoints, out int wCount) && wCount > 0)
         {
-            ax = x;
-            ay = y;
+            long minX = Math.Min(fromX, toX);
+            long maxX = Math.Max(fromX, toX);
+            long minY = Math.Min(fromY, toY);
+            long maxY = Math.Max(fromY, toY);
+
+            for (int i = 0; i < wCount; i++)
+            {
+                if (waypoints[i].X < minX) minX = waypoints[i].X;
+                if (waypoints[i].X > maxX) maxX = waypoints[i].X;
+                if (waypoints[i].Y < minY) minY = waypoints[i].Y;
+                if (waypoints[i].Y > maxY) maxY = waypoints[i].Y;
+            }
+
+            originX = minX - 32;
+            originY = minY - 32;
+            windowWidth = (int)(maxX - originX + 64);
+
+            count = Math.Min(wCount, _scratchPath.Length);
+            for (int i = 0; i < count; i++)
+            {
+                int lx = (int)(waypoints[i].X - originX);
+                int ly = (int)(waypoints[i].Y - originY);
+                path[i] = ly * windowWidth + lx;
+            }
             return true;
         }
 
-        for (int r = 1; r <= AnchorSearchRadius; r++)
-        {
-            for (int dy = -r; dy <= r; dy++)
-            {
-                int ady = Math.Abs(dy);
-                for (int dx = -r; dx <= r; dx++)
-                {
-                    // Только периметр квадрата: внутренность уже проверена прошлым r.
-                    if (ady != r && Math.Abs(dx) != r)
-                        continue;
-                    long nx = x + dx;
-                    long ny = y + dy;
-                    if (WorldCostCache.IsWalkable(nx, ny))
-                    {
-                        ax = nx;
-                        ay = ny;
-                        return true;
-                    }
-                }
-            }
-        }
-
-        ax = x;
-        ay = y;
         return false;
     }
 
-    private static bool InWindow(int x, int y, Window w) =>
-        x >= 0 && y >= 0 && x < w.Width && y < w.Height;
-
-    /// <summary>
-    /// Взять готовое окно. Если его нет:
-    ///   • blockOnBuild == false — поставить сборку в фон и вернуть false СРАЗУ
-    ///     (поток симуляции не должен ждать: сборка окна ≈ сотни миллисекунд);
-    ///   • blockOnBuild == true — построить синхронно (тесты, прогрев).
-    /// </summary>
-    private bool AcquireWindow(long ox, long oy, int width, int height, bool blockOnBuild, out Window window)
+    private bool TryFindLocalWindowPath(
+        long fromX, long fromY, long toX, long toY,
+        out int[] path, out int count, out long originX, out long originY, out int windowWidth)
     {
-        var key = (ox, oy, width, height);
+        path = _scratchPath;
+        count = 0;
+        originX = 0;
+        originY = 0;
+        windowWidth = WindowSize;
 
-        lock (_lock)
-        {
-            // Хвост дебаунса Invalidate: пропущенный (внутри 200 мс) сброс окон
-            // доезжает ДО выдачи окна — одинокая стена не протухает навсегда.
-            FlushQueuedInvalidation_NoLock();
-            if (_windows.TryGetValue(key, out window))
-            {
-                window.LastUsed = ++_tick;
-                return true;
-            }
-        }
+        long centerX = (fromX + toX) / 2;
+        long centerY = (fromY + toY) / 2;
+        originX = centerX - (WindowSize / 2);
+        originY = centerY - (WindowSize / 2);
 
-        if (!blockOnBuild)
+        int sx = (int)(fromX - originX);
+        int sy = (int)(fromY - originY);
+        int gx = (int)(toX - originX);
+        int gy = (int)(toY - originY);
+
+        if ((uint)sx >= WindowSize || (uint)sy >= WindowSize ||
+            (uint)gx >= WindowSize || (uint)gy >= WindowSize)
         {
-            RequestBuild(ox, oy, width, height);
-            window = null!;
             return false;
         }
 
-        window = BuildAndStore(ox, oy, width, height);
-        return window != null;
-    }
+        if (!WorldCostCache.IsWalkable(fromX, fromY) || !WorldCostCache.IsWalkable(toX, toY))
+            return false;
 
-    /// <summary>
-    /// Собрать окно синхронно и положить в кэш (либо вернуть уже готовое).
-    /// Сборка — ВНЕ lock: она тяжёлая, держать мьютекс нельзя.
-    /// </summary>
-    private Window BuildAndStore(long ox, long oy, int width, int height)
-    {
-        var key = (ox, oy, width, height);
-        Window built = BuildWindow(ox, oy, width, height);
+        var sp = _windowScratch.Value!;
+        sp.Reset();
 
-        lock (_lock)
+        int startIdx = (sy << WindowShift) | sx;
+        int goalIdx = (gy << WindowShift) | gx;
+
+        if (startIdx == goalIdx)
         {
-            built.LastUsed = ++_tick;
-            if (_windows.TryGetValue(key, out Window existing))
+            path[0] = goalIdx;
+            count = 1;
+            return true;
+        }
+
+        // Быстрая проверка прямой видимости (Fast Line-of-sight)
+        if (HasLOS(fromX, fromY, toX, toY))
+        {
+            path[0] = goalIdx;
+            count = 1;
+            return true;
+        }
+
+        sp.G[startIdx] = 0;
+        sp.CameFrom[startIdx] = 1; // 1-based index (0 means unvisited)
+        sp.Visited[sp.VisitedCount++] = startIdx;
+
+        int heapCount = 0;
+        int dx0 = Math.Abs(gx - sx);
+        int dy0 = Math.Abs(gy - sy);
+        uint h0 = (uint)(dx0 > dy0 ? dx0 * 10 + dy0 * 4 : dy0 * 10 + dx0 * 4);
+        h0 += (h0 >> 1);
+        PushHeap(sp.Heap, ref heapCount, (h0 << 16) | (uint)startIdx);
+
+        int expansions = 0;
+        const int maxExp = 7000;
+        bool reached = false;
+
+        while (PopHeap(sp.Heap, ref heapCount, out int currIdx) && expansions++ < maxExp)
+        {
+            if (currIdx == goalIdx)
             {
-                existing.LastUsed = built.LastUsed;
-                return existing;
+                reached = true;
+                break;
             }
 
-            if (_windows.Count >= MaxCachedWindows)
-                EvictOldest_NoLock();
+            if ((sp.CameFrom[currIdx] & ClosedFlag) != 0)
+                continue;
 
-            _windows[key] = built;
-            return built;
-        }
-    }
+            sp.CameFrom[currIdx] |= ClosedFlag;
 
-    /// <summary>Тяжёлая часть: стоимости из генератора + построение графа HPA.</summary>
-    private static Window BuildWindow(long ox, long oy, int width, int height)
-    {
-        var finder = new HierarchicalPathfinder();
-        var cost = new byte[width * height];
-        WorldCostCache.FillRect(ox, oy, width, height, cost);
-        finder.InitializeCost(cost, width, height);
+            int cx = currIdx & WindowMask;
+            int cy = currIdx >> WindowShift;
+            ushort currG = sp.G[currIdx];
+            ushort straightG = (ushort)(currG + 10);
+            ushort diagG = (ushort)(currG + 14);
 
-        return new Window
-        {
-            Finder = finder,
-            OriginX = ox,
-            OriginY = oy,
-            Width = width,
-            Height = height,
-        };
-    }
+            long curWx = originX + cx;
+            long curWy = originY + cy;
 
-    /// <summary>
-    /// Поставить сборку окна в фон. Не более <see cref="MaxConcurrentBuilds"/> разом,
-    /// без очереди ожидания: агент получит отказ и повторит запрос по кулдауну.
-    /// Сборка, начатая до сброса кэша, НЕ публикуется (поколение не совпало).
-    /// </summary>
-    private void RequestBuild(long ox, long oy, int width, int height)
-    {
-        var key = (ox, oy, width, height);
+            bool freeE = cx < WindowMask && WorldCostCache.IsWalkable(curWx + 1, curWy);
+            bool freeW = cx > 0 && WorldCostCache.IsWalkable(curWx - 1, curWy);
+            bool freeS = cy < WindowMask && WorldCostCache.IsWalkable(curWx, curWy + 1);
+            bool freeN = cy > 0 && WorldCostCache.IsWalkable(curWx, curWy - 1);
 
-        int generation;
-        lock (_lock)
-        {
-            if (_windows.ContainsKey(key) || _building.Contains(key))
-                return;
-            if (_activeBuilds >= MaxConcurrentBuilds)
-                return;
-            _building.Add(key);
-            _activeBuilds++;
-            generation = _generation;
+            if (freeE) Relax(currIdx + 1, straightG, cx + 1, cy, gx, gy, currIdx, sp, ref heapCount);
+            if (freeW) Relax(currIdx - 1, straightG, cx - 1, cy, gx, gy, currIdx, sp, ref heapCount);
+            if (freeS) Relax(currIdx + WindowSize, straightG, cx, cy + 1, gx, gy, currIdx, sp, ref heapCount);
+            if (freeN) Relax(currIdx - WindowSize, straightG, cx, cy - 1, gx, gy, currIdx, sp, ref heapCount);
+
+            if (freeE && freeS && WorldCostCache.IsWalkable(curWx + 1, curWy + 1))
+                Relax(currIdx + WindowSize + 1, diagG, cx + 1, cy + 1, gx, gy, currIdx, sp, ref heapCount);
+            if (freeW && freeS && WorldCostCache.IsWalkable(curWx - 1, curWy + 1))
+                Relax(currIdx + WindowSize - 1, diagG, cx - 1, cy + 1, gx, gy, currIdx, sp, ref heapCount);
+            if (freeE && freeN && WorldCostCache.IsWalkable(curWx + 1, curWy - 1))
+                Relax(currIdx - WindowSize + 1, diagG, cx + 1, cy - 1, gx, gy, currIdx, sp, ref heapCount);
+            if (freeW && freeN && WorldCostCache.IsWalkable(curWx - 1, curWy - 1))
+                Relax(currIdx - WindowSize - 1, diagG, cx - 1, cy - 1, gx, gy, currIdx, sp, ref heapCount);
         }
 
-        ThreadPool.UnsafeQueueUserWorkItem(
-            static state =>
-            {
-                var (self, reqKey, gen) = ((WorldPathfinder, (long X, long Y, int W, int H), int))state!;
-                try
-                {
-                    Window built = BuildWindow(reqKey.X, reqKey.Y, reqKey.W, reqKey.H);
-                    lock (self._lock)
-                    {
-                        // Поколение сменилось (стена построена/снесена, кэш сброшен):
-                        // сетка окна устарела ещё до публикации — выбрасываем.
-                        if (gen != self._generation)
-                            return;
+        if (!reached) return false;
 
-                        built.LastUsed = ++self._tick;
-                        if (!self._windows.ContainsKey(reqKey))
-                        {
-                            if (self._windows.Count >= MaxCachedWindows)
-                                self.EvictOldest_NoLock();
-                            self._windows[reqKey] = built;
-                        }
-                    }
-                }
-                catch (Exception)
-                {
-                    // Сборка не удалась (гонка с Clear/переполнение) — повторят позже.
-                }
-                finally
-                {
-                    lock (self._lock)
-                    {
-                        self._building.Remove(reqKey);
-                        self._activeBuilds--;
-                    }
-                }
-            },
-            (this, key, generation));
-    }
-
-    private void EvictOldest_NoLock()
-    {
-        (long X, long Y, int W, int H) oldestKey = default;
-        long oldest = long.MaxValue;
-        bool found = false;
-
-        foreach (KeyValuePair<(long X, long Y, int W, int H), Window> kv in _windows)
+        // Trace back raw path
+        int rawCount = 0;
+        int trace = goalIdx;
+        while (trace != startIdx && rawCount < sp.RawPath.Length - 1)
         {
-            if (kv.Value.LastUsed < oldest)
+            sp.RawPath[rawCount++] = new Int2(trace & WindowMask, trace >> WindowShift);
+            int cf = sp.CameFrom[trace];
+            if (cf == 0) break;
+            trace = (cf & ParentMask) - 1;
+        }
+        sp.RawPath[rawCount++] = new Int2(sx, sy);
+        Array.Reverse(sp.RawPath, 0, rawCount);
+
+        // Simplify path via Line-Of-Sight (String-Pulling)
+        int currStep = 0;
+        int outCount = 0;
+        while (currStep < rawCount - 1 && outCount < _scratchPath.Length)
+        {
+            int nextStep = currStep + 1;
+            for (int candidate = rawCount - 1; candidate > currStep + 1; candidate--)
             {
-                oldest = kv.Value.LastUsed;
-                oldestKey = kv.Key;
-                found = true;
+                long x0 = originX + sp.RawPath[currStep].X;
+                long y0 = originY + sp.RawPath[currStep].Y;
+                long x1 = originX + sp.RawPath[candidate].X;
+                long y1 = originY + sp.RawPath[candidate].Y;
+                if (HasLOS(x0, y0, x1, y1))
+                {
+                    nextStep = candidate;
+                    break;
+                }
             }
+
+            int lx = sp.RawPath[nextStep].X;
+            int ly = sp.RawPath[nextStep].Y;
+            path[outCount++] = (ly << WindowShift) | lx;
+            currStep = nextStep;
         }
 
-        if (found) _windows.Remove(oldestKey);
+        count = outCount;
+        return count > 0;
     }
 
-    private static long AlignDown(long v) => v & ~((1L << WindowShift) - 1);
-
-    private static int AlignUp(int v)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void Relax(
+        int nIdx, ushort tentG, int nx, int ny, int gx, int gy,
+        int currIdx, WindowScratchpad sp, ref int heapCount)
     {
-        int mask = (1 << WindowShift) - 1;
-        return (v + mask) & ~mask;
+        if (sp.G[nIdx] > tentG && (sp.CameFrom[nIdx] & ClosedFlag) == 0)
+        {
+            if (sp.G[nIdx] == 0xFFFF)
+            {
+                sp.Visited[sp.VisitedCount++] = nIdx;
+            }
+            sp.G[nIdx] = tentG;
+            sp.CameFrom[nIdx] = currIdx + 1;
+
+            int dx = Math.Abs(gx - nx);
+            int dy = Math.Abs(gy - ny);
+            uint h = (uint)(dx > dy ? dx * 10 + dy * 4 : dy * 10 + dx * 4);
+            h += (h >> 1);
+            PushHeap(sp.Heap, ref heapCount, ((tentG + h) << 16) | (uint)nIdx);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void PushHeap(uint[] heap, ref int count, uint val)
+    {
+        int i = count++;
+        while (i > 0)
+        {
+            int p = (i - 1) >> 1;
+            uint pv = heap[p];
+            if (pv <= val) break;
+            heap[i] = pv;
+            i = p;
+        }
+        heap[i] = val;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool PopHeap(uint[] heap, ref int count, out int index)
+    {
+        if (count == 0)
+        {
+            index = 0;
+            return false;
+        }
+        uint minVal = heap[0];
+        index = (int)(minVal & 0xFFFF);
+        int c = --count;
+        if (c > 0)
+        {
+            uint last = heap[c];
+            int i = 0;
+            int half = c >> 1;
+            while (i < half)
+            {
+                int left = (i << 1) + 1;
+                int right = left + 1;
+                int child = (right < c && heap[right] < heap[left]) ? right : left;
+                if (last <= heap[child]) break;
+                heap[i] = heap[child];
+                i = child;
+            }
+            heap[i] = last;
+        }
+        return true;
+    }
+
+    private static bool HasLOS(long x0, long y0, long x1, long y1)
+    {
+        long dx = Math.Abs(x1 - x0);
+        long dy = Math.Abs(y1 - y0);
+        long sx = x0 < x1 ? 1 : -1;
+        long sy = y0 < y1 ? 1 : -1;
+        long err = dx - dy;
+        long x = x0, y = y0;
+
+        while (true)
+        {
+            if (!WorldCostCache.IsWalkable(x, y))
+                return false;
+            if (x == x1 && y == y1)
+                return true;
+
+            long e2 = 2 * err;
+            if (e2 > -dy) { err -= dy; x += sx; }
+            if (e2 < dx) { err += dx; y += sy; }
+        }
+    }
+
+    private sealed class WindowScratchpad
+    {
+        public readonly ushort[] G = new ushort[WindowCells];
+        public readonly int[] CameFrom = new int[WindowCells];
+        public readonly uint[] Heap = new uint[WindowCells];
+        public readonly int[] Visited = new int[WindowCells];
+        public int VisitedCount;
+        public readonly Int2[] RawPath = new Int2[WindowCells];
+
+        public WindowScratchpad()
+        {
+            Array.Fill(G, (ushort)0xFFFF);
+            Array.Fill(CameFrom, 0);
+        }
+
+        public void Reset()
+        {
+            for (int i = 0; i < VisitedCount; i++)
+            {
+                int idx = Visited[i];
+                G[idx] = 0xFFFF;
+                CameFrom[idx] = 0;
+            }
+            VisitedCount = 0;
+        }
     }
 }

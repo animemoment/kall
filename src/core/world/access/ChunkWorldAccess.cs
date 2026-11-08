@@ -2,6 +2,10 @@ using System;
 using Game.Core.WorldStreaming;
 using Game.Core.WorldStreaming.Integration;
 
+// L-01: МЁРТВЫЙ КОД (2026-11-05). мёртвая реализация мёртвого интерфейса: ни одного `new ChunkWorldAccess(` в src/ и tests/.
+
+// Удаление — отдельная задача чистки (см. _plan/DEFECTS_MASTER.md). Не подключать без решения владельца.
+
 namespace Game.Core;
 
 /// <summary>

@@ -6,5 +6,6 @@ public enum StructureCategory : byte
     Furniture = 1,
     Door = 2,
     Production = 3,
-    Floor = 4
+    Floor = 4,
+    Roof = 5
 }

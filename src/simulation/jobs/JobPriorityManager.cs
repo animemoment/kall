@@ -5,9 +5,17 @@ using Game.Core;
 
 namespace Game.Simulation;
 
+/// <summary>
+/// GD-24 / J-13: Менеджер приоритетов категорий работ.
+/// Догма приоритетов: значение «0» трактуется как самый низший приоритет (минимальный вес при выборке, fallback),
+/// а НЕ как выключение/запрет работы. Задачи категории 0 продолжают выполняться, если нет более приоритетных.
+/// </summary>
 public sealed class JobPriorityManager
 {
     public static JobPriorityManager Instance { get; } = new();
+
+    /// <summary>GD-24: 0 = самый низший приоритет (минимальный вес / fallback), а не отключение.</summary>
+    public const int LowestPriority = 0;
 
     private readonly int[] _priorities = new int[(int)JobCategory.Count];
 
@@ -27,6 +35,8 @@ public sealed class JobPriorityManager
 
         table[(byte)JobTypeId.TreeChopping] = JobCategory.Lumberjack;
         table[(byte)JobTypeId.Mining] = JobCategory.Lumberjack;
+        // task-4: руда — та же категория, что камень/рубка (лесозаготовители).
+        table[(byte)JobTypeId.OreMining] = JobCategory.Lumberjack;
         table[(byte)JobTypeId.Construction] = JobCategory.Construction;
         table[(byte)JobTypeId.Farming] = JobCategory.Farming;
         table[(byte)JobTypeId.Planting] = JobCategory.Farming;

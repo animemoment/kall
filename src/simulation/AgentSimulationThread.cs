@@ -30,6 +30,58 @@ public static class AgentSimTickGate
 
 public sealed class AgentSimulationThread : IDisposable
 {
+	public static AgentSimulationThread Instance { get; private set; }
+	public AgentDataPool Pool => _pool;
+
+	public int FindAgentNearTile(int tileX, int tileY, float maxDistTiles = 2.0f)
+	{
+		var pool = _pool;
+		if (pool == null) return -1;
+		float px = (tileX << 6) + 32f;
+		float py = (tileY << 6) + 32f;
+		float maxDistSq = (maxDistTiles * 64f) * (maxDistTiles * 64f);
+		int bestIdx = -1;
+		float bestDistSq = maxDistSq;
+		int count = pool.Capacity;
+		for (int i = 0; i < count; i++)
+		{
+			float dx = pool.PositionX[i] - px;
+			float dy = pool.PositionY[i] - py;
+			float distSq = dx * dx + dy * dy;
+			if (distSq < bestDistSq)
+			{
+				bestDistSq = distSq;
+				bestIdx = i;
+			}
+		}
+		return bestIdx;
+	}
+
+	/// <summary>
+	/// UI-18: Поиск агента под мировыми координатами курсора (в пикселях).
+	/// </summary>
+	public int FindAgentNearWorld(float worldX, float worldY, float maxDistPx = 48.0f)
+	{
+		var pool = _pool;
+		if (pool == null) return -1;
+		float maxDistSq = maxDistPx * maxDistPx;
+		int bestIdx = -1;
+		float bestDistSq = maxDistSq;
+		int count = pool.Capacity;
+		for (int i = 0; i < count; i++)
+		{
+			float dx = pool.PositionX[i] - worldX;
+			float dy = pool.PositionY[i] - worldY;
+			float distSq = dx * dx + dy * dy;
+			if (distSq < bestDistSq)
+			{
+				bestDistSq = distSq;
+				bestIdx = i;
+			}
+		}
+		return bestIdx;
+	}
+
 	private AgentDataPool _pool;
 	private SimulationContext _ctx;
 	private readonly WanderJobSystem _wanderSystem = new();
@@ -40,7 +92,36 @@ public sealed class AgentSimulationThread : IDisposable
 	private readonly Vector2[][] _positionSnapRing = new Vector2[4][];
 	private int _posSnapCursor = 0;
 
-	public ConcurrentQueue<Vector2[]> PositionQueue { get; } = new();
+	/// <summary>
+	/// B-07: флаг «слот занят читателем» (0 = свободен). Производитель не имеет права
+	/// писать в буфер, который потребитель сейчас копирует, поэтому слот захватывается
+	/// CAS-ом перед записью и возвращается потребителем через <see cref="ReleaseSnapshot"/>.
+	/// Раньше владение не передавалось вообще: гарантия «cap=2 при ротации=4» держалась
+	/// только на том, что главный поток успевает за &lt;2 публикации. При вытеснении
+	/// потребителя (тяжёлый кадр, без фокуса, GC-пауза, отладчик) буфер перезаписывался
+	/// прямо во время Array.Copy — часть агентов на кадр «прыгала».
+	/// </summary>
+	private readonly int[] _snapBusy = new int[4];
+
+	/// <summary>B-07: опубликованный снапшот позиций вместе с номером слота кольца.</summary>
+	public readonly struct PositionSnapshot
+	{
+		public readonly Vector2[] Buffer;
+		public readonly int Slot;
+		public PositionSnapshot(Vector2[] buffer, int slot) { Buffer = buffer; Slot = slot; }
+	}
+
+	public ConcurrentQueue<PositionSnapshot> PositionQueue { get; } = new();
+
+	/// <summary>
+	/// B-07: вернуть слот кольца в оборот. Обязан звать потребитель сразу после того,
+	/// как скопировал данные из буфера (или выбросил снапшот, не используя его).
+	/// </summary>
+	public void ReleaseSnapshot(int slot)
+	{
+		if ((uint)slot < (uint)_snapBusy.Length)
+			Volatile.Write(ref _snapBusy[slot], 0);
+	}
 
 	public static bool EnableConsoleDebugAudit = false;
 
@@ -93,6 +174,15 @@ public sealed class AgentSimulationThread : IDisposable
 	private bool[] _reusableForestMask;
 	private bool[] _reusableFarmMask;
 	private bool _environmentalMasksDirty = true;
+	// FIX (bughunt 02-3): MarkEnvironmentalDirty() не вызывается ниоткуда, поэтому
+	// маски леса/грядок собирались ОДИН раз за сессию: вскопанные позже грядки не
+	// тянули влагу и не истощали почву, вырубленный лес продолжал удобрять.
+	// Пересобираем периодически по ИГРОВОМУ времени (не чаще EnvMaskRebuildIntervalGameSec).
+	// 262k клеток — проход небесплатный, поэтому проверка идёт на тиках почвы, а не каждый тик.
+	private float _envMaskRebuildTimer;
+
+	/// <summary>Интервал периодической пересборки масок леса/грядок, игровые секунды.</summary>
+	private const float EnvMaskRebuildIntervalGameSec = 20f;
 
 	public void MarkEnvironmentalDirty() => _environmentalMasksDirty = true;
 
@@ -128,6 +218,14 @@ public sealed class AgentSimulationThread : IDisposable
 	/// тени/тинт корректны с первого кадра.
 	/// </summary>
 	public volatile float GameTimeSeconds = WorldTime.HoursToSeconds(InitialStartHour);
+
+	// FIX (bughunt 07-07): накопление мирового времени — в double. Публичный
+	// float-API GameTimeSeconds сохранён (его читают TimeManager/HUD/DayNightCycle),
+	// но шаг += 0.05f/0.2f/0.5f в float на больших значениях округлялся до нуля:
+	// с ~44 игровых суток время шло на +25 %, с ~87 суток (2^20 геймсек на 1x)
+	// замирало совсем. double держит точность на порядки дальше; float-зеркало
+	// обновляется каждый суб-степ, поэтому внешние читатели видят актуальное время.
+	private double _gameTimeSecondsAccum = WorldTime.HoursToSeconds(InitialStartHour);
 
 	/// <summary>Час старта новой игры (утро, свет уже есть, жары полдня нет).</summary>
 	public const float InitialStartHour = 7f;
@@ -180,12 +278,19 @@ public sealed class AgentSimulationThread : IDisposable
 	private const float StockpileSweepIntervalBase = 1.0f;
 	private const float IntervalScaleSpeed = 16f;
 	private const float IntervalScaleSpeedHi = 64f;
+	// FIX (bughunt 07-06): максимум «догоняющих» тиков влаги/плодородия за один
+	// проход. Интервал почвы теперь в игровых секундах без масштаба скоростью,
+	// поэтому в норме на проход приходится ровно 1 интервал; кап 8 страхует от
+	// залипания в дорогом проходе по 262k клеток, если время всё же прыгнуло.
+	private const int MaxSoilTickRepeatsPerPass = 8;
 	private const int ParallelThreshold = 128;
 	// P-динамика: статический ChunkSize=1024 убран — фазы идут через
 	// DynamicWorkBalancer (батчи 32..512 + work-stealing через атомарный курсор).
 	// Тяжёлый агент задерживает батч 128, а не чанк 1024: straggler-хвост короче в ~8x.
 
-	public void Start(int agentCount, TileType[,] ground, bool[,] treeOnGrass, int seed = 0, HumidityMap humidity = null, bool[,] stoneOnGrass = null, FertilityMap fertility = null)
+	public void Start(int agentCount, TileType[,] ground, bool[,] treeOnGrass, int seed = 0, HumidityMap humidity = null, bool[,] stoneOnGrass = null, FertilityMap fertility = null,
+		byte[] oreType = null, byte[] oreState = null, ushort[] oreReserve = null, ushort[] oreReserveInitial = null,
+		(int X, int Y)? colonySpawnPoint = null)
 	{
 		try
 		{
@@ -228,13 +333,57 @@ public sealed class AgentSimulationThread : IDisposable
 			var spatialGrid = new AgentSpatialGrid(width, height);
 			var movement = new AgentMovementService();
 
-			_ctx = new SimulationContext(ground, humidity, treeOnGrass, solidWalls, walkableTiles, spatialGrid, movement, random, 64, stoneOnGrass, fertility);
+			_ctx = new SimulationContext(ground, humidity, treeOnGrass, solidWalls, walkableTiles, spatialGrid, movement, random, 64, stoneOnGrass, fertility,
+				oreType, oreState, oreReserve, oreReserveInitial);
 			HierarchicalPathfinder.Instance.Initialize(_ctx);
+			// R-09: бюджет поиска пути (SearchesPerFrame/TryReserveSearch) был объявлен,
+			// но не вызывался нигде — при массовой постановке дальних работ A* запускали
+			// все агенты сразу (пики Phase2). Механизм подключён, но по умолчанию ВЫКЛЮЧЕН:
+			// отказ по бюджету откладывает запрос агента на PathRequestCooldown (3–5 с),
+			// и включать это без замера (падают ли пики Phase2 и не встают ли агенты)
+			// нельзя — иначе лечение хуже болезни. Включать осознанно, после профиля.
+			HierarchicalPathfinder.Instance.BudgetEnabled = false;
+
+			// B-08: idle-пул живёт в процесс-глобальном JobDispatcher.Instance и
+			// переживает Stop(). Start() его не чистил, поэтому после запуска с
+			// МЕНЬШЕЙ популяцией в пуле оставались индексы агентов, которых уже нет
+			// в _pool (TotalIdleCount > Capacity). Чистим ДО регистрации: все агенты
+			// нового пула ниже снова попадут в idle-пул в цикле.
+			JobDispatcher.Instance.IdleWorkers.Clear();
+
+			// Если задан центр высадки колонии — спавним жителей компактным поселением вокруг него!
+			List<(int X, int Y)> spawnTiles = walkableTiles;
+			if (colonySpawnPoint.HasValue)
+			{
+				int sx = colonySpawnPoint.Value.X;
+				int sy = colonySpawnPoint.Value.Y;
+				var localWalkable = new List<(int X, int Y)>(256);
+				for (int r = 1; r <= 35 && localWalkable.Count < agentCount * 2; r++)
+				{
+					for (int dy = -r; dy <= r; dy++)
+					{
+						for (int dx = -r; dx <= r; dx++)
+						{
+							if (Math.Max(Math.Abs(dx), Math.Abs(dy)) != r) continue;
+							int nx = sx + dx;
+							int ny = sy + dy;
+							if (nx >= 0 && ny >= 0 && nx < width && ny < height)
+							{
+								bool stone = stoneOnGrass != null && stoneOnGrass[nx, ny];
+								if (ground[nx, ny] == TileType.Grass && !treeOnGrass[nx, ny] && !stone)
+									localWalkable.Add((nx, ny));
+							}
+						}
+					}
+				}
+				if (localWalkable.Count > 0)
+					spawnTiles = localWalkable;
+			}
 
 			for (int i = 0; i < agentCount; i++)
 			{
-				int tileIndex = random.Next(walkableTiles.Count);
-				var (tx, ty) = walkableTiles[tileIndex];
+				int tileIndex = random.Next(spawnTiles.Count);
+				var (tx, ty) = spawnTiles[tileIndex];
 				float posX = (tx << 6) + 32f;
 				float posY = (ty << 6) + 32f;
 
@@ -264,12 +413,19 @@ public sealed class AgentSimulationThread : IDisposable
 
 			JobRegistry.Register(new TreeChoppingJobHandler());
 			JobRegistry.Register(new MiningJobHandler());
+			// task-4: добыча руды — отдельный JobTypeId.OreMining (жила = хранилище).
+			JobRegistry.Register(new OreMiningJobHandler());
 			JobRegistry.Register(new ConstructionJobHandler());
 			JobRegistry.Register(new FarmingJobHandler());
 			JobRegistry.Register(new BlueprintDeliveryJobHandler());
 			JobRegistry.Register(new StockpileHaulingJobHandler());
 			JobRegistry.Register(new PlantingJobHandler());
 			JobRegistry.Register(new HarvestJobHandler());
+			// task-20: работа у станка по рецепту (руда→слиток, бревно→доска, зерно→мука).
+			JobRegistry.Register(new ProductionJobHandler());
+			// C-2 (аудит): каждая PrimaryJob отрасли обязана иметь обработчик,
+			// иначе зона-отрасль создаётся, но работ не получает.
+			ZoneIndustryRegistry.ValidatePrimaryJobs(t => JobRegistry.GetHandler(t) != null);
 
 			PushSnapshot();
 
@@ -297,6 +453,7 @@ public sealed class AgentSimulationThread : IDisposable
 			// значение на своей границе тика и завершится, не тронув новый _pool/_ctx.
 			int generation = ++_loopGeneration;
 
+			Instance = this;
 			_running = true;
 			_simulationTask = Task.Run(() => SimulationLoop(generation));
 		}
@@ -388,9 +545,7 @@ public sealed class AgentSimulationThread : IDisposable
 						if (steps >= maxAllowedSteps)
 							SimEvents.Mark("SIM_LAG", $"steps={steps} acc_cut");
 					}
-					// Буфер JobAudit-печати: GD.Print из горячего пути убран —
-					// копим за цикл шагов, печатаем один раз из sim-потока после фаз.
-					int jobAuditFixedTotal = 0;
+
 					// Баланс фаз больше НЕ сбрасывается на тик: планировщик копит
 					// кумулятивные суммы, а GameProfiler.SnapshotMetrics берёт дельту
 					// за своё окно (0.1 с / N кадров) и нормирует её на кадр.
@@ -411,7 +566,11 @@ public sealed class AgentSimulationThread : IDisposable
 							_stockpileSweepTimer += currentStepDt;
 							_needsEnvTimer += currentStepDt;
 							// Мировое игровое время: каждый шаг = квант игрового времени.
-							GameTimeSeconds += currentStepDt;
+							// FIX (bughunt 07-07): копим в double, наружу отдаём float-зеркало
+							// (публичный API не меняем). Иначе на больших значениях шаг
+							// округлялся до 0 и часы замирали (~87 игровых суток на 1x).
+							_gameTimeSecondsAccum += currentStepDt;
+							GameTimeSeconds = (float)_gameTimeSecondsAccum;
 
 							// Редкое обновление окружения (потребности): раз в игровой час.
 							bool updateNeedsEnvThisStep = false;
@@ -432,15 +591,32 @@ public sealed class AgentSimulationThread : IDisposable
 								_cropGrowthTimer = 0f;
 							}
 
-							// Почвенная влага: медленный тик раз в 30с игрового.
+							// Почвенная влага: медленный тик раз в 30 игровых минут.
 							// Цифры дрейфуют на единицы, у воды держится 150+.
 							// Маски — готовые bool[] (без Func-виртуала на клетку):
 							// горы/лес строим линейным проходом, грядки — flat-маской.
 							_humidityTimer += currentStepDt;
-							float humidityInterval = GetScaledIntervalHi(HumidityMap.TickIntervalGameSec, _speedMultiplier);
+							// FIX (bughunt 02-3): копим ИГРОВОЕ время для периодической
+							// пересборки масок леса/грядок (проверка — на тике влаги ниже).
+							_envMaskRebuildTimer += currentStepDt;
+							// FIX (bughunt 07-06): интервал влаги — ИГРОВОЙ, БЕЗ масштаба
+							// скоростью. Было GetScaledIntervalHi: на 100x интервал 250
+							// растягивался до ~2441 геймсек, и за игровой день почва
+							// получала ~5 тиков вместо 48 — физика почвы зависела от
+							// выбранной скорости игры. Сигнатуру Tick не меняем: догоняем
+							// прошедшие интервалы N повторами (N ≤ MaxSoilTickRepeatsPerPass).
+							float humidityInterval = HumidityMap.TickIntervalGameSec;
 							if (_humidityTimer >= humidityInterval && _ctx?.Humidity != null)
 							{
-								_humidityTimer = 0f;
+								// В норме 1 интервал (проверка идёт каждый суб-степ);
+								// кап 8 — защита от залипания на дорогом проходе по 262k клеток.
+								int humidityRepeats = 0;
+								while (_humidityTimer >= humidityInterval
+									&& humidityRepeats < MaxSoilTickRepeatsPerPass)
+								{
+									_humidityTimer -= humidityInterval;
+									humidityRepeats++;
+								}
 								using (GameProfiler.ScopeCustom("Simulation.Humidity"))
 								{
 								var humidityMap = _ctx.Humidity;
@@ -450,9 +626,12 @@ public sealed class AgentSimulationThread : IDisposable
 								int mh = humidityMap.Height;
 								EnsureEnvironmentalMasks(mw, mh, ground);
 
-								// Кеширование масок (PLAN.md §44): сканирование 262k клеток леса и грядок
-								// выполняется ТОЛЬКО при реальном изменении (вырубка/посадка), а не каждый тик!
-								if (_environmentalMasksDirty)
+								// Маски (PLAN.md §44): dirty-флаг из хендлеров никто не
+								// поднимает (FIX 02-3), поэтому пересобираем их ещё и
+								// периодически, раз в EnvMaskRebuildIntervalGameSec игровых
+								// секунд — иначе маска «замерзает» на старте сессии.
+								if (_environmentalMasksDirty
+									|| _envMaskRebuildTimer >= EnvMaskRebuildIntervalGameSec)
 								{
 									Array.Clear(_reusableForestMask, 0, _reusableForestMask.Length);
 									int gw = ground.GetLength(0);
@@ -474,24 +653,39 @@ public sealed class AgentSimulationThread : IDisposable
 									}
 									FarmJobManager.Instance.FillGardenBedFlatMask(_reusableFarmMask, mw, mh);
 									_environmentalMasksDirty = false;
+									_envMaskRebuildTimer = 0f;
 								}
 
 								// Сезон от дня года (п.19.5-П5): лето −1, зима +1.
-								// День года из мирового времени (сутки = 500 геймсек).
-								float dayOfYear = (GameTimeSeconds / 500f) % 360f;
-								float season = MathF.Sin(dayOfYear / 360f * MathF.PI * 2f - MathF.PI / 2f);
-								humidityMap.Tick(ground, _staticMountainMask, _reusableForestMask, _reusableFarmMask, _staticMountainMask, season);
+								// FIX (bughunt 07-02): день года — из СУТОК
+								// (WorldTime.SecondsPerDay = 12000), а не из часов (/500):
+								// было 360 часов = 15 суток на цикл сезона вместо 360.
+								double dayOfYear = (_gameTimeSecondsAccum / WorldTime.SecondsPerDay) % 360.0;
+								float season = MathF.Sin((float)(dayOfYear / 360.0 * Math.PI * 2.0) - MathF.PI / 2f);
+								for (int r = 0; r < humidityRepeats; r++)
+									humidityMap.Tick(ground, _staticMountainMask, _reusableForestMask, _reusableFarmMask, _staticMountainMask, season);
 								}
 							}
 
-							// Плодородие почвы: тик раз в 60с игрового, в 2 раза реже
+							// Плодородие почвы: тик раз в 60 игровых минут, в 2 раза реже
 							// влаги. Лес удобряет, огород истощает, вода/горы = 0.
 							// Маски леса/грядок переиспользуем с humidity-тика выше.
 							_fertilityTimer += currentStepDt;
-							float fertilityInterval = GetScaledIntervalHi(FertilityMap.TickIntervalGameSec, _speedMultiplier);
+							// FIX (bughunt 07-06): интервал плодородия — тоже ИГРОВОЙ, без
+							// масштаба скоростью. FertilityMap.Tick не трогаем (его сигнатура
+							// без dt и файл не в этой задаче) — догоняем прошедшие интервалы
+							// повторами, как и у влаги; за игровой день число тиков одинаково
+							// при любой скорости.
+							float fertilityInterval = FertilityMap.TickIntervalGameSec;
 							if (_fertilityTimer >= fertilityInterval && _ctx?.Fertility != null)
 							{
-								_fertilityTimer = 0f;
+								int fertilityRepeats = 0;
+								while (_fertilityTimer >= fertilityInterval
+									&& fertilityRepeats < MaxSoilTickRepeatsPerPass)
+								{
+									_fertilityTimer -= fertilityInterval;
+									fertilityRepeats++;
+								}
 								using (GameProfiler.ScopeCustom("Simulation.Fertility"))
 								{
 								var fertilityMap = _ctx.Fertility;
@@ -499,7 +693,8 @@ public sealed class AgentSimulationThread : IDisposable
 								int fw = fertilityMap.Width;
 								int fh = fertilityMap.Height;
 								EnsureEnvironmentalMasks(fw, fh, ground);
-								fertilityMap.Tick(ground, _reusableForestMask, _reusableFarmMask);
+								for (int r = 0; r < fertilityRepeats; r++)
+									fertilityMap.Tick(ground, _reusableForestMask, _reusableFarmMask);
 								}
 							}
 
@@ -519,7 +714,13 @@ public sealed class AgentSimulationThread : IDisposable
 								// §119 P1/P2: репуш непокрытых (30с) + чистка мёртвых работ
 								// из очередей зон + истёкший 60с-холд Worker'ов. Throttle
 								// 1р/2с внутри (как у SweepStockpileHaulJobs).
-								ZoneJobRouter.Instance.Sweep(RouterNowMs());
+								// J-04: работа роутера обязана быть видна в профиле —
+								// раньше Sweep звался без ScopeCustom, и на 70k-ферме
+								// его стоимость (сотни тысяч операций) не попадала в отчёт.
+								using (GameProfiler.ScopeCustom("Simulation.ZoneRouterSweep"))
+								{
+									ZoneJobRouter.Instance.Sweep(RouterNowMs());
+								}
 								JobDispatcher.Instance.DispatchPendingJobs(_pool, _ctx, dispatchScale);
 								// GPU-трек удалён: агенты идут локальным BFS
 								// (FlowFieldManager.CalculateLocalDetourDirection).
@@ -544,17 +745,11 @@ public sealed class AgentSimulationThread : IDisposable
 								{
 									ConstructionManager.Instance.ReconcileTick(_ctx);
 								}
-							}
-
-							// Аудит работ по РЕАЛЬНОМУ времени: раз в 30с порциями
-							// (только marked-клетки, не вся карта). На паузе не тикает.
-							_jobAuditRealTimer += realDelta;
-							if (_jobAuditRealTimer >= JobValidator.AuditIntervalRealSec)
-							{
-								_jobAuditRealTimer = 0f;
-								using (GameProfiler.ScopeCustom("Simulation.JobAudit"))
+								// task-20: производство по потребности — у станции есть
+								// рецепт и входы → регистрируем работу, входов нет → снимаем.
+								using (GameProfiler.ScopeCustom("Simulation.Production"))
 								{
-									jobAuditFixedTotal += JobValidator.Instance.Tick(_pool, _ctx);
+									ProductionManager.Instance.Tick(_ctx);
 								}
 							}
 
@@ -595,10 +790,32 @@ public sealed class AgentSimulationThread : IDisposable
 						// P0-3: скоуп — CallDeferred-пачка была невидимкой в дырке.
 						using (GameProfiler.ScopeCustom("Simulation.EventThrottle"))
 						{
-							StockpileManager.Instance.TickEventThrottle(currentStepDt);
+							// FIX (bughunt 07-05): троттлинг измеряется в РЕАЛЬНЫХ секундах,
+							// поэтому кормим его realDelta (время всего прохода петли), а не
+							// currentStepDt — игровым квантом 0.05/0.2/0.5. На 100x квант 0.5 >
+							// порога 0.2, и пачка CallDeferred уходила на КАЖДОМ проходе
+							// (до ~150 пачек/с) вместо задуманных ~5.
+							StockpileManager.Instance.TickEventThrottle(realDelta);
 						}
 					}
+				}
 
+				// FIX (bughunt 07-04): аудит работ идёт по РЕАЛЬНОМУ времени и обязан
+				// начисляться на КАЖДОМ проходе петли, а не только когда steps > 0.
+				// Было: инкремент стоял внутри if (steps > 0); на 1x (dt=0.05) шаг
+				// набегает за 4–8 проходов, и за реальную секунду таймер получал
+				// ~0.12–0.31 с — JobValidator срабатывал в 3–8 раз реже заявленных
+				// 30 с. Один раз за итерацию (не в цикле суб-степов), на паузе не
+				// тикает: ветка IsPaused выходит выше, до расчёта realDelta.
+				_jobAuditRealTimer += realDelta;
+				if (_jobAuditRealTimer >= JobValidator.AuditIntervalRealSec)
+				{
+					_jobAuditRealTimer = 0f;
+					int jobAuditFixedTotal = 0;
+					using (GameProfiler.ScopeCustom("Simulation.JobAudit"))
+					{
+						jobAuditFixedTotal += JobValidator.Instance.Tick(_pool, _ctx);
+					}
 					if (jobAuditFixedTotal > 0)
 						GD.Print($"[JobValidator] исправлено работ: {jobAuditFixedTotal}");
 				}
@@ -853,13 +1070,32 @@ public sealed class AgentSimulationThread : IDisposable
 		var index = JobDispatcher.Instance.JobIndex;
 		var idle = JobDispatcher.Instance.IdleWorkers;
 		const int chunkDim = JobSpatialPyramid.ChunkGridDim;
+		int chunkCount = chunkDim * chunkDim;
+
+		// J-23: бездельников считаем по ФАКТИЧЕСКИМ координатам агентов.
+		// Раньше здесь звался idle.CollectIdleWorkersInChunk(ci, ...) на каждый чанк, а
+		// у плоского пула этот метод возвращает ОДИН И ТОТ ЖЕ список бездельников на
+		// любой чанк (и вдобавок двигает курсор ротации забора батча). Отчёт из-за
+		// этого врал: «бездельники есть в каждом чанке», «чанков с работами и без
+		// бездельников» — всегда 0, то есть главный симптом «полос» маскировался.
+		// Аллокация на отчёт допустима: он вызывается вручную по диагностике.
+		var idlePerChunk = new int[chunkCount];
+		int capacity = _pool.Capacity;
+		for (int a = 0; a < capacity; a++)
+		{
+			if (_pool.States[a] != AgentState.Idle)
+				continue;
+			int ci = JobSpatialPyramid.GetChunkIndexStatic(_pool.CurrentCellX[a], _pool.CurrentCellY[a]);
+			if ((uint)ci < (uint)chunkCount)
+				idlePerChunk[ci]++;
+		}
+
 		int chunksWithJobs = 0, chunksWithIdle = 0, chunksJobsNoIdle = 0;
 		long jobsInNoIdleChunks = 0, idleInJobChunks = 0;
-		int[] buf = _diagIdleBuf;
-		for (int ci = 0; ci < chunkDim * chunkDim; ci++)
+		for (int ci = 0; ci < chunkCount; ci++)
 		{
 			int jobs = index.GetChunkJobCount(ci);
-			int workers = idle.CollectIdleWorkersInChunk(ci, buf.Length, buf, _pool);
+			int workers = idlePerChunk[ci];
 			if (jobs > 0)
 			{
 				chunksWithJobs++;
@@ -1140,10 +1376,10 @@ public sealed class AgentSimulationThread : IDisposable
 			return;
 		}
 
-		// §119 P2: прерывание РАБОТАЮЩЕГО Worker'а нуждами (+5 гистерезис).
+		// §119 P2 / GD-11: прерывание РАБОТАЮЩЕГО агента (Worker или Laborer) нуждами (+5 гистерезис).
 		// Тайм-слайсинг (i & 3) == tickBucket — как у диспатчера.
 		if (state != AgentState.Idle && state != AgentState.Evacuating
-			&& _pool.Classes[i] == AgentClass.Worker
+			&& (_pool.Classes[i] == AgentClass.Worker || _pool.Classes[i] == AgentClass.Laborer)
 			&& _pool.NeedsBehavior[i] == NeedBehavior.None
 			&& (i & 3) == tickBucket)
 		{
@@ -1232,8 +1468,39 @@ public sealed class AgentSimulationThread : IDisposable
 	/// <summary>Ближе этого (пиксели) цели не трогаем — агента у самой цели разбирает штатный Commit.</summary>
 	private const float UnreachableMinTargetDistPx = 48f;
 
+	/// <summary>
+	/// J-08: сколько игровых секунд агент с wp-маршрутом может НЕ потреблять
+	/// waypoint'ы, прежде чем маршрут считается зацикленным. Прямую дистанцию до
+	/// цели для wp-агентов использовать нельзя (обход препятствия законно её
+	/// увеличивает), но «ни один waypoint не израсходован» — честный признак
+	/// отсутствия прогресса: маршрут из двух точек туда-обратно, waypoint в воде
+	/// или в стене не потребляются никогда.
+	/// </summary>
+	private const float WaypointStallSeconds = 12f;
+
+	/// <summary>
+	/// J-09: сколько игровых секунд агент может провести в Evacuating (миграция по
+	/// нуждам), прежде чем поведение снимается принудительно. Единственным сторожем
+	/// был StuckTimer, а он про нулевую скорость: в плотной толпе агента непрерывно
+	/// толкают, он двигается, StuckTimer не растёт — и агент минутами висит в
+	/// Evacuating: работу не берёт, в пул бездельников не попадает, числится занятым.
+	/// </summary>
+	private const float EvacMaxSeconds = 20f;
+
+	/// <summary>J-09: секунды в Evacuating (индекс = агент).</summary>
+	private float[] _evacSeconds;
+
 	/// <summary>Игровые секунды без прогресса к цели (индекс = агент).</summary>
 	private float[] _noProgressSeconds;
+
+	/// <summary>J-08: сколько секунд wp-маршрут не потреблял waypoint'ы (индекс = агент).</summary>
+	private float[] _waypointStallSeconds;
+
+	/// <summary>J-08: последнее наблюдённое число waypoint'ов (индекс = агент).</summary>
+	private int[] _lastWaypointCount;
+
+	/// <summary>J-07: накопитель секунд до публикации счётчиков занятости в SimStats.</summary>
+	private float _statsPublishTimer;
 
 	/// <summary>Лучшая (минимальная) дистанция до цели с последнего прогресса, px.</summary>
 	private float[] _bestTargetDistPx;
@@ -1260,6 +1527,9 @@ public sealed class AgentSimulationThread : IDisposable
 			_noProgressSeconds = new float[count];
 			_bestTargetDistPx = new float[count];
 			Array.Fill(_bestTargetDistPx, float.MaxValue);
+			_waypointStallSeconds = new float[count];
+			_lastWaypointCount = new int[count];
+			_evacSeconds = new float[count];
 		}
 
 		float dt = deltaTime * 4f;
@@ -1267,15 +1537,76 @@ public sealed class AgentSimulationThread : IDisposable
 		{
 			AgentState state = _pool.States[i];
 
-			// Только идущие К ЦЕЛИ ЗАДАЧИ и только БЕЗ маршрута waypoints:
-			// при следовании по waypoints агент законно обходит препятствие, и
-			// дистанция до цели по прямой может временно расти — это не «застрял».
-			if ((state != AgentState.MovingToSource && state != AgentState.MovingToTarget)
-				|| _pool.CurrentJobId[i] < 0
-				|| _pool.WaypointCount[i] > 0)
+			bool isMovingToTask = state == AgentState.MovingToSource || state == AgentState.MovingToTarget;
+			int wpCount = _pool.WaypointCount[i];
+
+			// J-09: сторож Evacuating. Раньше у этого состояния не было сторожа
+			// прогресса вообще: агент, которого толкают в толпе, двигается, поэтому
+			// StuckTimer не растёт, Commit не завершает поведение — и агент минутами
+			// висит «занятым», не беря работу. По истечении EvacMaxSeconds поведение
+			// снимаем принудительно и возвращаем агента по его классу.
+			if (state == AgentState.Evacuating)
+			{
+				_evacSeconds[i] += dt;
+				if (_evacSeconds[i] >= EvacMaxSeconds)
+				{
+					_evacSeconds[i] = 0f;
+					_pool.NeedsBehavior[i] = NeedBehavior.None;
+					_pool.States[i] = AgentState.Idle;
+					_pool.WaypointCount[i] = 0;
+					_pool.WaypointIndex[i] = 0;
+					_pool.JobSearchTimer[i] = 0f;
+					JobDispatcher.ReturnAgentAfterJob(i, _pool);
+				}
+				_noProgressSeconds[i] = 0f;
+				_bestTargetDistPx[i] = float.MaxValue;
+				_waypointStallSeconds[i] = 0f;
+				_lastWaypointCount[i] = wpCount;
+				continue;
+			}
+			_evacSeconds[i] = 0f;
+
+			// J-08: агенты С wp-маршрутом раньше пропускались целиком, и зацикленный
+			// маршрут (два waypoint'а туда-обратно, waypoint в стене/воде) не снимался
+			// никогда: StuckTimer растёт только при нулевом смещении, а такой агент
+			// двигается. Именно это давало 200–300 «работа.т» без работы. Теперь для
+			// них работает отдельный счётчик: прогресс = потребление waypoint'ов.
+			if (isMovingToTask && _pool.CurrentJobId[i] >= 0 && wpCount > 0)
 			{
 				_noProgressSeconds[i] = 0f;
 				_bestTargetDistPx[i] = float.MaxValue;
+
+				if (wpCount < _lastWaypointCount[i])
+					_waypointStallSeconds[i] = 0f;       // маршрут реально продвинулся
+				else
+					_waypointStallSeconds[i] += dt;
+
+				_lastWaypointCount[i] = wpCount;
+
+				if (_waypointStallSeconds[i] >= WaypointStallSeconds)
+				{
+					_waypointStallSeconds[i] = 0f;
+					try
+					{
+						JobDispatcher.Instance.ReleaseJobWorkerForStuck(i, _pool, _ctx, UnreachableReleaseCooldownMs);
+					}
+					catch (Exception ex)
+					{
+						GD.PrintErr($"[UnreachableWatchdog] снятие зацикленного wp-маршрута #{i}: {ex.Message}");
+					}
+				}
+				continue;
+			}
+
+			// Только идущие К ЦЕЛИ ЗАДАЧИ и только БЕЗ маршрута waypoints:
+			// при следовании по waypoints агент законно обходит препятствие, и
+			// дистанция до цели по прямой может временно расти — это не «застрял».
+			if (!isMovingToTask || _pool.CurrentJobId[i] < 0)
+			{
+				_noProgressSeconds[i] = 0f;
+				_bestTargetDistPx[i] = float.MaxValue;
+				_waypointStallSeconds[i] = 0f;
+				_lastWaypointCount[i] = wpCount;
 				continue;
 			}
 
@@ -1323,6 +1654,51 @@ public sealed class AgentSimulationThread : IDisposable
 		}
 	}
 
+	/// <summary>
+	/// J-07: честные счётчики занятости вместо `население − бездельники`.
+	/// Раз в секунду (HUD всё равно обновляет строку раз в секунду) проходим пул и
+	/// считаем фактическое состояние: сколько агентов реально держат работу, сколько
+	/// Idle, сколько эвакуируются. O(N) на 2k агентов — микросекунды, и это дешевле,
+	/// чем врать в HUD на сотни «работа.т».
+	/// </summary>
+	private void PublishEmploymentStats(float deltaTime, int count)
+	{
+		_statsPublishTimer += deltaTime;
+		if (_statsPublishTimer < 1f)
+			return;
+		_statsPublishTimer = 0f;
+
+		int working = 0;
+		int idle = 0;
+		int evacuating = 0;
+		int starving = 0;
+		for (int i = 0; i < count; i++)
+		{
+			if (_pool.Hunger[i] >= 80f)
+				starving++;
+
+			AgentState st = _pool.States[i];
+			if (st == AgentState.Evacuating)
+			{
+				evacuating++;
+				continue;
+			}
+			if (st == AgentState.Idle)
+			{
+				idle++;
+				continue;
+			}
+			if (_pool.CurrentJobId[i] >= 0)
+				working++;
+		}
+
+		SimStats.Population = count;
+		SimStats.WorkingWithJob = working;
+		SimStats.Idle = idle;
+		SimStats.Evacuating = evacuating;
+		SimStats.Starving = starving;
+	}
+
 	private void Phase3b_SequentialCommit(float deltaTime, bool rebuildSpatialGrid)
 	{
 		using (GameProfiler.Scope())
@@ -1332,6 +1708,9 @@ public sealed class AgentSimulationThread : IDisposable
 			// Баг #3: снять задачи с физически недостижимыми целями ДО коммита
 			// (последовательно, sim-поток) — иначе агент вечно идёт «прямо» в реку.
 			WatchdogUnreachableTargets(deltaTime);
+
+			// J-07: публикуем честные счётчики занятости для HUD (раз в секунду).
+			PublishEmploymentStats(deltaTime, count);
 
 			// P1: разбивка для оверлея — видно, где сидят 7.3с: Rebuild или Commit.
 			// ScopeCustom вне горячего цикла: один Scope на фазу, не на агента.
@@ -1349,10 +1728,15 @@ public sealed class AgentSimulationThread : IDisposable
 			// Commit — дорого (TakeItems/SpawnItems/Release под lock'ами).
 			// Fast-path: если нет задач в мире или все агенты свободны — коммитить нечего!
 			int totalJobs = JobDispatcher.Instance.JobIndex.TotalCount;
-			int totalIdle = JobDispatcher.Instance.IdleWorkers.TotalIdleCount;
+			// B-08: idle-пул и пул агентов — НЕЗАВИСИМЫЕ счётчики, и разность между
+			// ними обязана клампиться. При TotalIdleCount > Capacity (stale-записи
+			// предыдущего запуска с большей популяцией/будущий баг аддитивности)
+			// busyWorkers уходил в минус, и коммит ниже отключался ЦЕЛИКОМ: агенты
+			// ходят к цели, но никогда не завершают работу, работы копятся.
+			int totalIdle = Math.Clamp(JobDispatcher.Instance.IdleWorkers.TotalIdleCount, 0, count);
 			int busyWorkers = count - totalIdle;
 
-			if (totalJobs > 0 && busyWorkers > 0)
+			if (busyWorkers > 0)
 			{
 				using (GameProfiler.ScopeCustom("Simulation.Phase3b_Commit"))
 				{
@@ -1406,9 +1790,16 @@ public sealed class AgentSimulationThread : IDisposable
 	private void PushSnapshot()
 	{
 		// Finding 6 & PERF: ring из 4 буферов вместо постоянного new Vector2[10000] (80 КБ на 30-60 Гц = Gen2 GC спайки).
-		// Резерв очереди = 2, ротация = 4: гарантия полного отсутствия race/tearing с консьюмером.
+		// B-07: ротация + cap очереди больше НЕ единственная защита — слот захватывается
+		// CAS-ом и не переиспользуется, пока потребитель не вернул его ReleaseSnapshot.
 		int slot = _posSnapCursor % 4;
 		_posSnapCursor++;
+
+		// Слот занят читателем: лучше пропустить публикацию (кадр рендера переживёт),
+		// чем перезаписать буфер, из которого прямо сейчас копирует главный поток.
+		if (Interlocked.CompareExchange(ref _snapBusy[slot], 1, 0) != 0)
+			return;
+
 		var snapshot = _positionSnapRing[slot];
 		if (snapshot == null || snapshot.Length != _pool.Capacity)
 		{
@@ -1418,14 +1809,18 @@ public sealed class AgentSimulationThread : IDisposable
 
 		_pool.CopyPositionsTo(snapshot);
 
-		PositionQueue.Enqueue(snapshot);
-		while (PositionQueue.Count > 2)
-			PositionQueue.TryDequeue(out _);
+		PositionQueue.Enqueue(new PositionSnapshot(snapshot, slot));
+		// Вытесненные снапшоты потребитель уже не получит — их слоты возвращаем сразу.
+		// (Если потребитель успел забрать снапшот, его в очереди нет, и слот освободит он.)
+		while (PositionQueue.Count > 2 && PositionQueue.TryDequeue(out var stale))
+			ReleaseSnapshot(stale.Slot);
 	}
 
 	public bool Stop(int timeoutMs = 5000)
 	{
 		_running = false;
+		if (Instance == this)
+			Instance = null;
 		bool cleanStop = true;
 		try
 		{

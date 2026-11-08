@@ -4,8 +4,11 @@ using Game.Core.WorldStreaming;
 namespace Game.Core.WorldClimate;
 
 /// <summary>
-/// 20 параметров генерации МИРОВОЙ КАРТЫ. Все выводятся детерминированно из
+/// 19 параметров генерации МИРОВОЙ КАРТЫ. Все выводятся детерминированно из
 /// worldSeed — одна и та же карта при одном сиде, разная при разных.
+/// FIX (bughunt 03-10): параметр LandFraction удалён — он генерировался и
+/// печатался в дампе, но нигде не читался (нормировки доли суши не существует),
+/// т.е. был ложным обещанием.
 ///
 /// Единицы: Q16 (0..65535 == 0..1), если в комментарии не сказано иначе.
 ///
@@ -18,49 +21,55 @@ namespace Game.Core.WorldClimate;
 public readonly record struct WorldMacroClimateParams(
     /// <summary>1. Порог воды на континентальной высоте: выше — суша.</summary>
     ushort SeaLevel,
-    /// <summary>2. Желаемая доля суши (для нормировки рельефа).</summary>
-    ushort LandFraction,
-    /// <summary>3. Размер континентов: период базового шума в РЕГИОНАХ (24..72).</summary>
+    /// <summary>2. Размер континентов: период базового шума в РЕГИОНАХ (24..72).</summary>
     ushort ContinentScale,
-    /// <summary>4. Амплитуда domain-warp: бухты, фиорды, полуострова.</summary>
+    /// <summary>3. Амплитуда domain-warp: бухты, фиорды, полуострова.</summary>
     ushort CoastWarp,
-    /// <summary>5. Число тектонических плит (8..22).</summary>
+    /// <summary>4. Число тектонических плит (8..22).</summary>
     ushort PlateCount,
-    /// <summary>6. Вклад плит в рельеф (щиты/впадины).</summary>
+    /// <summary>5. Вклад плит в рельеф (щиты/впадины).</summary>
     ushort PlateStrength,
-    /// <summary>7. Горообразование на границах плит (складчатые пояса).</summary>
+    /// <summary>6. Горообразование на границах плит (складчатые пояса).</summary>
     ushort OrogenyStrength,
-    /// <summary>8. Плотность островных дуг/архипелагов вдоль границ плит.</summary>
+    /// <summary>
+    /// 7. Плотность островных дуг/архипелагов вдоль границ плит: чем выше, тем
+    /// более слабая сходимость плит уже достаточна для дуги (и тем чаще hotspot-цепи).
+    /// </summary>
     ushort IslandArcDensity,
-    /// <summary>9. Шероховатость: октавы fBm (3..6) и амплитуда мелкого шума.</summary>
+    /// <summary>8. Шероховатость: октавы fBm (3..6) и амплитуда мелкого шума.</summary>
     ushort Roughness,
-    /// <summary>10. Температура на экваторе.</summary>
+    /// <summary>9. Температура на экваторе.</summary>
     ushort EquatorTemperature,
-    /// <summary>11. Температура на полюсах.</summary>
+    /// <summary>10. Температура на полюсах.</summary>
     ushort PolarTemperature,
-    /// <summary>12. Полуширина тропического пояса в единицах широты Q16.</summary>
+    /// <summary>11. Полуширина тропического пояса в единицах широты Q16.</summary>
     ushort TropicsWidth,
-    /// <summary>13. Падение температуры с высотой (lapse rate), амплитуда.</summary>
+    /// <summary>12. Падение температуры с высотой (lapse rate), амплитуда.</summary>
     ushort LapseRate,
-    /// <summary>14. Широта пояса пустынь (Q16 от экватора; реальный максимум — субтропики).</summary>
+    /// <summary>13. Широта пояса пустынь (Q16 от экватора; реальный максимум — субтропики).</summary>
     ushort DesertBeltLatitude,
-    /// <summary>15. Базовая влажность атмосферы.</summary>
+    /// <summary>14. Базовая влажность атмосферы.</summary>
     ushort BaseMoisture,
-    /// <summary>16. Сила преобладающих ветров (перенос влаги с океана).</summary>
+    /// <summary>15. Сила преобладающих ветров (перенос влаги с океана).</summary>
     ushort WindStrength,
-    /// <summary>17. Орошающий/дождевой барьерный эффект хребтов (rain shadow).</summary>
+    /// <summary>16. Орошающий/дождевой барьерный эффект хребтов (rain shadow).</summary>
     ushort RainShadowStrength,
-    /// <summary>18. Сухость внутренних областей материков (континентальность).</summary>
+    /// <summary>17. Сухость внутренних областей материков (континентальность).</summary>
     ushort ContinentalityDry,
-    /// <summary>19. Влияние тёплых/холодных океанских течений на береговую влажность.</summary>
+    /// <summary>18. Влияние тёплых/холодных океанских течений на береговую влажность.</summary>
     ushort OceanCurrentStrength,
-    /// <summary>20. Порог/сила ледников и снежного покрова у полюсов.</summary>
+    /// <summary>19. Порог/сила ледников и снежного покрова у полюсов.</summary>
     ushort IceCapStrength)
 {
     /// <summary>Количество параметров (для диагностики/дампов).</summary>
-    public const int Count = 20;
+    public const int Count = 19;
 
-    /// <summary>Домены-лейны для вывода параметров из сида (0..Count-1).</summary>
+    /// <summary>
+    /// Домены-лейны для вывода параметров из сида. FIX (bughunt 03-10): лейн 1
+    /// намеренно НЕ используется (был у LandFraction) — нумерация остальных
+    /// лейнов сохранена, иначе сдвинулись бы значения всех параметров и мир
+    /// изменился бы без причины. Фактические лейны: 0, 2..19.
+    /// </summary>
     private static ushort Range(ulong worldSeed, int lane, int min, int max)
     {
         ulong h = CoordinateHash.Hash(worldSeed, 0u, GenerationDomain.ClimateParams, lane, 0L);
@@ -97,14 +106,16 @@ public readonly record struct WorldMacroClimateParams(
     {
         WorldArchetype arch = GetArchetype(worldSeed);
 
-        ushort seaLevel, landFraction, contScale, coastWarp, plateCount, plateStrength;
+        ushort seaLevel, contScale, coastWarp, plateCount, plateStrength;
         ushort orogenyStrength, islandArcs, roughness, baseMoist, contDry;
 
+        // FIX (bughunt 03-10): LandFraction удалён (генерировался, но не читался).
+        // Лейн 1 больше не занят; остальные лейны не перенумерованы — от них
+        // зависят значения параметров (см. комментарий у Range).
         switch (arch)
         {
             case WorldArchetype.Pangaea:
                 seaLevel = Range(worldSeed, 0, 27000, 33000);
-                landFraction = Range(worldSeed, 1, 48000, 58000);
                 contScale = Range(worldSeed, 2, 500, 850);
                 coastWarp = Range(worldSeed, 3, 10000, 22000);
                 plateCount = Range(worldSeed, 4, 6, 12);
@@ -118,7 +129,6 @@ public readonly record struct WorldMacroClimateParams(
 
             case WorldArchetype.Archipelago:
                 seaLevel = Range(worldSeed, 0, 42000, 50000);
-                landFraction = Range(worldSeed, 1, 18000, 28000);
                 contScale = Range(worldSeed, 2, 36, 90);
                 coastWarp = Range(worldSeed, 3, 16000, 34000);
                 plateCount = Range(worldSeed, 4, 18, 32);
@@ -132,7 +142,6 @@ public readonly record struct WorldMacroClimateParams(
 
             case WorldArchetype.InlandSeas:
                 seaLevel = Range(worldSeed, 0, 32000, 38000);
-                landFraction = Range(worldSeed, 1, 42000, 52000);
                 contScale = Range(worldSeed, 2, 250, 500);
                 coastWarp = Range(worldSeed, 3, 20000, 38000);
                 plateCount = Range(worldSeed, 4, 14, 24);
@@ -146,7 +155,6 @@ public readonly record struct WorldMacroClimateParams(
 
             default: // WorldArchetype.Continents
                 seaLevel = Range(worldSeed, 0, 31000, 37000);
-                landFraction = Range(worldSeed, 1, 36000, 46000);
                 contScale = Range(worldSeed, 2, 220, 420);
                 coastWarp = Range(worldSeed, 3, 12000, 26000);
                 plateCount = Range(worldSeed, 4, 10, 18);
@@ -161,7 +169,6 @@ public readonly record struct WorldMacroClimateParams(
 
         return new WorldMacroClimateParams(
             SeaLevel:             seaLevel,
-            LandFraction:         landFraction,
             ContinentScale:       contScale,
             CoastWarp:            coastWarp,
             PlateCount:           plateCount,
@@ -184,7 +191,7 @@ public readonly record struct WorldMacroClimateParams(
 
     /// <summary>Человекочитаемый дамп (диагностика/HUD).</summary>
     public override string ToString()
-        => $"sea={SeaLevel} land={LandFraction} contScale={ContinentScale} warp={CoastWarp} " +
+        => $"sea={SeaLevel} contScale={ContinentScale} warp={CoastWarp} " +
            $"plates={PlateCount} plateStr={PlateStrength} orogeny={OrogenyStrength} arcs={IslandArcDensity} " +
            $"rough={Roughness} Teq={EquatorTemperature} Tpol={PolarTemperature} tropW={TropicsWidth} " +
            $"lapse={LapseRate} desertLat={DesertBeltLatitude} moist={BaseMoisture} wind={WindStrength} " +

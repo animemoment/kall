@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using Game.Core;
 using Game.Core.WorldStreaming.Integration;
+// L-03: нарушение слоёв (core → simulation/ui) — правило и список см. docs/ARCHITECTURE.md §7.1
 using Game.Simulation;
 
 namespace Game.Core.WorldStreaming.Mutation;
@@ -57,26 +59,34 @@ public static class IslandStateReplay
     /// <summary>
     /// Восстановить состояние колонии из дельт стора в менеджерах домена.
     /// originX/originY — мировой origin зоны (UnifiedWorldGenerator.WorldOriginX/Y).
+    /// <paramref name="writeLog"/> = false — для headless-стендов без запущенного
+    /// движка (GD.Print/GD.PushWarning вне движка роняют процесс); на результат
+    /// реплея не влияет.
     /// </summary>
-    public static IslandStateReplayResult Replay(IslandOverrideStore store, long originX, long originY)
+    public static IslandStateReplayResult Replay(IslandOverrideStore store, long originX, long originY,
+        bool writeLog = true)
     {
         if (store == null)
             return new IslandStateReplayResult(0, 0, 0, 0, 0, 0, 0);
 
-        long maxX = originX + ActiveArea.Size - 1;
-        long maxY = originY + ActiveArea.Size - 1;
-
         var cells = new List<(byte Kind, long CellX, long CellY)>(store.Count);
-        store.Enumerate(originX, originY, maxX, maxY, 0, cells);
+        // ST-37: перечисляем все дельты стора без отсечения по ActiveArea.Size (охват стриминга и объектов за кромкой 1024)
+        store.Enumerate(long.MinValue, long.MinValue, long.MaxValue, long.MaxValue, 0, cells);
 
         // --- 1. Доменные метки (занятость) — идемпотентный повтор фазы 5. ---
+        // P0 (bughunt 04-1): доменные менеджеры (стены/здания/склады/грядки/планы)
+        // работают в ЛОКАЛЬНЫХ координатах острова, а стор хранит МИРОВЫЕ клетки.
         var domainCells = new List<(byte Kind, long X, long Y)>();
         foreach ((byte kind, long x, long y) in cells)
         {
             if (kind == WorldDeltaKind.GroundItems)
                 continue; // «массивный» вид — не домен
-            if (IslandDomainReplay.IsDomainKind(kind))
-                domainCells.Add((kind, x, y));
+            if (!IslandDomainReplay.IsDomainKind(kind))
+                continue;
+            long lx = x - originX;
+            long ly = y - originY;
+            // ST-37: не отсекаем дельты за пределами ActiveArea.Size
+            domainCells.Add((kind, lx, ly));
         }
         (int domainApplied, int domainSkipped) = IslandDomainReplay.ReplayAll(domainCells, null);
 
@@ -87,8 +97,7 @@ public static class IslandStateReplay
         {
             int x = checked((int)(wx - originX));
             int y = checked((int)(wy - originY));
-            if (x < 0 || y < 0 || x >= ActiveArea.Size || y >= ActiveArea.Size)
-                continue;
+            // ST-37: не отсекаем дельты и предметы за пределами ActiveArea.Size
             store.TryGet(kind, wx, wy, out byte[] payload);
             try
             {
@@ -98,15 +107,21 @@ public static class IslandStateReplay
                     {
                         if (!IslandPayload.TryReadStockpile(payload, out ItemId item, out int count))
                             break; // пустой слот/битый payload — занятость уже восстановлена
+                        // L-03: нарушение слоёв (core → simulation/ui) — правило и список см. docs/ARCHITECTURE.md §7.1
                         StockpileManager.Instance.RestoreSlotRaw(x, y, item, count);
                         storageSlots++;
                         break;
                     }
                     case WorldDeltaKind.Crop:
                     {
-                        if (!IslandPayload.TryReadCrop(payload, out int stage, out float timer, out int zoneId))
+                        if (!IslandPayload.TryReadCrop(payload, out int stage, out float timer, out int zoneId, out CropType cropType))
                             break; // готовая грядка без культуры — метка уже реплеена
-                        CropGrowthManager.Instance.RestoreCrop(x, y, zoneId, stage, timer);
+                        // Старые дельты (schema v1) и payload с type=0 не знают культуру —
+                        // берём её у farm-зоны (клетка → зона, затем сохранённый zoneId),
+                        // иначе пшеница. Без исключений.
+                        if (cropType == CropType.None)
+                            cropType = ResolveCropForZone(x, y, zoneId);
+                        CropGrowthManager.Instance.RestoreCrop(x, y, zoneId, stage, timer, cropType);
                         crops++;
                         break;
                     }
@@ -115,6 +130,7 @@ public static class IslandStateReplay
                     {
                         if (!IslandPayload.TryReadBuildPlan(payload, out var stage, out var delivered, out float wp))
                             break; // null payload = свежий план (дефолт фазы 5 уже применён)
+                        // L-03: нарушение слоёв (core → simulation/ui) — правило и список см. docs/ARCHITECTURE.md §7.1
                         ConstructionSite site = ConstructionManager.Instance.TryGetSite(x, y, out var s) ? s : null;
                         if (site == null)
                             break; // сайт сорвался (занятость важнее) — не критично
@@ -141,6 +157,7 @@ public static class IslandStateReplay
                     {
                         if (IslandPayload.TryReadProgressFraction(payload, out float f) && f > 0f)
                         {
+                            // L-03: нарушение слоёв (core → simulation/ui) — правило и список см. docs/ARCHITECTURE.md §7.1
                             TreeJobManager.Instance.ChopProgress.SaveFraction(x, y, f);
                             progress++;
                         }
@@ -159,6 +176,7 @@ public static class IslandStateReplay
                     {
                         if (!IslandPayload.TryReadGroundItems(payload, out ItemId item, out int count))
                             break;
+                        // L-03: нарушение слоёв (core → simulation/ui) — правило и список см. docs/ARCHITECTURE.md §7.1
                         GroundItemManager.Instance.SpawnItems(x, y, item, count);
                         ground++;
                         break;
@@ -168,12 +186,38 @@ public static class IslandStateReplay
             catch (Exception ex)
             {
                 // Дельта не убивает загрузку: лог + честный учёт.
-                GD.PushWarning($"[IslandStateReplay] kind=0x{kind:X2} ({x},{y}): {ex.Message}");
+                if (writeLog)
+                    GD.PushWarning($"[IslandStateReplay] kind=0x{kind:X2} ({x},{y}): {ex.Message}");
             }
         }
 
         var result = new IslandStateReplayResult(domainApplied, domainSkipped, crops, storageSlots, ground, siteState, progress);
-        GD.Print($"[World] state-replay острова: {result}");
+        if (writeLog)
+            GD.Print($"[World] state-replay острова: {result}");
         return result;
+    }
+
+    /// <summary>
+    /// Культура для клетки, у которой в payload НЕТ типа (старая схема v1 или
+    /// type=0): сначала смотрим, какой farm-зоне принадлежит САМА КЛЕТКА (устойчиво
+    /// к перенумерации зон при загрузке), затем — зону по сохранённому zoneId.
+    /// Если зон ещё нет (RestoreZonesFromDisk идёт ПОСЛЕ state-replay) или это не
+    /// Farm-зона — честный дефолт Wheat. Никаких исключений наружу.
+    /// </summary>
+    private static CropType ResolveCropForZone(int x, int y, int zoneId)
+    {
+        try
+        {
+            if (FarmZoneManager.Instance.TryGetZoneAt(x, y, out var byCell) && byCell != null)
+                return byCell.Crop;
+            if (zoneId >= 0
+                && FarmZoneManager.Instance.TryGetZoneById(zoneId, out var byId) && byId != null)
+                return byId.Crop;
+        }
+        catch (Exception)
+        {
+            // Дельта не должна убивать загрузку из-за отказа фасада зон.
+        }
+        return CropType.Wheat;
     }
 }

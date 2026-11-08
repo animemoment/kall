@@ -15,8 +15,71 @@ public static class ParallelRng
     [ThreadStatic]
     private static ulong _state;
 
+    /// <summary>
+    /// B-09: базовое зерно прогона. -1 = не задано (историческое поведение:
+    /// зерно из TickCount, детерминизма нет и быть не может).
+    /// Задаётся один раз на прогон/тест через <see cref="SetBaseSeed"/>, после чего
+    /// параллельные фазы обязаны вызвать <see cref="Fork"/> со стабильным номером
+    /// потока/диапазона — тогда последовательность значений воспроизводима.
+    /// </summary>
+    private static long _baseSeed = -1;
+
+    /// <summary>true, если задано базовое зерно (значит Fork даёт воспроизводимость).</summary>
+    public static bool Deterministic => Volatile.Read(ref _baseSeed) >= 0;
+
+    /// <summary>
+    /// B-09: зафиксировать зерно прогона. Сбрасывает ThreadStatic-состояние
+    /// вызывающего потока, иначе между прогонами тянулся бы старый xorshift-хвост.
+    /// </summary>
+    public static void SetBaseSeed(ulong seed)
+    {
+        Interlocked.Exchange(ref _baseSeed, (long)(seed == 0 ? 0x9E3779B97F4A7C15UL : seed));
+        _state = 0;
+    }
+
+    /// <summary>B-09: вернуть недетерминированный фолбэк (поведение по умолчанию).</summary>
+    public static void ClearBaseSeed()
+    {
+        Interlocked.Exchange(ref _baseSeed, -1);
+        _state = 0;
+    }
+
+    /// <summary>
+    /// B-09: сбросить состояние потока. Нужно на границе фаз/прогонов: [ThreadStatic]
+    /// живёт вместе с потоком и без сброса переносил хвост предыдущего прогона.
+    /// </summary>
+    public static void ResetThreadState() => _state = 0;
+
+    /// <summary>
+    /// B-09: создать детерминированный поток значений для конкретного воркера.
+    /// <paramref name="streamId"/> — стабильный номер (индекс воркера или начало
+    /// диапазона), а не ManagedThreadId: пул потоков переиспользует потоки между
+    /// запусками, поэтому привязка к потоку ломала воспроизводимость.
+    /// Без заданного базового зерна метод ничего не гарантирует (как и раньше).
+    /// </summary>
+    public static void Fork(int streamId)
+    {
+        long baseSeed = Volatile.Read(ref _baseSeed);
+        if (baseSeed < 0) return; // недетерминированный режим — не трогаем состояние
+        ulong s = Mix((ulong)baseSeed, (ulong)(uint)streamId);
+        _state = s == 0 ? 0x9E3779B97F4A7C15UL : s;
+    }
+
+    private static ulong Mix(ulong a, ulong b)
+    {
+        ulong s = a ^ (b * 0x9E3779B97F4A7C15UL);
+        s ^= s >> 30; s *= 0xBF58476D1CE4E5B9UL;
+        s ^= s >> 27; s *= 0x94D049BB133111EBUL;
+        s ^= s >> 31;
+        return s;
+    }
+
     private static ulong Seed()
     {
+        long baseSeed = Volatile.Read(ref _baseSeed);
+        if (baseSeed >= 0)
+            return Mix((ulong)baseSeed, (ulong)(uint)Thread.CurrentThread.ManagedThreadId);
+
         ulong s = (ulong)(Environment.TickCount ^ (Thread.CurrentThread.ManagedThreadId * 7919));
         if (s == 0) s = 0x9E3779B97F4A7C15UL;
         // Прогрев: первые значения сырого LCG коррелируют между потоками.

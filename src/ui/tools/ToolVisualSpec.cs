@@ -1,6 +1,4 @@
 using System;
-using Godot;
-using Game.Core.WorldStreaming.Integration;
 
 namespace Game.UI.Tools;
 
@@ -36,15 +34,7 @@ public static class ToolVisualSpec
 {
     // ---- Текстуры (единственные точки ссылок; uid:// работает в ResourceLoader) ----
     public const string TexWall = "uid://chubmh2ufwgwp";                       // wooden_wall (атлас 7×7)
-    /// <summary>
-    /// Иконка склада в HUD. Для КЛЕТОК зоны используется общий рантайм-тайл
-    /// <see cref="CreateStockpileZoneTexture"/>: иконка-ящик на каждой клетке
-    /// выглядела бы как груда ящиков, а не как зона, и не совпадала бы по alpha
-    /// с мировым слоем.
-    /// </summary>
     public const string TexStockpileZone = "res://ui/assets/textures/icons/logistic_zone.png";
-    /// <summary>Маркер рантайм-текстуры в отчётах инспектора (не файл).</summary>
-    public const string RuntimeStockpileZone = "rt:stockpile_zone";
     public const string TexGardenBed = "uid://47god8qachvh";                   // грядки (terrain из сцены)
     public const string TexCorn = "res://ui/assets/textures/food/corn.png";    // фолбэк фермы (нет сцены)
     public const string TexProcessOfWork = "uid://qqhtvxqngv4a";               // «идут работы»
@@ -54,50 +44,22 @@ public static class ToolVisualSpec
     public const string TexNightstand = "uid://ir5jk74j01fg";
     public const string TexCentralBlock = "uid://dsiddo1lt1scb";
 
+    // task-16: станки отраслей (арт в ui/assets/textures/building/). Призрак и
+    // «готовый» вид в мировом рендере берут ту же текстуру, что стоит в MapRenderer.
+    public const string TexSawmill = "res://ui/assets/textures/building/sawmill.png";
+    public const string TexSmelter = "res://ui/assets/textures/building/smelter.png";
+    public const string TexAnvil = "res://ui/assets/textures/building/anvil.png";
+    public const string TexWorkbench = "res://ui/assets/textures/building/workbench.png";
+    public const string TexSpinningWheel = "res://ui/assets/textures/building/spinning.png";
+    public const string TexLoom = "res://ui/assets/textures/building/loom.png";
+    public const string TexMill = "res://ui/assets/textures/building/mill.png";
+    public const string TexAssemblyLine = "res://ui/assets/textures/building/assembly.png";
+
     /// <summary>Тонировка зоны склада (совпадает с историческим Modulate острова).</summary>
     public const float StockpileTintR = 0.65f, StockpileTintG = 0.15f,
         StockpileTintB = 0.9f, StockpileTintA = 0.45f;
 
-    /// <summary>Прозрачность слоя чертежей (§29), общая для обоих рендереров.</summary>
-    public const float PlanAlpha = 0.55f;
-
-    /// <summary>
-    /// Прозрачность СЛОЁВ чертежей (стены/постройки/грядки): ровно как у островных
-    /// слоёв MapRenderer (Blueprint/WallPlan/FarmPlan = 0.5). Отдельная константа от
-    /// <see cref="PlanAlpha"/>: та уходит в текстуру призрака, эта — в Modulate слоя.
-    /// Рассинхрон 0.55↔0.5 ловит tests/run_seam_parity.gd (секция B2).
-    /// </summary>
-    public const float BlueprintAlpha = 0.5f;
-
-    /// <summary>Размер клетки игры — один тайл зоны склада.</summary>
-    public const int TilePx = 64;
-
-    /// <summary>
-    /// ОДИН тайл зоны склада для острова и мира: заливка + рамка, цвет запечён
-    /// в текстуру. Слои-получатели обязаны держать Modulate = white, иначе цвет
-    /// умножится дважды и «склад» снова станет розовым/чёрным.
-    /// </summary>
-    public static ImageTexture CreateStockpileZoneTexture(float alpha = StockpileTintA)
-    {
-        var img = Image.CreateEmpty(TilePx, TilePx, false, Image.Format.Rgba8);
-        var fill = new Color(StockpileTintR, StockpileTintG, StockpileTintB,
-            Math.Clamp(alpha, 0f, 1f));
-        var border = new Color(0.85f, 0.35f, 1f, Math.Clamp(alpha + 0.4f, 0f, 1f));
-        for (int y = 0; y < TilePx; y++)
-        {
-            for (int x = 0; x < TilePx; x++)
-            {
-                bool isBorder = x <= 1 || x >= TilePx - 2 || y <= 1 || y >= TilePx - 2;
-                img.SetPixel(x, y, isBorder ? border : fill);
-            }
-        }
-        return ImageTexture.CreateFromImage(img);
-    }
-
-    /// <summary>Тонировка готовой зоны склада (для инспектора/тестов).</summary>
-    public static Color StockpileTint => new(StockpileTintR, StockpileTintG, StockpileTintB, StockpileTintA);
-
-    /// <summary>Текстура мебели по типу (per-type, НЕ generic).</summary>
+    /// <summary>Текстура мебели/станка по типу (per-type, НЕ generic).</summary>
     public static string TextureForBuilding(Game.Core.BuildingType type) => type switch
     {
         Game.Core.BuildingType.WorkTable => TexWorkTable,
@@ -105,14 +67,17 @@ public static class ToolVisualSpec
         Game.Core.BuildingType.Bench => TexBench,
         Game.Core.BuildingType.Nightstand => TexNightstand,
         Game.Core.BuildingType.CentralBlock => TexCentralBlock,
-        _ => MissingBuildingTexture(type),
+        // task-16: станки отраслей — призрак/вид не должны падать в стену.
+        Game.Core.BuildingType.Sawmill => TexSawmill,
+        Game.Core.BuildingType.Smelter => TexSmelter,
+        Game.Core.BuildingType.Anvil => TexAnvil,
+        Game.Core.BuildingType.Workbench => TexWorkbench,
+        Game.Core.BuildingType.SpinningWheel => TexSpinningWheel,
+        Game.Core.BuildingType.Loom => TexLoom,
+        Game.Core.BuildingType.Mill => TexMill,
+        Game.Core.BuildingType.AssemblyLine => TexAssemblyLine,
+        _ => TexWall,
     };
-
-    private static string MissingBuildingTexture(Game.Core.BuildingType type)
-    {
-        GD.PushError($"ToolVisualSpec: no texture registered for building type '{type}' ({(byte)type}).");
-        return TexProcessOfWork;
-    }
 
     /// <summary>Готовое (Wall/Building/Crop/Stockpile) — спрайты/terrain.</summary>
     public static ToolVisual ForDone(byte kind, Game.Core.BuildingType type = Game.Core.BuildingType.WoodWall) => kind switch
@@ -120,7 +85,7 @@ public static class ToolVisualSpec
         WorldKinds.Wall => new("wall", TexWall, ToolVisualRole.Terrain),
         WorldKinds.Building => new($"building:{type}", TextureForBuilding(type), ToolVisualRole.Sprite),
         WorldKinds.Crop => new("crop", TexGardenBed, ToolVisualRole.Terrain),
-        WorldKinds.Stockpile => new("stockpile", RuntimeStockpileZone, ToolVisualRole.Overlay,
+        WorldKinds.Stockpile => new("stockpile", TexStockpileZone, ToolVisualRole.Overlay,
             StockpileTintR, StockpileTintG, StockpileTintB, StockpileTintA),
         _ => new($"done:{kind}", TexProcessOfWork, ToolVisualRole.Overlay),
     };
@@ -131,7 +96,7 @@ public static class ToolVisualSpec
         WorldKinds.WallPlan => new("wall_plan", TexWall, ToolVisualRole.Plan),
         WorldKinds.BuildingPlan => new($"building_plan:{type}", TextureForBuilding(type), ToolVisualRole.Plan),
         WorldKinds.CropPlan => new("crop_plan", TexGardenBed, ToolVisualRole.Plan),
-        WorldKinds.StockpilePlan => new("stockpile_plan", RuntimeStockpileZone, ToolVisualRole.Plan,
+        WorldKinds.StockpilePlan => new("stockpile_plan", TexStockpileZone, ToolVisualRole.Plan,
             StockpileTintR, StockpileTintG, StockpileTintB, StockpileTintA),
         WorldKinds.CutTreePlan => new("cuttree_plan", TexProcessOfWork, ToolVisualRole.Plan),
         WorldKinds.MinedStonePlan => new("minestone_plan", TexProcessOfWork, ToolVisualRole.Plan),
@@ -141,16 +106,16 @@ public static class ToolVisualSpec
     /// <summary>Ключи видов (для таблиц паритета в тестах).</summary>
     public static class WorldKinds
     {
-        public const byte Wall = WorldDeltaKind.Wall;
-        public const byte Building = WorldDeltaKind.Building;
-        public const byte Crop = WorldDeltaKind.Crop;
-        public const byte Stockpile = WorldDeltaKind.Stockpile;
-        public const byte WallPlan = WorldDeltaKind.WallPlan;
-        public const byte BuildingPlan = WorldDeltaKind.BuildingPlan;
-        public const byte CropPlan = WorldDeltaKind.CropPlan;
-        public const byte StockpilePlan = WorldDeltaKind.StockpilePlan;
-        public const byte CutTreePlan = WorldDeltaKind.CutTreePlan;
-        public const byte MinedStonePlan = WorldDeltaKind.MinedStonePlan;
+        public const byte Wall = 0x01;
+        public const byte Building = 0x03;
+        public const byte Crop = 0x04;
+        public const byte Stockpile = 0x07;
+        public const byte WallPlan = 0x11;
+        public const byte BuildingPlan = 0x12;
+        public const byte CropPlan = 0x13;
+        public const byte StockpilePlan = 0x14;
+        public const byte CutTreePlan = 0x15;
+        public const byte MinedStonePlan = 0x16;
     }
 
     /// <summary>Полный перебор видов для теста паритета: (kind, isPlan, type).</summary>

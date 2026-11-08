@@ -27,6 +27,10 @@ public sealed class ConstructionSite
     public bool NeedHaul { get; set; }
 
     // Доставка материалов
+    // Состояние материалов читается/пишется из нескольких sim-потоков
+    // (Commit доставки параллелен добавлению другого носильщика) — короткий lock
+    // вокруг только словарей; Stage/WorkProgress — как раньше, без него.
+    private readonly object _matLock = new();
     private readonly Dictionary<ItemId, int> _delivered = new();
     private readonly Dictionary<ItemId, int> _required = new();
 
@@ -47,16 +51,28 @@ public sealed class ConstructionSite
         }
     }
 
-    public int GetDelivered(ItemId item) => _delivered.TryGetValue(item, out int c) ? c : 0;
-    public int GetRequired(ItemId item) => _required.TryGetValue(item, out int c) ? c : 0;
+    public int GetDelivered(ItemId item)
+    {
+        lock (_matLock)
+            return _delivered.TryGetValue(item, out int c) ? c : 0;
+    }
+
+    public int GetRequired(ItemId item)
+    {
+        lock (_matLock)
+            return _required.TryGetValue(item, out int c) ? c : 0;
+    }
 
     public int TotalDelivered
     {
         get
         {
-            int sum = 0;
-            foreach (var kvp in _delivered) sum += kvp.Value;
-            return sum;
+            lock (_matLock)
+            {
+                int sum = 0;
+                foreach (var kvp in _delivered) sum += kvp.Value;
+                return sum;
+            }
         }
     }
 
@@ -64,9 +80,12 @@ public sealed class ConstructionSite
     {
         get
         {
-            int sum = 0;
-            foreach (var kvp in _required) sum += kvp.Value;
-            return sum;
+            lock (_matLock)
+            {
+                int sum = 0;
+                foreach (var kvp in _required) sum += kvp.Value;
+                return sum;
+            }
         }
     }
 
@@ -74,31 +93,68 @@ public sealed class ConstructionSite
     {
         get
         {
-            if (_required.Count == 0) return true;
-            foreach (var (item, reqCount) in _required)
+            lock (_matLock)
             {
-                if (!_delivered.TryGetValue(item, out int delCount) || delCount < reqCount)
-                    return false;
+                if (_required.Count == 0)
+                    return true;
+                foreach (var (item, reqCount) in _required)
+                {
+                    if (!_delivered.TryGetValue(item, out int delCount) || delCount < reqCount)
+                        return false;
+                }
+                return true;
             }
-            return true;
         }
+    }
+
+    /// <summary>
+    /// Следующий материал, который ещё не довезён (порядок = порядок
+    /// RequiredMaterials; детерминированно). false — сайт снабжён ПОЛНОСТЬЮ.
+    /// Один активный delivery-джоб на клетку, поэтому материалы возятся
+    /// последовательно: этот метод выбирает, что везти следующим.
+    /// </summary>
+    public bool TryGetNextNeededMaterial(out ItemId item, out int remaining)
+    {
+        IReadOnlyList<(ItemId Item, int Count)> mats = Definition.RequiredMaterials;
+        lock (_matLock)
+        {
+            for (int i = 0; i < mats.Count; i++)
+            {
+                (ItemId reqItem, int reqCount) = mats[i];
+                int delivered = _delivered.TryGetValue(reqItem, out int d) ? d : 0;
+                if (delivered < reqCount)
+                {
+                    item = reqItem;
+                    remaining = reqCount - delivered;
+                    return true;
+                }
+            }
+        }
+        item = ItemId.None;
+        remaining = 0;
+        return false;
     }
 
     public int AddDelivered(ItemId item, int count)
     {
         if (count <= 0) return 0;
-        int req = GetRequired(item);
-        int cur = GetDelivered(item);
-        int canAccept = Math.Max(0, req - cur);
-        int accepted = Math.Min(canAccept, count);
-        if (accepted > 0)
+        lock (_matLock)
         {
-            _delivered[item] = cur + accepted;
+            int req = _required.TryGetValue(item, out int r) ? r : 0;
+            int cur = _delivered.TryGetValue(item, out int d) ? d : 0;
+            int canAccept = Math.Max(0, req - cur);
+            int accepted = Math.Min(canAccept, count);
+            if (accepted > 0)
+                _delivered[item] = cur + accepted;
+            return accepted;
         }
-        return accepted;
     }
 
     public bool HasObstacles => NeedTree || NeedStone || NeedHaul;
 
-    public Dictionary<ItemId, int> GetAllDelivered() => new(_delivered);
+    public Dictionary<ItemId, int> GetAllDelivered()
+    {
+        lock (_matLock)
+            return new Dictionary<ItemId, int>(_delivered);
+    }
 }

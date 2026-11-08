@@ -1,0 +1,361 @@
+[gd_scene format=3 uid="uid://wlcgfk5k47vt"]
+
+[ext_resource type="Texture2D" uid="uid://buw3nohde55eb" path="res://ui/assets/textures/icons/no.png" id="1_esc"]
+[ext_resource type="Texture2D" uid="uid://yvagabo1xd7m" path="res://ui/assets/textures/icons/CheckMark.png" id="2_check"]
+[ext_resource type="FontFile" uid="uid://dtxjeqjsb5eii" path="res://assets/fonts/Handjet-VariableFont_ELGR,ELSH,wght.ttf" id="3_font"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_focus"]
+draw_center = false
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_plate_hover"]
+bg_color = Color(0.54471636, 0.10887573, 1.4439226e-07, 0.4)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.54509807, 0.10980392, 0, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_plate"]
+bg_color = Color(0.043137256, 0.043137256, 0.043137256, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.09803922, 0.09803922, 0.09803922, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_plate_pressed"]
+bg_color = Color(0.078431375, 0.078431375, 0.078431375, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.21960784, 0.45490196, 0.21960784, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_backdrop"]
+bg_color = Color(0.019925633, 0.019925632, 0.019925632, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.11764706, 0.11764706, 0.11764706, 1)
+
+[sub_resource type="Theme" id="Theme_exchange"]
+default_font = ExtResource("3_font")
+default_font_size = 20
+Button/colors/font_color = Color(0.8509804, 0.8509804, 0.8509804, 1)
+Button/colors/font_hover_color = Color(1, 1, 1, 1)
+Button/colors/font_pressed_color = Color(0.4509804, 1, 0.4509804, 1)
+Button/font_sizes/font_size = 18
+Button/styles/focus = SubResource("StyleBox_focus")
+Button/styles/hover = SubResource("StyleBox_plate_hover")
+Button/styles/normal = SubResource("StyleBox_plate")
+Button/styles/pressed = SubResource("StyleBox_plate_pressed")
+Label/colors/font_color = Color(0.8509804, 0.8509804, 0.8509804, 1)
+PanelContainer/styles/panel = SubResource("StyleBox_backdrop")
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_header"]
+bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
+border_width_bottom = 1
+border_color = Color(0.11764706, 0.11764706, 0.11764706, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_esc"]
+bg_color = Color(0, 0, 0, 0)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.13725491, 0.13725491, 0.13725491, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_side_pressed"]
+bg_color = Color(0.09803922, 0.09803922, 0.09803922, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.54509807, 0.10980392, 0, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_side_hover"]
+bg_color = Color(0.54471636, 0.10887573, 1.4439226e-07, 0.4)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.54509807, 0.10980392, 0, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_side"]
+bg_color = Color(0.019925633, 0.019925632, 0.019925632, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.11764706, 0.11764706, 0.11764706, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_tab_active"]
+bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.8509804, 0.8509804, 0.8509804, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_clear"]
+content_margin_left = 10.0
+content_margin_top = 10.0
+content_margin_right = 10.0
+content_margin_bottom = 10.0
+draw_center = false
+
+[node name="Control3" type="Control" unique_id=642250708]
+layout_mode = 3
+anchors_preset = 9
+anchor_bottom = 1.0
+offset_right = 640.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme = SubResource("Theme_exchange")
+
+[node name="none" type="Label" parent="." unique_id=1980737967]
+layout_mode = 0
+offset_right = 640.0
+offset_bottom = 78.0
+theme_override_font_sizes/font_size = 40
+theme_override_styles/normal = SubResource("StyleBox_header")
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="Name" type="Label" parent="." unique_id=1138446011]
+layout_mode = 0
+offset_left = 64.0
+offset_right = 240.0
+offset_bottom = 78.0
+theme_override_font_sizes/font_size = 40
+theme_override_styles/normal = SubResource("StyleBox_header")
+text = "Биржи"
+vertical_alignment = 1
+
+[node name="esc" type="Button" parent="." unique_id=1285494830]
+layout_mode = 0
+offset_left = 12.0
+offset_top = 19.0
+offset_right = 52.0
+offset_bottom = 59.0
+theme_override_styles/normal = SubResource("StyleBox_esc")
+theme_override_styles/pressed = SubResource("StyleBox_side_pressed")
+theme_override_styles/hover = SubResource("StyleBox_side_hover")
+theme_override_styles/focus = SubResource("StyleBox_focus")
+icon = ExtResource("1_esc")
+expand_icon = true
+
+[node name="CheckMark" type="Button" parent="." unique_id=1634578916]
+layout_mode = 0
+offset_left = 640.0
+offset_right = 713.0
+offset_bottom = 73.0
+theme_override_styles/normal = SubResource("StyleBox_side")
+theme_override_styles/pressed = SubResource("StyleBox_side_pressed")
+theme_override_styles/hover = SubResource("StyleBox_side_hover")
+theme_override_styles/focus = SubResource("StyleBox_focus")
+icon = ExtResource("2_check")
+expand_icon = true
+
+[node name="Backdrop" type="Panel" parent="." unique_id=346662188]
+layout_mode = 0
+offset_top = 78.0
+offset_right = 640.0
+offset_bottom = 1080.0
+theme_override_styles/panel = SubResource("StyleBox_backdrop")
+
+[node name="TabCommodity" type="Button" parent="." unique_id=1520711828]
+custom_minimum_size = Vector2(120, 40)
+layout_mode = 0
+offset_left = 360.0
+offset_top = 19.0
+offset_right = 480.0
+offset_bottom = 59.0
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("StyleBox_side")
+theme_override_styles/pressed = SubResource("StyleBox_tab_active")
+theme_override_styles/hover = SubResource("StyleBox_side_hover")
+theme_override_styles/focus = SubResource("StyleBox_focus")
+toggle_mode = true
+button_pressed = true
+text = "ТОВАРНАЯ"
+
+[node name="TabStock" type="Button" parent="." unique_id=1729057500]
+custom_minimum_size = Vector2(120, 40)
+layout_mode = 0
+offset_left = 488.0
+offset_top = 19.0
+offset_right = 608.0
+offset_bottom = 59.0
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("StyleBox_side")
+theme_override_styles/pressed = SubResource("StyleBox_tab_active")
+theme_override_styles/hover = SubResource("StyleBox_side_hover")
+theme_override_styles/focus = SubResource("StyleBox_focus")
+toggle_mode = true
+text = "ФОНДОВАЯ"
+
+[node name="MoneyCaption" type="Label" parent="." unique_id=1702011979]
+layout_mode = 0
+offset_left = 244.0
+offset_top = 19.0
+offset_right = 312.0
+offset_bottom = 59.0
+theme_override_colors/font_color = Color(0.54509807, 0.54509807, 0.54509807, 1)
+theme_override_font_sizes/font_size = 18
+text = "КАССА"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="MoneyAmount" type="Label" parent="." unique_id=1221272904]
+layout_mode = 0
+offset_left = 312.0
+offset_top = 19.0
+offset_right = 356.0
+offset_bottom = 59.0
+theme_override_font_sizes/font_size = 26
+text = "0"
+vertical_alignment = 1
+
+[node name="CommodityPage" type="Control" parent="." unique_id=2084393162]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = 78.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="ScrollContainer" type="ScrollContainer" parent="CommodityPage" unique_id=1377375872]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_bottom = -70.0
+grow_horizontal = 2
+grow_vertical = 2
+horizontal_scroll_mode = 0
+
+[node name="PanelContainer" type="PanelContainer" parent="CommodityPage/ScrollContainer" unique_id=1937738899]
+custom_minimum_size = Vector2(632, 0)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = SubResource("StyleBox_clear")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="CommodityPage/ScrollContainer/PanelContainer" unique_id=2089031339]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 6
+
+[node name="HBoxContainer2" type="HBoxContainer" parent="CommodityPage/ScrollContainer/PanelContainer/VBoxContainer" unique_id=631320211]
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Button" type="Button" parent="CommodityPage/ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=1941873865]
+custom_minimum_size = Vector2(60, 40)
+layout_mode = 2
+
+[node name="Button2" type="Button" parent="CommodityPage/ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=910925273]
+custom_minimum_size = Vector2(60, 40)
+layout_mode = 2
+
+[node name="Button3" type="Button" parent="CommodityPage/ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=419853591]
+custom_minimum_size = Vector2(60, 40)
+layout_mode = 2
+
+[node name="Button4" type="Button" parent="CommodityPage/ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=2125910186]
+custom_minimum_size = Vector2(60, 40)
+layout_mode = 2
+
+[node name="Button5" type="Button" parent="CommodityPage/ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=1315735553]
+custom_minimum_size = Vector2(60, 40)
+layout_mode = 2
+
+[node name="StockPage" type="Control" parent="." unique_id=317133207]
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = 78.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="StockHeader" type="HBoxContainer" parent="StockPage" unique_id=1352434513]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_left = 20.0
+offset_top = 10.0
+offset_right = -20.0
+offset_bottom = 50.0
+grow_horizontal = 2
+theme_override_constants/separation = 12
+
+[node name="StockNameCaption" type="Label" parent="StockPage/StockHeader" unique_id=1345995500]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.54509807, 0.54509807, 0.54509807, 1)
+theme_override_font_sizes/font_size = 18
+text = "ПРЕДПРИЯТИЕ"
+
+[node name="StockPriceCaption" type="Label" parent="StockPage/StockHeader" unique_id=792199845]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.54509807, 0.54509807, 0.54509807, 1)
+theme_override_font_sizes/font_size = 18
+text = "КУРС"
+horizontal_alignment = 2
+
+[node name="StockChangeCaption" type="Label" parent="StockPage/StockHeader" unique_id=1168787999]
+custom_minimum_size = Vector2(110, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.54509807, 0.54509807, 0.54509807, 1)
+theme_override_font_sizes/font_size = 18
+text = "ИЗМ."
+horizontal_alignment = 2
+
+[node name="StockRows" type="VBoxContainer" parent="StockPage" unique_id=626952871]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_left = 20.0
+offset_top = 56.0
+offset_right = -20.0
+offset_bottom = 120.0
+grow_horizontal = 2
+theme_override_constants/separation = 6
+
+[node name="StockEmptyText" type="Label" parent="StockPage/StockRows" unique_id=1351656933]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.54509807, 0.54509807, 0.54509807, 1)
+theme_override_font_sizes/font_size = 18
+text = "Предприятия и их паи откроются позже.
+Пока тут только место под таблицу курсов."
+horizontal_alignment = 1
+autowrap_mode = 3
+
+[node name="BottomBar" type="HBoxContainer" parent="." unique_id=1994050519]
+layout_mode = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 20.0
+offset_top = -60.0
+offset_right = -20.0
+offset_bottom = -10.0
+grow_horizontal = 2
+grow_vertical = 0
+theme_override_constants/separation = 16
+
+[node name="DealLog" type="Label" parent="BottomBar" unique_id=1357863674]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.54509807, 0.54509807, 0.54509807, 1)
+theme_override_font_sizes/font_size = 18
+text = "Сделок пока не было."
+vertical_alignment = 1

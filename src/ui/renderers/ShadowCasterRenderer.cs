@@ -30,6 +30,15 @@ public partial class ShadowCasterRenderer : Node2D
     private MultiMesh _multiMesh;
     private readonly float[] _buffer = new float[MaxCasters * 8];
     private readonly List<Vector2> _anchors = new(4096);
+
+    // FIX (bughunt 14-4): обратный индекс "клетка -> позиция в _anchors" + параллельный
+    // список клеток дают удаление за O(1) swap-with-last вместо пересборки всего массива
+    // (до 65 536 якорей) на каждое срубленное дерево/снесённую стену.
+    // Порядок якорей на картинку не влияет: все инстансы рисуются одним материалом с
+    // одинаковым Modulate (см. Tick), а альфа-смешивание слоёв одного цвета коммутативно,
+    // то есть набор инстансов даёт один и тот же результат в любом порядке.
+    private readonly List<(int X, int Y)> _anchorCells = new(4096);
+    private readonly Dictionary<(int X, int Y), int> _anchorIndex = new(4096);
     private readonly HashSet<(int X, int Y)> _cells = new(4096);
 
     private DayNightCycle.SunState _current;
@@ -38,11 +47,13 @@ public partial class ShadowCasterRenderer : Node2D
 
     public override void _Ready()
     {
-        ZIndex = 4;
+        // ST-22: перенос на Z=1 под стены и предметы, объединение с ItemShadowRenderer (минус до 1000 Draw Calls ночью)
+        ZIndex = 1;
 
         // Квад единичный: реальный размер задаёт матрица инстанса (R*S от якоря).
         var quad = new QuadMesh { Size = new Vector2(1f, 1f) };
-        float mapPx = MapRenderer.MapWidth * MapRenderer.TileSizePx;
+        // R2-02: AABB охватывает мир с запасом (-262144..+262144 px = ±4096 тайлов), чтобы тени за кромкой 1024 не отсекались.
+        var mapAabb = new Aabb(new Godot.Vector3(-262144f, -262144f, -1000f), new Godot.Vector3(524288f, 524288f, 2000f));
         _multiMesh = new MultiMesh
         {
             Mesh = quad,
@@ -51,7 +62,7 @@ public partial class ShadowCasterRenderer : Node2D
             UseCustomData = false,
             InstanceCount = MaxCasters,
             VisibleInstanceCount = 0,
-            CustomAabb = new Aabb(Godot.Vector3.Zero, new Godot.Vector3(mapPx, mapPx, 1000f))
+            CustomAabb = mapAabb
         };
         _instance = new MultiMeshInstance2D
         {
@@ -67,6 +78,8 @@ public partial class ShadowCasterRenderer : Node2D
     public void RebuildStatic(MapData map, HashSet<(int X, int Y)> walls, Dictionary<(int X, int Y), BuildingType> buildings)
     {
         _anchors.Clear();
+        _anchorCells.Clear();
+        _anchorIndex.Clear();
         _cells.Clear();
         if (map != null)
         {
@@ -105,12 +118,27 @@ public partial class ShadowCasterRenderer : Node2D
 
     public void RemoveCaster(int tx, int ty)
     {
-        if (!_cells.Remove((tx, ty)))
+        var key = (tx, ty);
+        // FIX (bughunt 14-4): было _anchors.Clear() + полный проход по _cells на каждое
+        // удаление — O(N) на кастера, для 5 000 деревьев ~3.2·10^8 копирований и фризы.
+        // Теперь: swap-with-last, который не оставляет дыр и не меняет набор якорей.
+        // Индекс ищем ДО удаления из _cells, чтобы не оставить «призрачный» якорь.
+        if (!_anchorIndex.TryGetValue(key, out int idx))
             return;
-        _anchors.Clear();
-        float tile = MapRenderer.TileSizePx;
-        foreach (var (cx, cy) in _cells)
-            _anchors.Add(BasePoint(cx, cy, tile));
+        if (!_cells.Remove(key))
+            return;
+        _anchorIndex.Remove(key);
+
+        int last = _anchors.Count - 1;
+        if (idx != last)
+        {
+            _anchors[idx] = _anchors[last];
+            _anchorCells[idx] = _anchorCells[last];
+            _anchorIndex[_anchorCells[idx]] = idx; // перенесённый якорь помнит свой новый индекс
+        }
+        _anchors.RemoveAt(last);
+        _anchorCells.RemoveAt(last);
+
         _bufferDirty = true;
         _bufferTimer = 0f;
     }
@@ -144,7 +172,15 @@ public partial class ShadowCasterRenderer : Node2D
                 _multiMesh.VisibleInstanceCount = 0;
         }
         if (!show)
+        {
+            // FIX (bughunt 14-4): попутно с удалением кастеров. Здесь VisibleInstanceCount
+            // обнулён, а буфер на GPU остался — при возврате (зум обратно, рассвет) геометрия
+            // солнца могла не измениться, и PushBuffer бы не случился: тени остались бы
+            // невидимыми до следующего заметного сдвига солнца. Помечаем dirty — PushBuffer
+            // отработает дебаунсом сразу после возврата видимости.
+            _bufferDirty = true;
             return;
+        }
 
         // Плавная смена атмосферного цвета и альфы через свойство Modulate (ноль нагрузки на GPU шину)
         if (_instance != null)
@@ -201,6 +237,10 @@ public partial class ShadowCasterRenderer : Node2D
     {
         if (!_cells.Add((tx, ty)))
             return false;
+        // FIX (bughunt 14-4): держим _anchorIndex/_anchorCells синхронно с _anchors —
+        // это цена O(1)-удаления swap-with-last.
+        _anchorIndex[(tx, ty)] = _anchors.Count;
+        _anchorCells.Add((tx, ty));
         _anchors.Add(BasePoint(tx, ty, tile));
         return true;
     }
@@ -220,6 +260,11 @@ public partial class ShadowCasterRenderer : Node2D
         float px = -dir.Y, py = dir.X;
         float qx = px * wdt * 0.5f, qy = py * wdt * 0.5f;
         int limit = Math.Min(_anchors.Count, MaxCasters);
+        // FIX (bughunt 14-4): цикл читает якоря в текущем (перемешанном swap-with-last)
+        // порядке. Инстансы независимы и одинаковы по цвету/материалу, поэтому результат
+        // от порядка не зависит — меняется только индекс в буфере. Обрезка по MaxCasters
+        // затрагивает лишь кадр с >65 536 кастерами, где и раньше показывался произвольный
+        // набор (порядок _cells — HashSet).
         for (int i = 0; i < limit; i++)
         {
             Vector2 anchor = _anchors[i];

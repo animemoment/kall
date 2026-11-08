@@ -128,17 +128,17 @@ public static class AgentLerpBatch
 	/// Vertex shader выполняет lerp на GPU и вращает спрайт по направлению движения; CPU делает этот проход только при snapshot.
 	/// Формат MultiMesh 2D: 8 float transform + 4 float COLOR + 4 float INSTANCE_CUSTOM = 16 float.
 	/// </summary>
-	public static void FillGpuInstanceBuffer(
-		Span<float> buffer,
-		ReadOnlySpan<Vector2> prev,
-		ReadOnlySpan<Vector2> target,
-		ReadOnlySpan<float> angles,
-		int count)
+	/// <summary>
+	/// R-07: заполнить ТОЛЬКО неизменяемую часть буфера инстансов — identity-трансформ
+	/// (8 float из 16 на инстанс). Вызывать один раз после выделения/роста буфера.
+	/// Раньше эти 8 float переписывались на КАЖДЫЙ снапшот: 32 байта на инстанс,
+	/// на 10k агентов это 320 КБ на снапшот при 20–30 Гц (6–10 МБ/с) — ровно те
+	/// «37.5 % буфера агентов», которые не меняются никогда.
+	/// </summary>
+	public static void FillGpuInstanceConstants(Span<float> buffer, int count)
 	{
 		if (count < 0)
 			throw new ArgumentOutOfRangeException(nameof(count), "count не может быть отрицательным.");
-		if (count > prev.Length || count > target.Length)
-			throw new ArgumentException("count больше длин спанов позиций.");
 		if ((long)buffer.Length < (long)count * 16)
 			throw new ArgumentException("GPU buffer короче count*16.");
 
@@ -153,6 +153,40 @@ public static class AgentLerpBatch
 			buffer[index + 5] = 1.0f;
 			buffer[index + 6] = 0.0f;
 			buffer[index + 7] = 0.0f;
+		}
+	}
+
+	public static void FillGpuInstanceBuffer(
+		Span<float> buffer,
+		ReadOnlySpan<Vector2> prev,
+		ReadOnlySpan<Vector2> target,
+		ReadOnlySpan<float> angles,
+		int count,
+		bool writeTransformConstants = true)
+	{
+		if (count < 0)
+			throw new ArgumentOutOfRangeException(nameof(count), "count не может быть отрицательным.");
+		if (count > prev.Length || count > target.Length)
+			throw new ArgumentException("count больше длин спанов позиций.");
+		if ((long)buffer.Length < (long)count * 16)
+			throw new ArgumentException("GPU buffer короче count*16.");
+
+		for (int i = 0; i < count; i++)
+		{
+			int index = i * 16;
+			// R-07: identity-трансформ пишем только по требованию (первый раз),
+			// в остальные кадры он уже лежит в буфере и не меняется.
+			if (writeTransformConstants)
+			{
+				buffer[index + 0] = 1.0f;
+				buffer[index + 1] = 0.0f;
+				buffer[index + 2] = 0.0f;
+				buffer[index + 3] = 0.0f;
+				buffer[index + 4] = 0.0f;
+				buffer[index + 5] = 1.0f;
+				buffer[index + 6] = 0.0f;
+				buffer[index + 7] = 0.0f;
+			}
 
 			float angle = angles.Length > i ? angles[i] : 0f;
 			buffer[index + 8] = MathF.Cos(angle);

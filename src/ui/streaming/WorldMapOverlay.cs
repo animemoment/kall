@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Godot;
 using Game.Core.WorldStreaming;
+using Game.UI;
 
 namespace Game.UI.Streaming;
 
@@ -30,6 +31,41 @@ public partial class WorldMapOverlay : Node2D
 	/// <summary>Режим первичного выбора спавна (кнопка закрытия скрыта, Esc/M заблокированы).</summary>
 	public bool IsSpawnSelectionMode { get; set; } = false;
 
+	/// <summary>
+	/// Единственный гейт «клик по карте выбирает регион». Вынесен в чистую функцию,
+	/// чтобы его можно было проверить без движка (tests/TestWorldMapClick.cs его и зовёт).
+	///
+	/// Зачем: раньше обработчик клика выбирал регион ВСЕГДА, когда попадание было
+	/// внутри сетки — то есть и в обычном режиме просмотра карты. Игрок кликал «посмотреть
+	/// карту», а его телепортировало в другой регион с полной перегенерацией мира.
+	/// Обратная сторона той же ошибки — отсутствие гейта не давало отличить
+	/// «выбор спавна» от «просто клик», из-за чего фича выбора точки высадки
+	/// не имела явного контракта.
+	/// </summary>
+	public static bool ShouldSelectRegion(bool spawnSelectionMode, int cellX, int cellY, int gridWidth, int gridHeight)
+	{
+		if (!spawnSelectionMode)
+			return false;
+		if (gridWidth <= 0 || gridHeight <= 0)
+			return false;
+		return cellX >= 0 && cellX < gridWidth && cellY >= 0 && cellY < gridHeight;
+	}
+
+	public sealed class WorldFaction
+	{
+		public string Name { get; set; }
+		public string Title { get; set; }
+		public Color FactionColor { get; set; }
+		public Vector2 CapitalPosPx { get; set; }
+		public float RadiusPx { get; set; }
+		public int Relations { get; set; }
+		public string Status { get; set; }
+		public string Leader { get; set; }
+		public string MilitaryPower { get; set; }
+	}
+
+	private readonly List<WorldFaction> _factions = new();
+	private PanelContainer _diplomacyPanel;
 	private Label _spawnPromptLabel;
 
 	/// <summary>Ниже этого зума детальные тайлы не рисуются, достаточно overview.</summary>
@@ -156,6 +192,7 @@ public partial class WorldMapOverlay : Node2D
 		_spawnPromptLabel.SetAnchorsPreset(Control.LayoutPreset.CenterTop);
 		_spawnPromptLabel.Position = new Vector2((1920 - 1100) / 2f, 20);
 		_uiLayer.GetNodeOrNull<Control>("Control")?.AddChild(_spawnPromptLabel);
+		BuildDiplomacyPanel();
 
 		// Initialize мог быть вызван до _Ready
 		if (_hasSeed)
@@ -240,6 +277,27 @@ public partial class WorldMapOverlay : Node2D
 		QueueRedraw();
 	}
 
+	/// <summary>
+	/// Программный выбор региона (диагностика/автотест): тот же путь, что и клик ЛКМ —
+	/// гейт режима спавна, снятие режима, событие OnRegionSelected и закрытие карты.
+	/// Нужен, чтобы проверить фикс «клик по карте не спавнит» сквозным прогоном
+	/// (headless-замер реальной сцены) без участия мыши.
+	/// </summary>
+	public bool DebugSelectRegion(int cellX, int cellY)
+	{
+		if (!ShouldSelectRegion(IsSpawnSelectionMode, cellX, cellY, GridWidth, GridHeight))
+		{
+			GD.Print($"[SPAWN] (debug) отказ: cell=({cellX},{cellY}) режим={IsSpawnSelectionMode}");
+			return false;
+		}
+		var reg = new RegionKey(cellX, cellY);
+		CurrentColonyRegion = reg;
+		IsSpawnSelectionMode = false;
+		GD.Print($"[SPAWN] (debug) выбран регион [{reg.X}, {reg.Y}]");
+		OnRegionSelected?.Invoke(reg);
+		CloseMap();
+		return true;
+	}
 	public void CloseMap()
 	{
 		if (!Visible)
@@ -267,8 +325,12 @@ public partial class WorldMapOverlay : Node2D
 		}
 	}
 
-	public override void _UnhandledInput(InputEvent @event)
+	public override void _Input(InputEvent @event)
 	{
+		// Клик по карте обрабатываем в _Input, а не в _UnhandledInput: пока карта
+		// открыта, она монопольна, а _UnhandledInput мог не дойти до неё, если
+		// какой-либо Control (HUD, оверлей, диалог) событие «съедал». Именно это
+		// выглядело как «кликаю по точке на мировой карте — ничего не происходит».
 		if (!Visible || !IsInsideTree())
 			return;
 
@@ -290,45 +352,78 @@ public partial class WorldMapOverlay : Node2D
 				Vector2 mouseWorld = (Vector2)(GetViewport().GetCanvasTransform().AffineInverse() * mouse.Position);
 				int cellX = Mathf.FloorToInt(mouseWorld.X / TileSizePx);
 				int cellY = Mathf.FloorToInt(mouseWorld.Y / TileSizePx);
-				if (cellX >= 0 && cellX < GridWidth && cellY >= 0 && cellY < GridHeight)
+
+				// Диагностика: без неё «клик не сработал» невозможно отличить от
+				// «попал мимо сетки» или «не в режиме выбора спавна».
+				GD.Print($"[SPAWN] клик: cell=({cellX},{cellY}) сетка={GridWidth}x{GridHeight} " +
+						 $"режим_спавна={IsSpawnSelectionMode} видима={Visible}");
+
+				if (!ShouldSelectRegion(IsSpawnSelectionMode, cellX, cellY, GridWidth, GridHeight))
 				{
-					if (_tileData != null)
+					// Вне режима спавна или мимо сетки — клик ничего не выбирает.
+					return;
+				}
+
+				bool isOcean = false;
+				if (_tileData != null)
+				{
+					int tileIdx;
+					if (_isTileDataPreview)
 					{
-						int tileIdx;
-						if (_isTileDataPreview)
+						int pX = Math.Clamp(cellX / 4, 0, (GridWidth / 4) - 1);
+						int pY = Math.Clamp(cellY / 4, 0, (GridHeight / 4) - 1);
+						tileIdx = pY * (GridWidth / 4) + pX;
+					}
+					else
+					{
+						tileIdx = cellY * GridWidth + cellX;
+					}
+					short t = _tileData[tileIdx];
+					// DeepWater (6..8): нельзя основывать колонию в океане
+					if (t >= 6 && t <= 8)
+					{
+						isOcean = true;
+					}
+				}
+
+				if (!isOcean && _hasSeed)
+				{
+					try
+					{
+						var regSample = PureWorldMapGenerator.SampleRegion(_seed, cellX, cellY);
+						if (!regSample.IsLand)
 						{
-							int pX = Math.Clamp(cellX / 4, 0, (GridWidth / 4) - 1);
-							int pY = Math.Clamp(cellY / 4, 0, (GridHeight / 4) - 1);
-							tileIdx = pY * (GridWidth / 4) + pX;
-						}
-						else
-						{
-							tileIdx = cellY * GridWidth + cellX;
-						}
-						short t = _tileData[tileIdx];
-						// DeepWater (6..8): нельзя основывать колонию в океане
-						if (t >= 6 && t <= 8)
-						{
-							GD.Print($"[SPAWN] Регион [{cellX}, {cellY}] — глубокий океан. Выберите сушу для основания колонии!");
-							if (_spawnPromptLabel != null)
-							{
-								_spawnPromptLabel.Text = "ОКЕАН! Нельзя высадиться в воде. Кликните по суше (равнины, пустыни, леса, степи, ледники).";
-								_spawnPromptLabel.AddThemeColorOverride("font_color", new Color(1f, 0.4f, 0.4f));
-								_spawnPromptLabel.Visible = true;
-							}
-							GetViewport().SetInputAsHandled();
-							return;
+							isOcean = true;
 						}
 					}
+					catch
+					{
+						// Фоллбэк: если климатический генератор не ответил, полагаемся на _tileData
+					}
+				}
 
-					RegionKey reg = new RegionKey(cellX, cellY);
-					CurrentColonyRegion = reg;
-					IsSpawnSelectionMode = false;
-					OnRegionSelected?.Invoke(reg);
-					CloseMap();
+				if (isOcean)
+				{
+					GD.Print($"[SPAWN] Регион [{cellX}, {cellY}] — глубокий океан. Выберите сушу для основания колонии!");
+					if (_spawnPromptLabel != null)
+					{
+						_spawnPromptLabel.Text = "ОКЕАН! Нельзя высадиться в воде. Кликните по суше (равнины, пустыни, леса, степи, ледники).";
+						_spawnPromptLabel.AddThemeColorOverride("font_color", new Color(1f, 0.4f, 0.4f));
+						_spawnPromptLabel.Visible = true;
+					}
+					HUDController.ShowFloatingWarning("Нельзя основать колонию в океане! Выберите сушу.", null, new Color(1f, 0.35f, 0.35f, 1f));
 					GetViewport().SetInputAsHandled();
 					return;
 				}
+
+				RegionKey reg = new RegionKey(cellX, cellY);
+				CurrentColonyRegion = reg;
+				IsSpawnSelectionMode = false;
+				GD.Print($"[SPAWN] выбор подтверждён: регион [{reg.X}, {reg.Y}]");
+				OnRegionSelected?.Invoke(reg);
+				CloseMap();
+				GetViewport().SetInputAsHandled();
+				return;
 			}
 
 			if (mouse.Pressed && mouse.ButtonIndex == MouseButton.WheelUp)
@@ -369,6 +464,11 @@ public partial class WorldMapOverlay : Node2D
 
 			if (keyEvent.Keycode == Key.R)
 			{
+				if (!IsSpawnSelectionMode)
+				{
+					// Заблокировано во время активной игры во избежание потери сейва колонии
+					return;
+				}
 				RerollWorld();
 				GetViewport().SetInputAsHandled();
 				return;
@@ -390,17 +490,192 @@ public partial class WorldMapOverlay : Node2D
 	public override void _Draw()
 	{
 		if (!Visible) return;
+
+		EnsureFactions(_seed == 0 ? 0xA1B2C3D4E5F60718UL : _seed);
+		var font = ThemeDB.FallbackFont;
+
+		// 1. Отрисовка геополитических зон влияния и государств
+		for (int i = 0; i < _factions.Count; i++)
+		{
+			var f = _factions[i];
+			DrawCircle(f.CapitalPosPx, f.RadiusPx, new Color(f.FactionColor.R, f.FactionColor.G, f.FactionColor.B, 0.07f));
+			DrawArc(f.CapitalPosPx, f.RadiusPx, 0, Mathf.Tau, 48, new Color(f.FactionColor.R, f.FactionColor.G, f.FactionColor.B, 0.45f), 4.0f);
+
+			// Эмблема столицы
+			DrawCircle(f.CapitalPosPx, 18f, f.FactionColor);
+			DrawCircle(f.CapitalPosPx, 13f, Colors.White);
+			DrawCircle(f.CapitalPosPx, 8f, f.FactionColor);
+
+			if (font != null)
+			{
+				DrawString(font, f.CapitalPosPx + new Vector2(-120, -32), f.Name, HorizontalAlignment.Center, 240, 22, f.FactionColor);
+				DrawString(font, f.CapitalPosPx + new Vector2(-120, -12), $"[{f.Status} • {f.Relations:+0;-#;0}]", HorizontalAlignment.Center, 240, 14, new Color(0.9f, 0.9f, 0.9f, 0.85f));
+			}
+		}
+
+		// 2. Отрисовка колонии игрока
 		if (CurrentColonyRegion.X >= 0 && CurrentColonyRegion.Y >= 0)
 		{
+			// G-03: колония 1024x1024 занимает ровно 2x2 региона мира (512 кл./регион)
+			float colonyDimPx = TileSizePx * 2f;
+			Vector2 colPos = new Vector2(CurrentColonyRegion.X * TileSizePx, CurrentColonyRegion.Y * TileSizePx);
 			Rect2 rect = new Rect2(
-				CurrentColonyRegion.X * TileSizePx - 2,
-				CurrentColonyRegion.Y * TileSizePx - 2,
-				TileSizePx + 4,
-				TileSizePx + 4);
+				colPos.X - 2,
+				colPos.Y - 2,
+				colonyDimPx + 4,
+				colonyDimPx + 4);
+
 			// Яркая рамка вокруг текущей колонии
-			DrawRect(rect, new Color(1f, 0.2f, 0.2f, 0.95f), false, 2.5f);
-			DrawCircle(new Vector2(CurrentColonyRegion.X * TileSizePx + TileSizePx / 2f, CurrentColonyRegion.Y * TileSizePx + TileSizePx / 2f), 3.5f, new Color(1f, 0.9f, 0.2f, 1f));
+			DrawRect(rect, new Color(0.2f, 1f, 0.4f, 0.95f), false, 3.5f);
+			DrawCircle(colPos + new Vector2(colonyDimPx / 2f, colonyDimPx / 2f), 4.5f, new Color(1f, 0.9f, 0.2f, 1f));
+
+			if (font != null)
+			{
+				DrawString(font, colPos + new Vector2(-80, -28), "ВАША КОЛОНИЯ", HorizontalAlignment.Center, 160 + colonyDimPx, 18, new Color(0.3f, 1f, 0.5f));
+				DrawString(font, colPos + new Vector2(-80, -10), "[100 поселенцев]", HorizontalAlignment.Center, 160 + colonyDimPx, 13, new Color(0.9f, 1f, 0.9f, 0.85f));
+			}
 		}
+	}
+
+	private void EnsureFactions(ulong seed)
+	{
+		if (_factions.Count > 0)
+			return;
+
+		_factions.Add(new WorldFaction
+		{
+			Name = "Северный Союз",
+			Title = "Конфедерация вольных ярлов",
+			FactionColor = new Color(0.35f, 0.75f, 1.0f),
+			CapitalPosPx = new Vector2(GridWidth * 0.25f * TileSizePx, GridHeight * 0.22f * TileSizePx),
+			RadiusPx = 3200f,
+			Relations = 15,
+			Status = "Мир и Торговля",
+			Leader = "Верховный канцлер Эйнар",
+			MilitaryPower = "8,400 воинов"
+		});
+
+		_factions.Add(new WorldFaction
+		{
+			Name = "Солнечная Империя",
+			Title = "Великая степная гегемония",
+			FactionColor = new Color(1.0f, 0.78f, 0.15f),
+			CapitalPosPx = new Vector2(GridWidth * 0.75f * TileSizePx, GridHeight * 0.32f * TileSizePx),
+			RadiusPx = 3800f,
+			Relations = 0,
+			Status = "Нейтралитет",
+			Leader = "Император Аврелий III",
+			MilitaryPower = "15,200 легионеров"
+		});
+
+		_factions.Add(new WorldFaction
+		{
+			Name = "Железный Патриархат",
+			Title = "Орден горных твердынь",
+			FactionColor = new Color(0.95f, 0.28f, 0.28f),
+			CapitalPosPx = new Vector2(GridWidth * 0.32f * TileSizePx, GridHeight * 0.76f * TileSizePx),
+			RadiusPx = 3400f,
+			Relations = -20,
+			Status = "Напряжённость",
+			Leader = "Верховный патриарх Торвальд",
+			MilitaryPower = "12,000 пехоты"
+		});
+
+		_factions.Add(new WorldFaction
+		{
+			Name = "Вольные Торговые Города",
+			Title = "Морской торговый синдикат",
+			FactionColor = new Color(0.2f, 0.88f, 0.5f),
+			CapitalPosPx = new Vector2(GridWidth * 0.68f * TileSizePx, GridHeight * 0.72f * TileSizePx),
+			RadiusPx = 3100f,
+			Relations = 35,
+			Status = "Дружелюбие",
+			Leader = "Старшина гильдий Марек",
+			MilitaryPower = "6,500 наёмников"
+		});
+	}
+
+	private void BuildDiplomacyPanel()
+	{
+		var control = _uiLayer?.GetNodeOrNull<Control>("Control");
+		if (control == null) return;
+
+		_diplomacyPanel = new PanelContainer
+		{
+			Name = "DiplomacyPanel",
+			CustomMinimumSize = new Vector2(360, 200)
+		};
+		_diplomacyPanel.SetAnchorsPreset(Control.LayoutPreset.BottomLeft);
+		_diplomacyPanel.Position = new Vector2(24, 780);
+
+		var bg = new StyleBoxFlat
+		{
+			BgColor = new Color(0.06f, 0.08f, 0.12f, 0.88f),
+			BorderColor = new Color(0.35f, 0.45f, 0.60f, 0.85f),
+			BorderWidthLeft = 2,
+			BorderWidthRight = 2,
+			BorderWidthTop = 2,
+			BorderWidthBottom = 2,
+			CornerRadiusBottomLeft = 8,
+			CornerRadiusBottomRight = 8,
+			CornerRadiusTopLeft = 8,
+			CornerRadiusTopRight = 8,
+			ContentMarginLeft = 14,
+			ContentMarginRight = 14,
+			ContentMarginTop = 10,
+			ContentMarginBottom = 10
+		};
+		_diplomacyPanel.AddThemeStyleboxOverride("panel", bg);
+
+		var vbox = new VBoxContainer();
+		_diplomacyPanel.AddChild(vbox);
+
+		var title = new Label
+		{
+			Text = "ГЕОПОЛИТИКА И ГОСУДАРСТВА МИРА",
+			HorizontalAlignment = HorizontalAlignment.Center
+		};
+		title.AddThemeFontSizeOverride("font_size", 15);
+		title.AddThemeColorOverride("font_color", new Color(1.0f, 0.88f, 0.4f));
+		vbox.AddChild(title);
+
+		var sep = new HSeparator();
+		vbox.AddChild(sep);
+
+		EnsureFactions(_seed == 0 ? 0xA1B2C3D4E5F60718UL : _seed);
+
+		for (int i = 0; i < _factions.Count; i++)
+		{
+			var f = _factions[i];
+			var row = new HBoxContainer();
+			var dot = new ColorRect
+			{
+				Color = f.FactionColor,
+				CustomMinimumSize = new Vector2(10, 10),
+				SizeFlagsVertical = Control.SizeFlags.ShrinkCenter
+			};
+			var nameLbl = new Label
+			{
+				Text = $"{f.Name}",
+				SizeFlagsHorizontal = Control.SizeFlags.ExpandFill
+			};
+			nameLbl.AddThemeFontSizeOverride("font_size", 13);
+			nameLbl.AddThemeColorOverride("font_color", Colors.White);
+
+			var statLbl = new Label
+			{
+				Text = $"{f.Status} ({f.Relations:+0;-#;0})"
+			};
+			statLbl.AddThemeFontSizeOverride("font_size", 12);
+			statLbl.AddThemeColorOverride("font_color", f.Relations >= 0 ? new Color(0.4f, 1f, 0.6f) : new Color(1f, 0.4f, 0.4f));
+
+			row.AddChild(dot);
+			row.AddChild(nameLbl);
+			row.AddChild(statLbl);
+			vbox.AddChild(row);
+		}
+
+		control.AddChild(_diplomacyPanel);
 	}
 
 	public override void _Process(double delta)
@@ -555,37 +830,7 @@ public partial class WorldMapOverlay : Node2D
 				var popt = new ParallelOptions { MaxDegreeOfParallelism = System.Environment.ProcessorCount };
 
 				// --- ЭТАП 1: Мгновенный LOD 0 превью (512x256, 131K точек) ---
-				Parallel.For(0, prevH, popt, py =>
-				{
-					if (id != Volatile.Read(ref _genId))
-						return;
-
-					int y = py * stride;
-					for (int px = 0; px < prevW; px++)
-					{
-						int x = px * stride;
-						RegionKey r = new RegionKey(x, y);
-						WorldClimateParams climate = WorldClimateGenerator.SampleRegion(seed, version, r, in macroParams);
-						int i = py * prevW + px;
-
-						TilePick pick = BiomeMapper.PickFromClimate(seed, version, x, y, climate);
-						int t = WorldMapTileMapper.GetTileId(pick.Biome, pick.Variant);
-
-						if ((uint)t >= TileTypeCount)
-						{
-							prevTiles[i] = -1;
-							continue;
-						}
-
-						prevTiles[i] = (short)t;
-						int p = i * 4;
-						int c = t * 3;
-						prevPixels[p] = colors[c];
-						prevPixels[p + 1] = colors[c + 1];
-						prevPixels[p + 2] = colors[c + 2];
-						prevPixels[p + 3] = 255;
-					}
-				});
+				PureWorldMapGenerator.GeneratePreview(seed, version, prevW, prevH, prevTiles, prevPixels, colors);
 
 				if (id != Volatile.Read(ref _genId))
 					return;
@@ -604,45 +849,8 @@ public partial class WorldMapOverlay : Node2D
 				// --- ЭТАП 2: Полная детализация (2048x1024, 2.1M точек) + гидрология ---
 				var tiles = new short[GridWidth * GridHeight];
 				var pixels = new byte[GridWidth * GridHeight * 4];
-				var elevations = new ushort[GridWidth * GridHeight];
 
-				Parallel.For(0, GridHeight, popt, y =>
-				{
-					if (id != Volatile.Read(ref _genId))
-						return; // пришёл новый Initialize, результат не нужен
-
-					for (int x = 0; x < GridWidth; x++)
-					{
-						RegionKey r = new RegionKey(x, y);
-						WorldClimateParams climate = WorldClimateGenerator.SampleRegion(seed, version, r, in macroParams);
-						int i = y * GridWidth + x;
-						elevations[i] = climate.ElevationQ16;
-
-						TilePick pick = BiomeMapper.PickFromClimate(seed, version, x, y, climate);
-						int t = WorldMapTileMapper.GetTileId(pick.Biome, pick.Variant);
-
-						if ((uint)t >= TileTypeCount)
-						{
-							tiles[i] = -1;
-							continue;
-						}
-
-						tiles[i] = (short)t;
-						int p = i * 4;
-						int c = t * 3;
-						pixels[p] = colors[c];
-						pixels[p + 1] = colors[c + 1];
-						pixels[p + 2] = colors[c + 2];
-						pixels[p + 3] = 255;
-					}
-				});
-
-				if (id != Volatile.Read(ref _genId))
-					return;
-
-				// 2. Физическая планетарная гидрология (речные артерии, древовидные притоки, оазисы в пустыне)
-				Game.Core.WorldClimate.PlanetaryHydrology.SimulateGlobalHydrology(
-					seed, version, GridWidth, GridHeight, elevations, tiles, pixels, colors);
+				PureWorldMapGenerator.GenerateFullMap(seed, version, GridWidth, GridHeight, tiles, pixels, colors);
 
 				if (id == Volatile.Read(ref _genId))
 				{

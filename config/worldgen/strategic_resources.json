@@ -1,0 +1,56 @@
+[
+  {
+    "id": 1,
+    "name": "OilField",
+    "title": "Нефтяное месторождение",
+    "formation": "Осадочный шельфовый бассейн",
+    "target_biome": "Shelf / Coastal / Desert Basin",
+    "color": "#1A1A1A",
+    "rarity_percent": 8
+  },
+  {
+    "id": 2,
+    "name": "NaturalGas",
+    "title": "Газоносная провинция",
+    "formation": "Глубокие осадочные ловушки / тундра",
+    "target_biome": "Glacier / Coastal Shelf",
+    "color": "#3399FF",
+    "rarity_percent": 7
+  },
+  {
+    "id": 3,
+    "name": "CoalBasin",
+    "title": "Угольный бассейн",
+    "formation": "Древние озёрно-болотные равнины",
+    "target_biome": "Swamp / Forest / Plains",
+    "color": "#4A3B32",
+    "rarity_percent": 15
+  },
+  {
+    "id": 4,
+    "name": "BifIronBelt",
+    "title": "Полосатый железорудный пояс (BIF)",
+    "formation": "Древний докембрийский кратон",
+    "target_biome": "Plains / Steppe / Continental Interior",
+    "color": "#8C3826",
+    "rarity_percent": 12
+  },
+  {
+    "id": 5,
+    "name": "CopperGoldArc",
+    "title": "Медно-порфировый и золотой пояс",
+    "formation": "Вулканические хребты и зона субдукции",
+    "target_biome": "Mountain / Tectonic Ridge",
+    "color": "#E6B800",
+    "rarity_percent": 10
+  },
+  {
+    "id": 6,
+    "name": "GeothermalRift",
+    "title": "Геотермальный разлом и редкоземы",
+    "formation": "Активные континентальные рифты",
+    "target_biome": "Rift Corridors / Volcanic Islands",
+    "color": "#FF4D4D",
+    "rarity_percent": 6
+  }
+]

@@ -62,8 +62,12 @@ public class FarmingTool : ITool
         int minY = Mathf.Min(startTile.Y, endTile.Y);
         int maxY = Mathf.Max(startTile.Y, endTile.Y);
 
-        long cellCount = ((long)maxX - minX + 1) * ((long)maxY - minY + 1);
-        if (cellCount > WorldPlacementPass.MaxScannedCells) return;
+        long cellCount = (long)(maxX - minX + 1) * (maxY - minY + 1);
+        if (cellCount > 250_000)
+        {
+            HUDController.ShowFloatingWarning("Выделенная область слишком велика");
+            return;
+        }
 
         _cellBuffer.Clear();
 
@@ -75,7 +79,7 @@ public class FarmingTool : ITool
                 {
                     if (CanDesignateFarmPlot(x, y))
                     {
-                        if (WorldPlacementPass.IsOnIsland(x, y, WorldPlacement))
+                        if (WorldPlacementPass.IsIslandCell(x, y))
                         {
                             _cellBuffer.Add((x, y));
                         }
@@ -99,7 +103,7 @@ public class FarmingTool : ITool
             {
                 for (int y = minY; y <= maxY; y++)
                 {
-                    if (WorldPlacementPass.IsOnIsland(x, y, WorldPlacement))
+                    if (WorldPlacementPass.IsIslandCell(x, y))
                     {
                         _cellBuffer.Add((x, y));
                     }
@@ -127,7 +131,7 @@ public class FarmingTool : ITool
 
     private bool CanDesignateFarmPlot(int x, int y)
     {
-        if (WorldPlacementPass.IsOnIsland(x, y, WorldPlacement))
+        if (WorldPlacementPass.IsIslandCell(x, y))
         {
             // Терраин-гейт строгий и fail-closed. Раньше он был обёрнут в
             // `if (_mapData != null && координата в окне карты)`: при отсутствии карты (или
@@ -143,11 +147,14 @@ public class FarmingTool : ITool
             // но рисуется песком (MapRenderer строит terrain_map: Biome == Desert → Sand).
             if (_mapData.GetBiome(x, y) == Game.Core.WorldStreaming.BiomeType.Desert)
                 return false;
+            // task-21: грядку на жилу не размечаем (жила сохраняется).
+            if (_mapData.HasOre(x, y))
+                return false;
 
             if (_wallBuildManager != null && _wallBuildManager.IsWallAt(x, y))
                 return false;
 
-            if (StructureManager.Instance.HasStructureAt(x, y))
+            if (StructureManager.Instance.IsOccupiedForBuildAt(x, y))
                 return false;
 
             if (BuildingManager.Instance.HasBuildingAt(x, y))

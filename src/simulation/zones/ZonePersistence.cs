@@ -53,10 +53,17 @@ public static class ZonePersistence
         int nextId = 1;
         foreach (Zone z in snapshot)
         {
-            if (z == null || z.Kind != ZoneKind.Work)
+            if (z == null || !z.IsWorkZone)
                 continue;
             var d = new Godot.Collections.Dictionary
             {
+                // FIX (bughunt 13-3): тип зоны теперь пишется явно. Отсутствие поля
+                // в старых файлах трактуется как Work — обратная совместимость.
+                ["kind"] = "work",
+                // task-12: ОТРАСЛЬ зоны. Поле добавлено БЕЗ смены version формата:
+                // старые читатели его игнорируют, новый читатель без поля
+                // восстанавливает отрасль по маске работ (см. TryLoadZones).
+                ["industry"] = ZoneIndustryRegistry.IdFor(z.Kind),
                 ["id"] = z.Id,
                 ["name"] = z.Name ?? string.Empty,
                 ["center"] = new Godot.Collections.Array { z.CenterX, z.CenterY },
@@ -70,6 +77,32 @@ public static class ZonePersistence
             zonesArray.Add(d);
             if (z.Id >= nextId)
                 nextId = z.Id + 1;
+        }
+
+        // FIX (bughunt 13-3): Farm-зоны раньше не писались вообще — после перезапуска
+        // грядки и культуры были (они едут островными дельтами), а зон не было:
+        // окно фермы не открывалось, AutoPlant не возобновлялся.
+        List<FarmZone> farmSnapshot = FarmZoneManager.Instance.GetAllZones();
+        foreach (FarmZone fz in farmSnapshot)
+        {
+            if (fz == null || fz.Tiles == null || fz.Tiles.Count == 0)
+                continue;
+            var tilesArr = new Godot.Collections.Array();
+            foreach ((int x, int y) in fz.Tiles)
+                tilesArr.Add(new Godot.Collections.Array { x, y });
+            zonesArray.Add(new Godot.Collections.Dictionary
+            {
+                ["kind"] = "farm",
+                ["id"] = fz.Id,
+                ["name"] = fz.Name ?? string.Empty,
+                ["tiles"] = tilesArr,
+                ["autoPlant"] = fz.AutoPlantEnabled,
+                // task-13 (запрос Lead): культура зоны-фермы. Раньше писался только
+                // autoPlant — после загрузки все грядки становились пшеницей, хотя
+                // игрок выбрал лён. Crop — истинное поле Zone.Crop (адаптер FarmZone
+                // читает его же). Чистое число = стабильно к переименованиям.
+                ["crop"] = (int)fz.Crop
+            });
         }
 
         var root = new Godot.Collections.Dictionary
@@ -157,6 +190,14 @@ public static class ZonePersistence
                 Godot.Collections.Dictionary z = zv.AsGodotDictionary();
                 if (z == null)
                     continue;
+                // FIX (bughunt 13-3): Farm-зоны восстанавливаем отдельной веткой.
+                // В старых файлах поля "kind" нет — это Work (обратная совместимость).
+                string kind = z.ContainsKey("kind") ? z["kind"].AsString() : "work";
+                if (kind == "farm")
+                {
+                    RestoreFarmZone(z);
+                    continue;
+                }
                 Godot.Collections.Array center = z["center"].AsGodotArray();
                 if (center == null || center.Count < 2)
                     continue;
@@ -172,6 +213,39 @@ public static class ZonePersistence
                 if (pRaw >= 1 && pRaw <= 10)
                     priority = pRaw;
 
+                // task-12: отрасль из файла. Нет поля (старый сейв) или мусор —
+                // отрасль восстанавливаем по маске работ (та же миграция, что
+                // раньше делал ZoneManager, только здесь она нужна ДО выбора маски).
+                ZoneKind industry;
+                if (z.ContainsKey("industry")
+                    && ZoneIndustryRegistry.TryGet(z["industry"].AsString(), out var profile))
+                {
+                    industry = profile.Kind;
+                }
+                else
+                {
+                    industry = ZoneIndustryRegistry.FromLegacyJobMask(jobMask);
+                }
+
+                // AUDIT task-17 (M-3): СТАРЫЕ .zones.json могли хранить МНОГОБИТОВУЮ
+                // маску («безымянная Work-зона» с несколькими разрешёнными работами).
+                // §119 P0 требует ровно один бит, поэтому
+                // RestoreWorkZoneForPersistence такие записи отвергал — и зона МОЛЧА
+                // исчезала при загрузке (а следующий SaveZones затирал файл уже без
+                // неё). Многобитовая модель всё равно нерабочая: ZoneCoverageMap
+                // отбрасывает зоны с ≠1 битом, диспатч берёт один тип. Поэтому не
+                // теряем зону, а мигрируем маску в ОСНОВНУЮ работу отрасли.
+                ulong restoreMask = jobMask;
+                if (!IsSingleWorkBit(jobMask))
+                {
+                    restoreMask = ZoneIndustryRegistry.PrimaryJobMask(industry);
+                    if (restoreMask == 0)
+                        continue; // отрасль без основной работы — бригадира не создаём
+                    GD.Print($"[Zones] {zoneId}: маска 0x{jobMask:X} не однобитовая — " +
+                             $"зона мигрирована в отрасль «{ZoneIndustryRegistry.TitleFor(industry)}» " +
+                             $"(работа 0x{restoreMask:X})");
+                }
+
                 ZoneManager.Instance.RestoreWorkZoneForPersistence(
                     (int)z["id"].AsInt64(),
                     z["name"].AsString(),
@@ -179,13 +253,84 @@ public static class ZonePersistence
                     (int)center[1].AsInt64(),
                     (int)z["radius"].AsInt64(),
                     (int)z["desiredWorkers"].AsInt64(),
-                    jobMask,
+                    restoreMask,
                     priority,
                     z["enabled"].AsBool(),
-                    (int)z["anchorBlockId"].AsInt64());
+                    (int)z["anchorBlockId"].AsInt64(),
+                    industry);
             }
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Маска содержит ровно ОДИН бит работы (не 0 и не легаси-бит None).
+    /// AUDIT task-17 (M-3): критерий совпадает с валидацией
+    /// <see cref="ZoneManager.RestoreWorkZoneForPersistence"/> и
+    /// <see cref="ZoneCoverageMap"/>, но проверяется ДО вызова, чтобы успеть
+    /// мигрировать старую многобитовую маску вместо потери зоны.
+    /// </summary>
+    private static bool IsSingleWorkBit(ulong mask)
+        => mask != 0 && (mask & 1UL) == 0 && (mask & (mask - 1UL)) == 0;
+
+    /// <summary>
+    /// FIX (bughunt 13-3): восстановить Farm-зону из записи файла.
+    ///
+    /// Идемпотентно: если в первой клетке зона уже есть, запись пропускается —
+    /// у FarmZoneManager нет публичного ClearAll, поэтому повторная загрузка
+    /// без этой проверки плодила бы дубликаты. Пользуемся только публичным API.
+    /// </summary>
+    private static void RestoreFarmZone(Godot.Collections.Dictionary z)
+    {
+        Godot.Collections.Array raw = z["tiles"].AsGodotArray();
+        if (raw == null || raw.Count == 0)
+            return;
+
+        var tiles = new List<(int X, int Y)>(raw.Count);
+        foreach (Variant tv in raw)
+        {
+            Godot.Collections.Array pair = tv.AsGodotArray();
+            if (pair == null || pair.Count < 2)
+                continue;
+            tiles.Add(((int)pair[0].AsInt64(), (int)pair[1].AsInt64()));
+        }
+        if (tiles.Count == 0)
+            return;
+
+        if (FarmZoneManager.Instance.TryGetZoneAt(tiles[0].X, tiles[0].Y, out _))
+            return; // уже восстановлена в этой сессии (дубль записи/повторный вызов)
+
+        // task-13: культура фермы. Старый файл без "crop" → пшеница (прежнее поведение).
+        var crop = CropType.Wheat;
+        if (z.ContainsKey("crop"))
+        {
+            int cropRaw = (int)z["crop"].AsInt64();
+            var parsed = (CropType)cropRaw;
+            if (Enum.IsDefined(parsed))
+                crop = parsed;
+        }
+        bool autoPlant = z.ContainsKey("autoPlant") && z["autoPlant"].AsBool();
+        int savedId = z.ContainsKey("id") ? (int)z["id"].AsInt64() : 0;
+        string savedName = z.ContainsKey("name") ? z["name"].AsString() : null;
+
+        // AUDIT task-17 (M-4): восстанавливаем СОХРАНЁННЫЙ id — иначе CropData.ZoneId
+        // из островных дельт и любые внешние привязки после перезапуска указывали бы
+        // в пустоту. Fallback (битый id/дубль) — старый путь с новым id: лучше зона
+        // без стабильного номера, чем потерянная ферма.
+        if (FarmZoneManager.Instance.RestoreZone(savedId, savedName, tiles, autoPlant, crop))
+            return;
+
+        FarmZoneManager.Instance.CreateZone(tiles);
+
+        if (!FarmZoneManager.Instance.TryGetZoneAt(tiles[0].X, tiles[0].Y, out FarmZone created)
+            || created == null)
+            return;
+
+        if (crop != CropType.Wheat)
+            FarmZoneManager.Instance.SetCrop(created.Id, crop);
+
+        if (autoPlant)
+            FarmZoneManager.Instance.SetAutoPlant(created.Id, true);
     }
 }

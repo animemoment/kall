@@ -21,6 +21,10 @@ public partial class FertilityOverlayRenderer : TextureRect
     private ImageTexture _texture;
     private float _timer;
     private Image _reuseImg;
+    // FIX (bughunt 14-6): переиспользуемый RGBA8-буфер (128×128×4 = 64 КБ): собираем
+    // пиксели в обычном массиве и заливаем одной операцией Image.SetData, а не 16 384
+    // интероп-вызовами SetPixel на главном потоке. Аллокация одна, поле переиспользуется.
+    private byte[] _pixels;
 
     public override void _Ready()
     {
@@ -77,16 +81,22 @@ public partial class FertilityOverlayRenderer : TextureRect
         Size = new Vector2(viewTilesW * 64f, viewTilesH * 64f);
 
         _reuseImg ??= Image.CreateEmpty(TexSize, TexSize, false, Image.Format.Rgba8);
+        byte[] px = _pixels ??= new byte[TexSize * TexSize * 4];
         var img = _reuseImg;
         int fertW = fertility?.Width ?? 0;
         int fertH = fertility?.Height ?? 0;
 
         for (int ty = 0; ty < TexSize; ty++)
         {
-            int mapY = tileMinY + (ty * viewTilesH / TexSize);
+            // FIX (bughunt 14-7): единственное центрирование — по ЦЕНТРУ текселя.
+            // Текстура растянута (StretchMode.Scale) ровно на viewTilesH тайлов, поэтому
+            // центр текселя ty лежит в тайле floor((ty + 0.5) * viewTilesH / TexSize).
+            // Целочисленный эквивалент (все величины > 0): ((2*ty + 1) * viewTilesH) / (2*TexSize).
+            int mapY = tileMinY + ((ty * 2 + 1) * viewTilesH) / (TexSize * 2);
+            int row = ty * TexSize * 4;
             for (int tx = 0; tx < TexSize; tx++)
             {
-                int mapX = tileMinX + (tx * viewTilesW / TexSize);
+                int mapX = tileMinX + ((tx * 2 + 1) * viewTilesW) / (TexSize * 2);
                 int fert;
                 if (fertility != null && (uint)mapX < (uint)fertW && (uint)mapY < (uint)fertH)
                 {
@@ -106,9 +116,18 @@ public partial class FertilityOverlayRenderer : TextureRect
                         if (fert > 200) fert = 200;
                     }
                 }
-                img.SetPixel(tx, ty, FertilityColor(fert));
+                // ToRgba32 — та же упаковка, которой Image.SetPixel писал в RGBA8:
+                // r | g<<8 | b<<16 | a<<24, байт в памяти: R,G,B,A.
+                uint rgba = FertilityColor(fert).ToRgba32();
+                int o = row + tx * 4;
+                px[o + 0] = (byte)rgba;
+                px[o + 1] = (byte)(rgba >> 8);
+                px[o + 2] = (byte)(rgba >> 16);
+                px[o + 3] = (byte)(rgba >> 24);
             }
         }
+        // FIX (bughunt 14-6): одна заливка всего кадра вместо 16 384 SetPixel.
+        img.SetData(TexSize, TexSize, false, Image.Format.Rgba8, px);
         _texture.SetImage(img);
         _timer = 0f;
     }

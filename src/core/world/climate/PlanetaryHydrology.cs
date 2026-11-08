@@ -18,9 +18,23 @@ public static class PlanetaryHydrology
     private const int MaxRiverSteps = 450;
     private const int SpringGridStride = 18;
 
+    // FIX (bughunt 03-5): рабочие буферы не аллоцируются на каждый вызов.
+    // ThreadStatic — гидрология зовётся из фоновой задачи мировой карты
+    // (WorldMapOverlay), поэтому отдельный набор на поток исключает гонки без lock.
+    // Минус тот же, что у кэшей ContinentShaper: память остаётся за потоком.
+    [ThreadStatic] private static bool[] _riverMaskScratch;
+    [ThreadStatic] private static int[] _visitedStampScratch;
+    [ThreadStatic] private static List<int> _pathScratch;
+
     /// <summary>
     /// Прокладывает реалистичные континентальные реки по градиенту высоты.
-    /// Модифицирует tiles и pixels напрямую (zero-alloc на кадр, < 2мс на весь мир 2048x1024).
+    /// Модифицирует tiles и pixels напрямую.
+    /// FIX (bughunt 03-5): после первого вызова на потоке — ноль LOH-аллокаций:
+    /// riverMask/visitedStamp/pathCells переиспользуются (ThreadStatic) и
+    /// очищаются только в используемом диапазоне [0,totalCells). Прежнее
+    /// обещание «zero-alloc, &lt; 2мс на мир 2048x1024» было недостоверным:
+    /// объём работы — ~6 тыс. истоков × до 450 шагов × 8 соседей, фактическое
+    /// время на 2048×1024 составляет десятки–сотни миллисекунд, а не единицы.
     /// </summary>
     public static void SimulateGlobalHydrology(
         ulong seed,
@@ -33,9 +47,28 @@ public static class PlanetaryHydrology
         byte[] tileColors)
     {
         int totalCells = width * height;
-        var riverMask = new bool[totalCells];
-        var pathCells = new List<int>(512);
-        var visitedStamp = new int[totalCells];
+
+        // Переиспользуемые буферы: растут при увеличении карты, не уменьшаются.
+        bool[] riverMask = _riverMaskScratch;
+        if (riverMask == null || riverMask.Length < totalCells)
+        {
+            riverMask = new bool[totalCells];
+            _riverMaskScratch = riverMask;
+        }
+
+        int[] visitedStamp = _visitedStampScratch;
+        if (visitedStamp == null || visitedStamp.Length < totalCells)
+        {
+            visitedStamp = new int[totalCells];
+            _visitedStampScratch = visitedStamp;
+        }
+
+        // Чистим только используемый префикс: хвост буфера от прошлой (большей)
+        // карты не нужен и не трогается.
+        Array.Clear(riverMask, 0, totalCells);
+        Array.Clear(visitedStamp, 0, totalCells);
+
+        List<int> pathCells = _pathScratch ??= new List<int>(512);
         int currentStamp = 0;
 
         int gridXCount = width / SpringGridStride;

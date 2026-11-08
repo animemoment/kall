@@ -34,6 +34,14 @@ public sealed class WorkerZoneJobSystem
     public const float JobSearchIntervalSec = 2.0f;
 
     /// <summary>
+    /// ST-39: Кэшированный стартовый индекс поиска свободной задачи (first candidate index) для зон
+    /// вместо постоянного линейного сканирования от 0 в цикле назначения работника.
+    /// </summary>
+    private readonly System.Collections.Generic.Dictionary<int, int> _firstCandidateIndex = new();
+    private readonly object _candidateLock = new();
+    private const int MaxCandidateAttempts = 8;
+
+    /// <summary>
     /// Выдача работы Idle-Worker'у его зоны. Вызывается из sim-книгкипа
     /// (тайм-слайсинг, как у Laborer). true — работа назначена.
     /// </summary>
@@ -54,30 +62,71 @@ public sealed class WorkerZoneJobSystem
         var router = ZoneJobRouter.Instance;
         int wx = pool.CurrentCellX[agentIndex];
         int wy = pool.CurrentCellY[agentIndex];
-        if (!router.DequeueNearest(zoneId, wx, wy, out var zjob))
-            return false;
 
-        // САМОВАЛИДАЦИЯ после выдачи (реестр — истина; P1-заметка).
-        if (!JobDispatcher.Instance.JobIndex.TryGetJob(zjob.JobId, out var jd)
-            || !jd.IsActive
-            || jd.TypeId != zjob.Type
-            || jd.TargetX != zjob.X || jd.TargetY != zjob.Y)
+        int startIndex = 0;
+        lock (_candidateLock)
         {
-            router.Unassign(zjob.JobId); // фантом/несоответствие — назад в очередь
-            return false;
+            _firstCandidateIndex.TryGetValue(zoneId, out startIndex);
         }
 
-        if (JobRegistry.TryGetHandler(jd.TypeId, out var handler) && !handler.CanAgentExecute(agentIndex, jd, pool, ctx))
+        // ST-39: Перебор свободных задач в зоне с поддержкой ротации и кэшированием first candidate index
+        var rejectedJobs = new System.Collections.Generic.List<ZoneJobRouter.ZoneJob>(MaxCandidateAttempts);
+        bool assigned = false;
+
+        for (int attempt = 0; attempt < MaxCandidateAttempts; attempt++)
         {
-            // Объект работы отвалился (дерево срубили и т.п.): назад в очередь —
-            // Sweep вычистит, если реально мертва; здесь не решаем судьбу сами.
-            router.Unassign(zjob.JobId);
-            return false;
+            if (!router.DequeueNearest(zoneId, wx, wy, out var zjob))
+                break;
+
+            // САМОВАЛИДАЦИЯ после выдачи (реестр — истина; P1-заметка).
+            if (!JobDispatcher.Instance.JobIndex.TryGetJob(zjob.JobId, out var jd)
+                || !jd.IsActive
+                || jd.TypeId != zjob.Type
+                || jd.TargetX != zjob.X || jd.TargetY != zjob.Y)
+            {
+                rejectedJobs.Add(zjob);
+                continue;
+            }
+
+            if (JobRegistry.TryGetHandler(jd.TypeId, out var handler) && !handler.CanAgentExecute(agentIndex, jd, pool, ctx))
+            {
+                // Объект работы отвалился (дерево срубили и т.п.): назад в очередь —
+                // Sweep вычистит, если реально мертва; здесь не решаем судьбу сами.
+                rejectedJobs.Add(zjob);
+                continue;
+            }
+
+            // Клейм в реестре + OnStart.
+            if (JobDispatcher.Instance.TryAssignWorkerToZoneJob(agentIndex, zjob.JobId, pool, ctx))
+            {
+                assigned = true;
+                lock (_candidateLock)
+                {
+                    _firstCandidateIndex[zoneId] = (startIndex + attempt + 1) % 1024;
+                }
+                break;
+            }
+            else
+            {
+                rejectedJobs.Add(zjob);
+            }
         }
 
-        // Клейм в реестре + OnStart. Неудача — работа уже возвращена в очередь
-        // (внутри TryAssignWorkerToZoneJob), агент просто попробует позже.
-        return JobDispatcher.Instance.TryAssignWorkerToZoneJob(agentIndex, zjob.JobId, pool, ctx);
+        // Возвращаем временно отклоненные задачи в очередь зоны
+        for (int r = 0; r < rejectedJobs.Count; r++)
+        {
+            router.Unassign(rejectedJobs[r].JobId);
+        }
+
+        if (!assigned && rejectedJobs.Count > 0)
+        {
+            lock (_candidateLock)
+            {
+                _firstCandidateIndex[zoneId] = (startIndex + 1) % 1024;
+            }
+        }
+
+        return assigned;
     }
 
     /// <summary>

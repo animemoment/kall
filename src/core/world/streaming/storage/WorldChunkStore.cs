@@ -85,13 +85,17 @@ public sealed class WorldChunkStore
                     options: FileOptions.None))
                 {
                     stream.Write(encoded, 0, encoded.Length);
+                    // FIX (bughunt 05-4): раньше fsync не делался (FileOptions.None без
+                    // Flush(true)) — при сбое питания получалось «валидное имя + мусор»,
+                    // и delta тихо терялась: стример считал её битой и генерировал пустой
+                    // чанк. Манифест (WorldManifestStore) fsync уже делает — приводим
+                    // чанк к тому же уровню надёжности.
+                    stream.Flush(flushToDisk: true);
                 }
 
                 // Temp находится рядом с target: File.Move(overwrite) заменяет файл атомарно
-                // в пределах тома, поэтому до замены старый delta цел. Явного fsync нет
-                // (FileOptions.None и отсутствие Flush(true)): при сбое питания возможна
-                // ситуация «валидное имя, битые данные». Читатель обязан это переживать —
-                // см. graceful degradation в WorldChunkStreamer.ProcessChunk.
+                // в пределах тома, поэтому до замены старый delta цел. После fsync выше
+                // данные уже на диске, а не в кэше ОС.
                 File.Move(tempPath, targetPath, overwrite: true);
                 return true;
             }

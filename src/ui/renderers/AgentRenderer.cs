@@ -147,7 +147,15 @@ public partial class AgentRenderer : Node2D
         _renderBuffer = new float[agentCount * 8];
         _shadowBuffer = new float[agentCount * 8];
         if (_gpuInterpolationEnabled)
+        {
             _gpuInstanceBuffer = new float[agentCount * 16];
+            // R-07: неизменяемый identity-трансформ (8 float из 16 на инстанс) кладём
+            // ОДИН раз при выделении буфера. Дальше каждый кадр пишутся только
+            // 8 меняющихся float (color + custom data) — на 10k агентов это экономит
+            // ~320 КБ записи на снапшот при 20–30 Гц.
+            AgentLerpBatch.FillGpuInstanceConstants(
+                new Span<float>(_gpuInstanceBuffer, 0, agentCount * 16), agentCount);
+        }
 
         var texture = ResourceLoader.Load<Texture2D>(TexturePath);
         if (texture == null)
@@ -183,8 +191,8 @@ public partial class AgentRenderer : Node2D
             _agentLodMaterial.SetShaderParameter("agent_color", new Color(0.35f, 0.75f, 1f, 1f));
         }
 
-        float mapSizePx = MapRenderer.MapWidth * MapRenderer.TileSizePx;
-        var mapAabb = new Aabb(Godot.Vector3.Zero, new Godot.Vector3(mapSizePx, mapSizePx, 1000f));
+        // R2-02: AABB охватывает мир с запасом (-262144..+262144 px = ±4096 тайлов), чтобы агенты за кромкой 1024 не отсекались.
+        var mapAabb = new Aabb(new Godot.Vector3(-262144f, -262144f, -1000f), new Godot.Vector3(524288f, 524288f, 2000f));
 
         _multiMesh = new MultiMesh
         {
@@ -418,6 +426,16 @@ public partial class AgentRenderer : Node2D
             float zoom = cam?.Zoom.X ?? 1f;
             UpdateLod(zoom);
 
+            // L-07: разбивка draw calls — агентский слой рисуется 1–2 батчами
+            // (тело MultiMesh + опциональная тень). Учёт только для отчёта,
+            // на отрисовку не влияет. См. DrawCallSplit (core/common).
+            int agentDraws = 0;
+            if (_multiMeshInstance != null && IsInstanceValid(_multiMeshInstance) && _multiMeshInstance.Visible)
+                agentDraws++;
+            if (_shadowInstance != null && IsInstanceValid(_shadowInstance) && _shadowInstance.Visible)
+                agentDraws++;
+            DrawCallSplit.Report("Agents", agentDraws);
+
             // P1 early-out: ничего нового, lerp сошёлся, тела и тени чистые —
             // кадр пропускаем целиком (ни LerpFill, ни Buffer=, ни GetCamera2D).
             // _bodiesDirty/_shadowsDirty стартуют true → первый кадр всегда идёт.
@@ -428,45 +446,61 @@ public partial class AgentRenderer : Node2D
 
             bool hasNewSnapshot = false;
             System.Numerics.Vector2[] latestSnapshot = null;
-            while (_simulationThread.PositionQueue.TryDequeue(out var snapshot))
+            // B-07: слот кольца, который держим; обязаны вернуть его после копирования,
+            // иначе производитель перестанет публиковать новые снапшоты в этот слот.
+            int latestSlot = -1;
+            while (_simulationThread.PositionQueue.TryDequeue(out var snap))
             {
-                latestSnapshot = snapshot;
+                if (latestSnapshot != null)
+                    _simulationThread.ReleaseSnapshot(latestSlot); // предыдущий не нужен
+                latestSnapshot = snap.Buffer;
+                latestSlot = snap.Slot;
             }
 
             if (latestSnapshot != null)
             {
-                if (!_hasInitialSnapshot)
+                try
                 {
-                    // Первый снапшот: заполняем и prev, и target стартовыми позициями,
-                    // чтобы агенты не «выстреливали» из угла (0,0) в начале работы.
-                    Array.Copy(latestSnapshot, _targetPositions, _agentCount);
-                    for (int i = 0; i < _agentCount; i++)
+                    if (!_hasInitialSnapshot)
                     {
-                        _prevPositions[i] = _targetPositions[i];
-                        _facingAngles[i] = 0f;
-                    }
-                    _hasInitialSnapshot = true;
-                }
-                else
-                {
-                    // Фиксируем текущее интерполированное положение перед подменой снапшота.
-                    AgentLerpBatch.Interpolate(
-                        new Span<System.Numerics.Vector2>(_prevPositions, 0, _agentCount),
-                        new ReadOnlySpan<System.Numerics.Vector2>(_targetPositions, 0, _agentCount),
-                        _lerpFactor);
-                    Array.Copy(latestSnapshot, _targetPositions, _agentCount);
-                    for (int i = 0; i < _agentCount; i++)
-                    {
-                        float dx = _targetPositions[i].X - _prevPositions[i].X;
-                        float dy = _targetPositions[i].Y - _prevPositions[i].Y;
-                        if (dx * dx + dy * dy > 0.04f)
+                        // Первый снапшот: заполняем и prev, и target стартовыми позициями,
+                        // чтобы агенты не «выстреливали» из угла (0,0) в начале работы.
+                        Array.Copy(latestSnapshot, _targetPositions, _agentCount);
+                        for (int i = 0; i < _agentCount; i++)
                         {
-                            _facingAngles[i] = MathF.Atan2(dy, dx);
+                            _prevPositions[i] = _targetPositions[i];
+                            _facingAngles[i] = 0f;
+                        }
+                        _hasInitialSnapshot = true;
+                    }
+                    else
+                    {
+                        // Фиксируем текущее интерполированное положение перед подменой снапшота.
+                        AgentLerpBatch.Interpolate(
+                            new Span<System.Numerics.Vector2>(_prevPositions, 0, _agentCount),
+                            new ReadOnlySpan<System.Numerics.Vector2>(_targetPositions, 0, _agentCount),
+                            _lerpFactor);
+                        Array.Copy(latestSnapshot, _targetPositions, _agentCount);
+                        for (int i = 0; i < _agentCount; i++)
+                        {
+                            float dx = _targetPositions[i].X - _prevPositions[i].X;
+                            float dy = _targetPositions[i].Y - _prevPositions[i].Y;
+                            if (dx * dx + dy * dy > 0.04f)
+                            {
+                                _facingAngles[i] = MathF.Atan2(dy, dx);
+                            }
                         }
                     }
+                    _lerpFactor = 0f;
+                    hasNewSnapshot = true;
                 }
-                _lerpFactor = 0f;
-                hasNewSnapshot = true;
+                finally
+                {
+                    // B-07: слот возвращается ВСЕГДА, даже если копирование бросило —
+                    // иначе буфер навсегда остался бы «занятым» и публикации в него
+                    // прекратились бы.
+                    _simulationThread.ReleaseSnapshot(latestSlot);
+                }
             }
 
             float lerpSpeed = _simulationThread.SpeedMultiplier >= 5f ? 45f : 25f;
@@ -515,12 +549,15 @@ public partial class AgentRenderer : Node2D
                 {
                     // Zero-alloc замер: переиспользуемый Stopwatch вместо StartNew().
                     _uploadStopwatch.Restart();
+                    // R-07: writeTransformConstants=false — identity-трансформ уже
+                    // записан один раз в FillGpuInstanceConstants при аллокации буфера.
                     AgentLerpBatch.FillGpuInstanceBuffer(
                         new Span<float>(_gpuInstanceBuffer, 0, _agentCount * 16),
                         new ReadOnlySpan<System.Numerics.Vector2>(_prevPositions, 0, _agentCount),
                         new ReadOnlySpan<System.Numerics.Vector2>(_targetPositions, 0, _agentCount),
                         new ReadOnlySpan<float>(_facingAngles, 0, _agentCount),
-                        _agentCount);
+                        _agentCount,
+                        writeTransformConstants: false);
                     // Раздельный замер: fill (упаковка 16 float/инстанс на CPU) vs upload
                     // (маршалинг float[] -> PackedFloat32Array + команда в RenderingServer).
                     // По нему видно, что именно даёт пик на upload-кадре.

@@ -31,6 +31,11 @@ public static class ContinentShaper
         public uint Ver;
         public long Rx;
         public long Ry;
+        // FIX (bughunt 03-11): параметры мира входят в ключ кэша. Раньше для того
+        // же (seed, ver, rx, ry) с ДРУГИМИ p возвращался образец от старых
+        // параметров — мир зависел от истории вызовов в потоке (нарушение
+        // контракта шапки «зависит только от params/seed/ver/координат»).
+        public WorldMacroClimateParams Params;
         public ContinentSample Sample;
         public bool Valid;
     }
@@ -47,7 +52,8 @@ public static class ContinentShaper
         _shaperCache ??= new ShaperCacheEntry[1024];
         int cacheIdx = (int)(((regionX * 73856093L) ^ (regionY * 19349663L) ^ (long)seed) & 1023);
         ref var entry = ref _shaperCache[cacheIdx];
-        if (entry.Valid && entry.Seed == seed && entry.Ver == ver && entry.Rx == regionX && entry.Ry == regionY)
+        if (entry.Valid && entry.Seed == seed && entry.Ver == ver && entry.Rx == regionX
+            && entry.Ry == regionY && entry.Params == p) // FIX (bughunt 03-11): p в ключе
         {
             return entry.Sample;
         }
@@ -57,6 +63,7 @@ public static class ContinentShaper
         entry.Ver = ver;
         entry.Rx = regionX;
         entry.Ry = regionY;
+        entry.Params = p;
         entry.Sample = sample;
         entry.Valid = true;
         return sample;
@@ -91,7 +98,13 @@ public static class ContinentShaper
 
         // --- 3. Орогенез на границах плит (Широкие горные хребты и предгорья) ------------------------------------
         int seaLevel = p.SeaLevel;
-        seaLevel = Math.Clamp(seaLevel, 28000, 36000);
+        // FIX (bughunt 03-1): зажим 28000..36000 не давал архетипу Archipelago
+        // (SeaLevel 42000..50000) проявиться — все ~20 % архипелажных сидов получали
+        // ровно 36000 и выглядели как Continents. Диапазон Q16 — 0..65535, поэтому
+        // верхнюю границу поднимаем до документированного максимума архетипов.
+        // ВНИМАНИЕ: это меняет рельеф для архипелажных сидов; смена формул по
+        // контракту требует бампа версии генератора — решение владельца.
+        seaLevel = Math.Clamp(seaLevel, 28000, 52000);
 
         if (boundary > 0)
         {
@@ -117,13 +130,28 @@ public static class ContinentShaper
             {
                 // В океане: срединно-океанический хребет ВСЕГДА удерживается глубоко под водой!
                 int underwaterRidge = (int)((long)boundary * 1800 / Q16.One);
-                rawElevation = Math.Min(seaLevel - 4000, rawElevation + underwaterRidge);
+                // FIX (bughunt 03-8): ограничиваем только ПОДЪЁМ. Прежний
+                // Math.Min(seaLevel - 4000, raw + ridge) опускал всё мелководье
+                // до фиксированной глубины и давал плоскую «полку» с обрывом
+                // 4000 вдоль границ плит. Теперь значение не может стать ниже raw.
+                int ridgeCap = Math.Max(0, seaLevel - 4000 - rawElevation);
+                rawElevation += Math.Min(underwaterRidge, ridgeCap);
             }
         }
 
         // Островные дуги и извилистые архипелаги (Island Arcs & Archipelagos):
-        bool arcZone = (boundary > 0 && compression > 0.20f && rawElevation < seaLevel)
-                    || (p.IslandArcDensity > 12000 && rawElevation < seaLevel && boundary > 0);
+        // FIX (bughunt 03-9): дуги — только на СХОДЯЩИХСЯ океанских границах плит;
+        // IslandArcDensity задаёт, насколько слабая сходимость ещё достаточна.
+        // Прежний второй дизъюнкт (p.IslandArcDensity > 12000) был истинен почти для
+        // всех архетипов (Continents 12000..24000, InlandSeas 14000..28000,
+        // Archipelago 30000..55000) и полностью перекрывал compression > 0.20f:
+        // кинематика плит ни на что не влияла, дуги поднимались даже на расходящихся
+        // границах. Теперь порог сходимости плавно падает с ростом плотности:
+        // 0.40 (density → 0) .. 0.10 (density → 65535). Так параметр остаётся
+        // «плотностью дуг вдоль границ плит» (его XML-doc не врёт), а не мёртвым
+        // флагом, и оба входа условия реально влияют на результат.
+        float arcCompressionGate = 0.40f - 0.30f * (p.IslandArcDensity / (float)Q16.One);
+        bool arcZone = boundary > 0 && rawElevation < seaLevel && compression > arcCompressionGate;
 
         if (arcZone)
         {
@@ -250,6 +278,10 @@ public static class ContinentShaper
         public uint Ver;
         public long Cx;
         public long Cy;
+        // FIX (bughunt 03-11): решётка плит тоже входит в ключ. Прошлый кэш не
+        // различал lattice, и при смене PlateCount (→ размера решётки) для тех же
+        // (seed, ver, cx, cy) возвращался узел старой решётки.
+        public int Lattice;
         public long Px;
         public long Py;
         public int PlateId;
@@ -263,9 +295,12 @@ public static class ContinentShaper
     private static (long Px, long Py, int PlateId) GetLatticePoint(ulong seed, uint ver, long cx, long cy, int lattice)
     {
         _latticeCache ??= new LatticeSeedCache[64];
-        int idx = (int)(((cx * 73856093L) ^ (cy * 19349663L) ^ (long)seed) & 63);
+        // FIX (bughunt 03-11): lattice смешан в индекс и в сравнение ключа.
+        int idx = (int)(((cx * 73856093L) ^ (cy * 19349663L) ^ (long)seed
+            ^ ((long)lattice * 2654435761L)) & 63);
         ref var entry = ref _latticeCache[idx];
-        if (entry.Valid && entry.Seed == seed && entry.Ver == ver && entry.Cx == cx && entry.Cy == cy)
+        if (entry.Valid && entry.Seed == seed && entry.Ver == ver && entry.Cx == cx
+            && entry.Cy == cy && entry.Lattice == lattice)
         {
             return (entry.Px, entry.Py, entry.PlateId);
         }
@@ -279,6 +314,7 @@ public static class ContinentShaper
         entry.Ver = ver;
         entry.Cx = cx;
         entry.Cy = cy;
+        entry.Lattice = lattice;
         entry.Px = px;
         entry.Py = py;
         entry.PlateId = plateId;

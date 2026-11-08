@@ -1,4 +1,4 @@
-﻿namespace Game.Core;
+namespace Game.Core;
 
 /// <summary>
 /// Уровни системных приоритетов выполнения работ.
@@ -11,5 +11,6 @@ public enum JobPriorityTier : byte
     Farming = 3,         // Сельское хозяйство
     TreeChopping = 4,    // Лесозаготовка
     StockpileHauling = 5,// Переноска на склады
-    Low = 6              // Фоновые и второстепенные работы
+    Production = 6,      // Работа у станка (task-20): после снабжения, до фоновых
+    Low = 7              // Фоновые и второстепенные работы
 }

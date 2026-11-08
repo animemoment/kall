@@ -1,5 +1,15 @@
 shader_type canvas_item;
 
+// W-03: ШЕЙДЕР ВЫВЕДЕН ИЗ ЭКСПЛУАТАЦИИ (RENDER_SYNC_PLAN фаза 2 «один рендер земли»).
+// Землю и воду ВЕЗДЕ (остров и за кромкой 1024) рисует один шейдер —
+// src/shaders/terrain_blend.gdshader (MapRenderer._groundSurface, z = -2): у него
+// непрерывное поле terrain_map + evaluate_biome/FBM/shore_curvature и та же
+// сглаженная кромка (shore_inset, W-01). Стриминг (StreamingWorldView) кладёт
+// только прозрачный декор (деревья/камни) поверх этой земли.
+// НЕ ПОДКЛЮЧАТЬ обратно: детекция воды ниже (:XX is_water по цвету пикселя) — это
+// ровно тот дефект W-03 («внутри 1024 вода сглажена, снаружи — лесенки 64 px»),
+// который устранён единым путём. Единственная функция кромки — в terrain_blend.
+
 // Канонические параметры воды из terrain_blend.gdshader для визуального равенства
 uniform vec4 water_color : source_color = vec4(0.20, 0.44, 0.82, 1.0);
 uniform vec4 water_deep_color : source_color = vec4(0.14, 0.30, 0.68, 1.0);

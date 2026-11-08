@@ -17,6 +17,10 @@ public sealed class FlatIdleWorkerPool
     private int[] _agentToIdleIndex;
     private int _count;
 
+    // J-02: курсор ротации забора батча (см. CollectIdleWorkers). Доступ только
+    // под _lock — читается и пишется внутри критической секции.
+    private int _collectCursor;
+
     public int Count => Volatile.Read(ref _count);
 
     public FlatIdleWorkerPool(int initialCapacity = 16384)
@@ -99,6 +103,12 @@ public sealed class FlatIdleWorkerPool
     /// <summary>
     /// Пакетный забор свободных агентов для диспетчеризации.
     /// Возвращает реальное количество скопированных ID.
+    ///
+    /// J-02: забор идёт с курсора ротации и закольцовывается. Раньше он всегда
+    /// копировал массив с индекса 0, поэтому при пуле больше размера батча
+    /// (MaxBatchWorkers = 4096) агенты, попавшие в пул позже и стоящие в его
+    /// хвосте, не попадали в батч НИКОГДА: они висели бездельниками, хотя рядом
+    /// были работы, а работу брал кто-то «с другого конца карты».
     /// </summary>
     public int CollectIdleWorkers(int maxCount, int[] destination, AgentDataPool pool = null)
     {
@@ -109,7 +119,24 @@ public sealed class FlatIdleWorkerPool
             int toCopy = Math.Min(maxCount, Math.Min(_count, destination.Length));
             if (toCopy <= 0) return 0;
 
-            Array.Copy(_idleAgentIds, 0, destination, 0, toCopy);
+            // Весь пул влезает в батч — копируем подряд и нормализуем курсор.
+            if (toCopy >= _count)
+            {
+                Array.Copy(_idleAgentIds, 0, destination, 0, toCopy);
+                _collectCursor = 0;
+                return toCopy;
+            }
+
+            int start = _collectCursor;
+            if (start < 0 || start >= _count) start = 0;
+
+            int head = Math.Min(toCopy, _count - start);
+            Array.Copy(_idleAgentIds, start, destination, 0, head);
+            int tail = toCopy - head;
+            if (tail > 0)
+                Array.Copy(_idleAgentIds, 0, destination, head, tail);
+
+            _collectCursor = (start + toCopy) % _count;
             return toCopy;
         }
     }
@@ -140,6 +167,7 @@ public sealed class FlatIdleWorkerPool
         {
             Array.Fill(_agentToIdleIndex, -1);
             _count = 0;
+            _collectCursor = 0;
         }
     }
 

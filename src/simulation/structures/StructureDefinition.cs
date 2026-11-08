@@ -17,6 +17,8 @@ public sealed class StructureDefinition
     public bool BlocksMovement { get; }
     public bool CastsShadow { get; }
     public bool IsWall => Category == StructureCategory.Wall;
+    public bool IsFloor => Category == StructureCategory.Floor;
+    public bool IsRoof => Category == StructureCategory.Roof;
 
     public StructureDefinition(
         string id,

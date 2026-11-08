@@ -201,6 +201,113 @@ public static class GameProfiler
     /// </summary>
     public static bool TrackAllocations { get; set; } = false;
 
+    /// <summary>
+    /// L-06: глобальный выключатель записи счётчиков (ScopeCounter). При false
+    /// горячий путь не делает даже поиска в словаре. Замеры scope'ов
+    /// (Scope/ScopeCustom) оставлены безусловными — их частота на порядки ниже,
+    /// а отключение изменило бы уже собранную историю метрик.
+    /// </summary>
+    public static bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// L-06: агрегат счётчиков одного scope'а за окно снапшота.
+    /// A/B — две счётные величины вызывающего (в JobDispatcher: A=examined,
+    /// B=assigned), Ms — суммарное время вызовов окна, Calls — число вызовов.
+    /// Отдельно от MetricSnapshot: счётчики НЕ входят в PercentLoad, чтобы
+    /// не искажать таблицу времён (тот же принцип, что у BalanceSnapshot).
+    /// </summary>
+    public struct CounterSnapshot
+    {
+        public string Name;
+        public long TotalA;
+        public long TotalB;
+        public double TotalMs;
+        public int Calls;
+        public double AvgMsPerCall;
+    }
+
+    private sealed class CounterEntry
+    {
+        public long A;
+        public long B;
+        /// <summary>Микросекунды (long): Interlocked.Add не умеет double, а lock на горячем пути недопустим.</summary>
+        public long Micros;
+        public int Calls;
+    }
+
+    private static readonly ConcurrentDictionary<string, CounterEntry> _counters = new(StringComparer.Ordinal);
+    private static CounterSnapshot[] _counterCache = Array.Empty<CounterSnapshot>();
+
+    /// <summary>
+    /// L-06: записать счётчики одного вызова в именованный scope.
+    /// Ноль аллокаций на горячем пути: имя — интернированный литерал (ключ уже
+    /// в словаре), запись предвыделена, всё остальное — Interlocked по long/int.
+    /// Строки не строятся, событий не пишется. Выключенный профиль — ранний
+    /// выход до обращения к словарю.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void ScopeCounter(string scope, long a, long b, double ms)
+    {
+        if (!Enabled || scope == null)
+            return;
+
+        var entry = _counters.GetOrAdd(scope, static _ => new CounterEntry());
+        if (a != 0)
+            Interlocked.Add(ref entry.A, a);
+        if (b != 0)
+            Interlocked.Add(ref entry.B, b);
+        if (ms > 0.0 && double.IsFinite(ms))
+            Interlocked.Add(ref entry.Micros, (long)(ms * 1000.0));
+        Interlocked.Increment(ref entry.Calls);
+    }
+
+    /// <summary>
+    /// L-06: пересчёт дельт счётчиков за прошедшее окно. Зовётся из
+    /// SnapshotMetrics рядом с RefreshBalance — окна метрик, баланса и
+    /// счётчиков обязаны совпадать, иначе цифры «плывут» относительно таблицы.
+    /// </summary>
+    private static void RefreshCounters()
+    {
+        var list = new CounterSnapshot[_counters.Count];
+        int idx = 0;
+        foreach (var (name, entry) in _counters)
+        {
+            long a = Interlocked.Exchange(ref entry.A, 0);
+            long b = Interlocked.Exchange(ref entry.B, 0);
+            long micros = Interlocked.Exchange(ref entry.Micros, 0);
+            int calls = Interlocked.Exchange(ref entry.Calls, 0);
+
+            // Scope в этом окне не вызывался — не мусорим строкой.
+            if (calls == 0)
+                continue;
+
+            double totalMs = micros / 1000.0;
+            list[idx++] = new CounterSnapshot
+            {
+                Name = name,
+                TotalA = a,
+                TotalB = b,
+                TotalMs = totalMs,
+                Calls = calls,
+                AvgMsPerCall = calls > 0 ? totalMs / calls : 0.0,
+            };
+        }
+
+        if (idx != list.Length)
+            Array.Resize(ref list, idx);
+        Array.Sort(list, static (x, y) => y.TotalMs.CompareTo(x.TotalMs));
+        _counterCache = list;
+    }
+
+    /// <summary>
+    /// L-06: счётчики последнего окна (результат последнего SnapshotMetrics).
+    /// Читает кэш и НЕ двигает дельты — можно звать хоть каждый кадр.
+    /// </summary>
+    public static void SnapshotCounters(out CounterSnapshot[] results)
+    {
+        results = _counterCache;
+    }
+
     public readonly ref struct ProfileScope
     {
         private readonly string _name;
@@ -293,6 +400,8 @@ public static class GameProfiler
         // Баланс фаз нормируется по тому же окну — иначе его цифры «плыли»
         // относительно таблицы методов (это и путало: 0.67ms против 19.62ms).
         RefreshBalance(windowSec, frames);
+        // L-06: счётчики диспатча — то же окно, что у метрик и баланса.
+        RefreshCounters();
 
         var list = new MetricSnapshot[_metrics.Count];
         int idx = 0;
@@ -351,5 +460,8 @@ public static class GameProfiler
         _nameCache.Clear();
         _balance.Clear();
         _balanceCache = Array.Empty<BalanceSnapshot>();
+        // L-06: сбрасываем и счётчики, иначе после Reset() они жили бы своей жизнью.
+        _counters.Clear();
+        _counterCache = Array.Empty<CounterSnapshot>();
     }
 }

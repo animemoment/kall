@@ -13,9 +13,22 @@ public class StockpileManager
 
     private const int ChunkShift = 4;
     private const int ChunkSize = 16;
-    private const int ChunkDim = 32;
+    // FIX (bughunt 12-5): сетка бакетов была 32×32 = 512×512 тайлов, а остров — 1024×1024
+    // (WorldModel.IslandTiles). GetChunkCoord клампил индексы, поэтому ВСЁ восточнее/южнее
+    // 511 схлопывалось в один бакет (31,31): TryReserveStockpileSlot / TryReserveStockpileItem
+    // / TryTakeStockpileFood перебирали под глобальным _lock тысячи клеток одного HashSet
+    // вместо маленького бакета. Та же патология уже починена в GroundItemManager (J-22) —
+    // приводим размерность к ней: 64×64 = 1024×1024, ровно размер острова.
+    private const int ChunkDim = 64;
     private const float ChunkSizePx = ChunkSize * 64f;
-    private const int MaxChunkRadius = 32;
+    // FIX (bughunt 12-5): радиус поиска = ВСЯ сетка (64 × 16 = 1024 тайла). До фикса
+    // схлопывание бакетов делало поиск фактически глобальным («склад где угодно» на карте),
+    // и оставить 32 значило бы молча перестать находить склады дальше 512 тайлов: у
+    // TryReserveStockpileItem maxChunkRadius = 0 означает именно «любой склад», а у
+    // TryReserveStockpileSlot своего радиуса нет вообще. Поэтому радиус растёт вместе с
+    // размерностью; перебор пустых бакетов дёшев (проверка chunk.Count), а раньше на каждом
+    // шаге перебирался гигантский бакет (31,31).
+    private const int MaxChunkRadius = ChunkDim;
 
     private readonly object _lock = new();
     private readonly HashSet<(int X, int Y)> _zones = new(1024);
@@ -23,7 +36,10 @@ public class StockpileManager
     private readonly HashSet<(int X, int Y)>[,] _zoneChunks = new HashSet<(int X, int Y)>[ChunkDim, ChunkDim];
     private readonly Dictionary<(int X, int Y), (ItemId Item, int Count, int ReservedIncoming, int ReservedOutgoing)> _storage = new(1024);
 
-    private const int MaxItemTypes = 8;
+    // task-4: 91 тип предмета (3 legacy + 87 сырья T0 + руда 23..45). Размеры
+    // массивов-счётчиков — из ItemConfig, иначе сырьё с id >= 8 выпадало из
+    // тоталов/HUD/снапшотов склада.
+    private const int MaxItemTypes = ItemConfig.MaxItemTypes;
     private const int MaxSnapshotItemsPerType = 16384;
 
     private bool _isDirty = true;
@@ -60,14 +76,45 @@ public class StockpileManager
     public event Action<(int X, int Y)> OnZoneTileRemoved;
     public event Action<ItemId, int> OnItemCountChanged;
 
+    /// <summary>
+    /// UI-16: Рабочий радиус обслуживания склада (по умолчанию 64 клетки).
+    /// </summary>
+    public const int DefaultServiceRadiusTiles = 64;
+
+    /// <summary>Выбранная клетка склада для инспектора и оверлея подсветки радиуса.</summary>
+    public (int X, int Y)? SelectedTile { get; private set; }
+    public event Action<(int X, int Y)?> OnSelectedTileChanged;
+
+    public void SelectTile(int x, int y)
+    {
+        if (IsZoneTile(x, y))
+        {
+            SelectedTile = (x, y);
+            OnSelectedTileChanged?.Invoke(SelectedTile);
+        }
+        else
+        {
+            DeselectTile();
+        }
+    }
+
+    public void DeselectTile()
+    {
+        if (SelectedTile.HasValue)
+        {
+            SelectedTile = null;
+            OnSelectedTileChanged?.Invoke(null);
+        }
+    }
+
     // Кэш тоталов для HUD без O(N) скана (обновляется под _lock, читается lock-free).
-    private readonly int[] _cachedTotals = new int[8];
+    private readonly int[] _cachedTotals = new int[MaxItemTypes];
     public int GetTotalItemCount(ItemId id) => Volatile.Read(ref _cachedTotals[(int)id]);
 
     public int GetLiveItemCount(ItemId id)
     {
         int idx = (int)id;
-        return (idx >= 0 && idx < 8) ? Volatile.Read(ref _liveTotals[idx]) : 0;
+        return (idx >= 0 && idx < MaxItemTypes) ? Volatile.Read(ref _liveTotals[idx]) : 0;
     }
 
     // §118 фаза 4 (аудит MapDataWriter §2): битмаска быстрого пути IsZoneTile
@@ -137,8 +184,14 @@ public class StockpileManager
 
     private static (int CX, int CY) GetChunkCoord(int x, int y)
     {
-        int cx = Math.Clamp(x >> ChunkShift, 0, ChunkDim - 1);
-        int cy = Math.Clamp(y >> ChunkShift, 0, ChunkDim - 1);
+        // FIX (bughunt 12-5): как в GroundItemManager (J-22) — без Math.Clamp, чтобы
+        // «зажим» индексов не выглядел намеренным схлопыванием. Для клеток острова
+        // (0..1023 → 0..63) результат прежний: x >> 4; за кромкой — безопасный крайний
+        // бакет (та же семантика, что была у Clamp).
+        int cx = x >> ChunkShift;
+        int cy = y >> ChunkShift;
+        if (cx < 0) cx = 0; else if (cx >= ChunkDim) cx = ChunkDim - 1;
+        if (cy < 0) cy = 0; else if (cy >= ChunkDim) cy = ChunkDim - 1;
         return (cx, cy);
     }
 
@@ -285,6 +338,13 @@ public class StockpileManager
     {
         if (tiles == null || tiles.Count == 0) return;
         var removed = new System.Collections.Generic.List<(int X, int Y)>(tiles.Count);
+        // FIX (bughunt 12-4): дедуп через HashSet, а не `removed.Contains` (List) в цикле
+        // под глобальным _lock. Стирание склада 100×100 = 10k клеток давало ~n²/2 сравнений
+        // кортежей внутри критической секции — секундный фриз (WarehouseTool), на котором
+        // вставали резервы/выгрузка/еда у всех агентов. HashSet — одна аллокация на
+        // операцию; список оставлен для порядка первого добавления (его видят событие и
+        // рендер), membership-проверка теперь O(1).
+        var removedSet = new HashSet<(int X, int Y)>(tiles.Count);
         var dropped = new System.Collections.Generic.List<(int X, int Y, ItemId Item, int Count)>();
         lock (_lock)
         {
@@ -294,7 +354,8 @@ public class StockpileManager
                 if (_pendingZones.Remove((x, y)))
                 {
                     SetZoneBit(x, y, false);
-                    removed.Add((x, y));
+                    if (removedSet.Add((x, y)))
+                        removed.Add((x, y));
                 }
                 if (_zones.Remove((x, y)))
                 {
@@ -319,7 +380,7 @@ public class StockpileManager
                             dropped.Add((x, y, entry.Item, entry.Count));
                         }
                     }
-                    if (!removed.Contains((x, y)))
+                    if (removedSet.Add((x, y)))
                         removed.Add((x, y));
                 }
             }
@@ -397,16 +458,42 @@ public class StockpileManager
         }
     }
 
+    /// <summary>
+    /// UI-19: Получить содержимое ячейки склада (предмет и количество) для инспектора/тултипа.
+    /// Возвращает true, если клетка является ячейкой склада.
+    /// </summary>
+    public bool TryGetStockpileItem(int x, int y, out ItemId item, out int count)
+    {
+        lock (_lock)
+        {
+            if (_storage.TryGetValue((x, y), out var entry))
+            {
+                item = entry.Item;
+                count = entry.Count;
+                return true;
+            }
+            if (_zones.Contains((x, y)) || _pendingZones.Contains((x, y)))
+            {
+                item = ItemId.None;
+                count = 0;
+                return true;
+            }
+        }
+        item = ItemId.None;
+        count = 0;
+        return false;
+    }
+
     // Инкрементальные тоталы: GetTotalItemCountInternal делал O(N)-скан всего
     // _storage под _lock на КАЖДЫЙ Deposit/Withdraw (сотни раз/с при активной
     // работе склада × 1000 записей = 100k итераций/с под глобальным lock).
     // Ведём +=/-= в точках изменения, чтение — Volatile (уже есть _cachedTotals).
-    private readonly int[] _liveTotals = new int[8];
+    private readonly int[] _liveTotals = new int[MaxItemTypes];
 
     private int GetTotalItemCountInternal(ItemId itemId)
     {
         int idx = (int)itemId;
-        if ((uint)idx < 8)
+        if ((uint)idx < MaxItemTypes)
             return Volatile.Read(ref _liveTotals[idx]);
         int total = 0;
         foreach (var entry in _storage.Values)
@@ -422,7 +509,7 @@ public class StockpileManager
     private void AddLiveTotal(ItemId item, int delta)
     {
         int idx = (int)item;
-        if (item != ItemId.None && (uint)idx < 8)
+        if (item != ItemId.None && (uint)idx < MaxItemTypes)
             _liveTotals[idx] += delta;
     }
 
@@ -532,7 +619,7 @@ public class StockpileManager
         if (count <= 0 || itemId == ItemId.None) return false;
         if (Volatile.Read(ref _zoneCount) <= 0) return false;
         int idx = (int)itemId;
-        if (idx < 0 || idx >= 8 || Volatile.Read(ref _liveTotals[idx]) <= 0) return false;
+        if (idx < 0 || idx >= MaxItemTypes || Volatile.Read(ref _liveTotals[idx]) <= 0) return false;
 
         lock (_lock)
         {
@@ -603,6 +690,41 @@ public class StockpileManager
     }
 
     /// <summary>
+    /// AUDIT task-17 (P3-1): можно ли выдать РОВНО <paramref name="count"/> одного типа
+    /// из ОДНОГО слота склада — то же условие, по которому реально работает
+    /// <see cref="TryReserveStockpileItem"/>. Единый критерий «входы доступны» для
+    /// производства: суммарные тоталы (<see cref="GetLiveItemCount"/>) не учитывают
+    /// чужие <c>ReservedOutgoing</c> и не гарантируют, что нужное количество лежит
+    /// в одном слоте. Из-за расхождения работа регистрировалась, агент не мог
+    /// зарезервировать входы и бесконечно «брал → отпускал».
+    ///
+    /// Только чтение под локом; O(слота) в худшем случае, зато вызывается по событию
+    /// тика производства (≈1с) и при claim-проверке, а не в кадре.
+    /// </summary>
+    public bool CanReserveAtLeast(ItemId itemId, int count)
+    {
+        if (count <= 0 || itemId == ItemId.None) return false;
+        if (Volatile.Read(ref _zoneCount) <= 0) return false;
+        int idx = (int)itemId;
+        if (idx < 0 || idx >= MaxItemTypes) return false;
+        // Fast-fail по суммарному тоталу: если его меньше count, ни один слот не даст.
+        if (Volatile.Read(ref _liveTotals[idx]) < count) return false;
+
+        lock (_lock)
+        {
+            if (_zones.Count == 0) return false;
+            foreach (var kvp in _storage)
+            {
+                var entry = kvp.Value;
+                if (entry.Item != itemId) continue;
+                if (entry.Count - entry.ReservedOutgoing >= count)
+                    return true;
+            }
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Резерв еды со склада для NeedsJobSystem.
     /// Резервирует до eatCount зерна (через ReservedOutgoing) без немедленного списания.
     /// Списание происходит только в CommitEating, а при застревании колониста
@@ -615,7 +737,7 @@ public class StockpileManager
         if (eatCount <= 0 || itemId == ItemId.None) return false;
         if (Volatile.Read(ref _zoneCount) <= 0) return false;
         int itemIdx = (int)itemId;
-        if (itemIdx < 0 || itemIdx >= 8 || Volatile.Read(ref _liveTotals[itemIdx]) <= 0) return false;
+        if (itemIdx < 0 || itemIdx >= MaxItemTypes || Volatile.Read(ref _liveTotals[itemIdx]) <= 0) return false;
 
         lock (_lock)
         {
@@ -719,6 +841,40 @@ public class StockpileManager
         }
     }
 
+    /// <summary>
+    /// Типизированное снятие исходящего резерва (task-19): агент несёт материал
+    /// стройки конкретного типа. Если в слоте оказался ДРУГОЙ тип (битая связка
+    /// резерва), исходящий резерв снимается, списания нет — вызывающий освобождает
+    /// работу, а не «телепортирует» чужой предмет на стройку.
+    /// </summary>
+    public bool TryWithdrawReservedItemTyped(int x, int y, ItemId expectedItem, int count, out int taken)
+    {
+        taken = 0;
+        lock (_lock)
+        {
+            if (!_storage.TryGetValue((x, y), out var entry))
+                return false;
+            if (entry.Item != expectedItem)
+            {
+                CancelWithdrawalReservationLocked(x, y, Math.Min(count, entry.ReservedOutgoing));
+                return false;
+            }
+        }
+        taken = WithdrawReservedItem(x, y, count);
+        return taken > 0;
+    }
+
+    private void CancelWithdrawalReservationLocked(int x, int y, int count)
+    {
+        // Вызывается под _lock (lock реентрантен, но держим единый путь изменения).
+        if (!_storage.TryGetValue((x, y), out var entry))
+            return;
+        int newOutgoing = Math.Max(0, entry.ReservedOutgoing - count);
+        ItemId item = (entry.Count == 0 && entry.ReservedIncoming == 0 && newOutgoing == 0)
+            ? ItemId.None : entry.Item;
+        _storage[(x, y)] = (item, entry.Count, entry.ReservedIncoming, newOutgoing);
+    }
+
     /// <summary>Отменить исходящий резерв предметов без списания запасов (при застревании / отмене агента).</summary>
     public void CancelWithdrawalReservation(int x, int y, int count)
     {
@@ -760,11 +916,22 @@ public class StockpileManager
         {
             if (_storage.TryGetValue((x, y), out var entry))
             {
+                // Если тип не совпадает и слот не пуст, выгружаем груз на землю рядом
+                if (entry.Item != ItemId.None && entry.Item != itemId)
+                {
+                    GroundItemManager.Instance?.SpawnItems(x, y, itemId, count);
+                    return;
+                }
+
                 var def = ItemRegistry.Get(itemId);
                 int wasTotal = entry.Count + entry.ReservedIncoming;
 
+                int maxAccept = Math.Max(0, def.MaxStack - entry.Count);
+                int accepted = Math.Min(count, maxAccept);
+                int overflow = count - accepted;
+
                 int newReserved = Math.Max(0, entry.ReservedIncoming - count);
-                int newCount = entry.Count + count;
+                int newCount = entry.Count + accepted;
                 _storage[(x, y)] = (itemId, newCount, newReserved, entry.ReservedOutgoing);
                 _isDirty = true;
 
@@ -773,9 +940,23 @@ public class StockpileManager
                     _freeSlotsCount++;
                 }
 
-                AddLiveTotal(itemId, count);
-                int total = GetTotalItemCountInternal(itemId);
-                QueueItemCountChanged(itemId, total);
+                if (accepted > 0)
+                {
+                    AddLiveTotal(itemId, accepted);
+                    int total = GetTotalItemCountInternal(itemId);
+                    QueueItemCountChanged(itemId, total);
+                }
+
+                // Излишек сверх MaxStack выгружаем на землю
+                if (overflow > 0)
+                {
+                    GroundItemManager.Instance?.SpawnItems(x, y, itemId, overflow);
+                }
+            }
+            else
+            {
+                // Слот удален или не найден - выбрасываем на землю, не теряя ресурс
+                GroundItemManager.Instance?.SpawnItems(x, y, itemId, count);
             }
         }
     }
@@ -837,9 +1018,9 @@ public class StockpileManager
         var currentCounts = _snapCountsRing[slot];
         if (currentSnap == null)
         {
+            // task-4: позиционные буферы типов — ЛЕНИВО (по первому предмету типа):
+            // жадная матрица 91×16384×8 байт ×3 слота = ~36 МБ пустой памяти.
             currentSnap = new System.Numerics.Vector2[MaxItemTypes][];
-            for (int t = 0; t < MaxItemTypes; t++)
-                currentSnap[t] = new System.Numerics.Vector2[MaxSnapshotItemsPerType];
             currentCounts = new int[MaxItemTypes];
             _snapRing[slot] = currentSnap;
             _snapCountsRing[slot] = currentCounts;
@@ -861,6 +1042,7 @@ public class StockpileManager
                     int count = currentCounts[itemIdx];
                     if (count < MaxSnapshotItemsPerType)
                     {
+                        currentSnap[itemIdx] ??= new System.Numerics.Vector2[MaxSnapshotItemsPerType];
                         currentSnap[itemIdx][count] = new System.Numerics.Vector2(pos.X * 64f + 32f, pos.Y * 64f + 32f);
                         currentCounts[itemIdx]++;
                     }
@@ -941,6 +1123,7 @@ public class StockpileManager
             _zoneCount = 0;
             Array.Clear(_liveTotals, 0, _liveTotals.Length);
             Array.Clear(_cachedTotals, 0, _cachedTotals.Length);
+            SelectedTile = null;
             Array.Clear(_zoneBitmask, 0, _zoneBitmask.Length);
             lock (_pendingItemLock)
             {

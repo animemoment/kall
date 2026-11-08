@@ -87,7 +87,7 @@ public sealed class WanderJobSystem
             if (pool.States[agentIndex] == AgentState.Evacuating)
             {
                 pool.States[agentIndex] = AgentState.Idle;
-                JobDispatcher.Instance.IdleWorkers.AddIdleWorker(agentIndex, pool);
+                JobDispatcher.ReturnAgentAfterJob(agentIndex, pool); // J-10: Worker зоны не уходит в общий пул
             }
         }
     }

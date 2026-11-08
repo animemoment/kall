@@ -35,6 +35,14 @@ public sealed class FarmZoneManager
             if (value == null) return;
             lock (_evtLock)
             {
+                // FIX (bughunt 12-13): повторная подписка тем же делегатом раньше
+                // заводила ВТОРОЙ wrapper и затирала ссылку на первый в словаре.
+                // Первый оставался подписан на ZoneManager навсегда (утечка +
+                // обработчик звался дважды), а Remove снимал только последний —
+                // после «отписки» события продолжали приходить. Теперь старый
+                // wrapper снимаем ПЕРЕД подпиской нового: подписка идемпотентна.
+                if (_hoveredHandlers.Remove(value, out var previousWrapper))
+                    Z.OnZoneHovered -= previousWrapper;
                 Action<Zone> wrapper = z => value(Adapt(z));
                 _hoveredHandlers[value] = wrapper;
                 Z.OnZoneHovered += wrapper;
@@ -57,6 +65,10 @@ public sealed class FarmZoneManager
             if (value == null) return;
             lock (_evtLock)
             {
+                // FIX (bughunt 12-13): см. OnZoneHovered — снимаем прежний wrapper,
+                // иначе повторная подписка = утечка + двойные события.
+                if (_selectedHandlers.Remove(value, out var previousWrapper))
+                    Z.OnZoneSelected -= previousWrapper;
                 Action<Zone> wrapper = z => value(Adapt(z));
                 _selectedHandlers[value] = wrapper;
                 Z.OnZoneSelected += wrapper;
@@ -84,6 +96,10 @@ public sealed class FarmZoneManager
             if (value == null) return;
             lock (_evtLock)
             {
+                // FIX (bughunt 12-13): см. OnZoneHovered — снимаем прежний wrapper,
+                // иначе повторная подписка = утечка + двойные события.
+                if (_autoPlantHandlers.Remove(value, out var previousWrapper))
+                    Z.OnAutoPlantChanged -= previousWrapper;
                 Action<Zone> wrapper = z => value(Adapt(z));
                 _autoPlantHandlers[value] = wrapper;
                 Z.OnAutoPlantChanged += wrapper;
@@ -107,14 +123,59 @@ public sealed class FarmZoneManager
         {
             AutoPlantEnabled = z.AutoPlantEnabled,
             RequiredSeedItem = z.RequiredSeedItem,
+            // ВАЖНО: культура зоны обязана ехать в адаптер. Без этой строки любой
+            // потребитель фасада (PlantingJobHandler при посадке, окно фермы)
+            // получал FarmZone.Crop = Wheat по умолчанию, и выбранный лён на деле
+            // сажался пшеницей.
+            Crop = z.Crop,
             PlantedCount = z.PlantedCount
         };
         return f;
     }
 
+    /// <summary>
+    /// Сменить культуру Farm-зоны (одна культура на зону). Пишет в истинный
+    /// владелец — <see cref="Zone.Crop"/> в ZoneManager; адаптер FarmZone только
+    /// копия, поэтому запись в него ни на что не влияет.
+    /// Возвращает false, если зоны нет или это не Farm-зона.
+    /// </summary>
+    public bool SetCrop(int zoneId, Game.Core.CropType crop)
+    {
+        if (!Z.TryGetZoneById(zoneId, out var z) || z == null || z.Kind != ZoneKind.Farm)
+            return false;
+        // CropType : byte — присваивание атомарно, лок ZoneManager не нужен
+        // (поле-свойство публичное и читается рендером/посадкой без лока).
+        z.Crop = crop;
+        return true;
+    }
+
+    /// <summary>Культура Farm-зоны (или Wheat, если зона не найдена/не Farm).</summary>
+    public Game.Core.CropType GetCrop(int zoneId)
+    {
+        if (Z.TryGetZoneById(zoneId, out var z) && z != null && z.Kind == ZoneKind.Farm)
+            return z.Crop;
+        return Game.Core.CropType.Wheat;
+    }
+
     public void CreateZone(List<(int X, int Y)> tiles)
     {
         Z.CreateFarmZones(tiles);
+    }
+
+    /// <summary>
+    /// AUDIT task-17 (M-4): восстановить Farm-зону из .zones.json С СОХРАНЁННЫМ id.
+    /// false — данные битые/зона уже есть; вызывающая сторона решает, падать ли на
+    /// старый путь CreateZone (новый id) как fallback.
+    /// </summary>
+    public bool RestoreZone(int id, string name, List<(int X, int Y)> tiles,
+        bool autoPlant, Game.Core.CropType crop)
+    {
+        if (!Z.RestoreFarmZoneForPersistence(id, name, tiles, autoPlant, crop, out var zone)
+            || zone == null)
+            return false;
+        if (autoPlant)
+            Z.SetAutoPlant(zone.Id, true); // разложить заявки на посадку по грядкам
+        return true;
     }
 
     public void SetAutoPlant(int zoneId, bool enabled)

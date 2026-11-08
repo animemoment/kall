@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using Game.Core;
 using Game.Core.WorldStreaming.Integration;
 using Game.Simulation;
 
@@ -37,7 +38,25 @@ public readonly struct IslandDeliveredMaterial
 /// <summary>Читатель/писатель payload'ов островных дельт (схема в WorldDeltaKind).</summary>
 public static class IslandPayload
 {
+    /// <summary>
+    /// Версия схемы payload'ов. НЕ меняется при добавлении поля в отдельный вид:
+    /// старые дельты должны читаться после любого обновления игры. Кросс-версионные
+    /// виды получают собственный *_SchemaVersion (см. CropSchemaVersion).
+    /// </summary>
     public const byte SchemaVersion = 1;
+
+    /// <summary>
+    /// Схема payload'а Crop (0x05):
+    ///  * v1 (10 байт): [1] ver=1, [1] stage, [4] growthTimer, [4] zoneId — БЕЗ типа
+    ///    культуры (после загрузки все посадки были пшеницей);
+    ///  * v2 (11 байт): то же + [1] type (CropType) в конце.
+    /// Читатель обязан понимать ОБЕ версии: иначе после обновления игры в уже
+    /// сохранённых колониях потерялись бы стадии всех посадок.
+    /// </summary>
+    public const byte CropSchemaVersion = 2;
+
+    private const int CropPayloadSizeV1 = 10;
+    private const int CropPayloadSizeV2 = 11;
 
     // ---------------- Stockpile (0x04) ----------------
 
@@ -75,28 +94,85 @@ public static class IslandPayload
 
     // ---------------- Crop (0x05) ----------------
 
+    /// <summary>
+    /// Crop payload БЕЗ типа (схема v2 с CropType.None): тип будет восстановлен
+    /// вызывающим по культуре зоны (IslandStateReplay) или пшеницей по умолчанию.
+    /// Оставлен для совместимости.
+    /// </summary>
     public static byte[] WriteCrop(int stage, float growthTimer, int zoneId)
+        => WriteCrop(stage, growthTimer, zoneId, CropType.None);
+
+    /// <summary>
+    /// Crop payload схемы v2: stage/timer/zoneId + ТИП культуры (байт в конце).
+    /// </summary>
+    public static byte[] WriteCrop(int stage, float growthTimer, int zoneId, CropType cropType)
     {
-        byte[] buf = new byte[10];
-        buf[0] = SchemaVersion;
+        byte[] buf = new byte[CropPayloadSizeV2];
+        buf[0] = CropSchemaVersion;
         buf[1] = (byte)stage;
         WriteInt(buf, 2, FloatToInt(growthTimer));
         WriteInt(buf, 6, zoneId);
+        buf[10] = (byte)cropType;
         return buf;
     }
 
+    /// <summary>Совместимость: старый 3-argumentный reader (тип отбрасывается).</summary>
     public static bool TryReadCrop(byte[] payload, out int stage, out float growthTimer, out int zoneId)
+        => TryReadCrop(payload, out stage, out growthTimer, out zoneId, out _);
+
+    /// <summary>
+    /// Читает Crop payload v1 (10 байт, без типа → CropType.None: «тип не сохранён»)
+    /// и v2 (11 байт, тип в последнем байте). Битые/чужие версии → false, без
+    /// исключений: занятость клетки восстанавливается и без состояния.
+    /// </summary>
+    public static bool TryReadCrop(byte[] payload, out int stage, out float growthTimer, out int zoneId,
+        out CropType cropType)
     {
         stage = 1;
         growthTimer = 0f;
         zoneId = -1;
-        if (payload == null || payload.Length < 10 || payload[0] != SchemaVersion)
+        cropType = CropType.None;
+
+        if (payload == null || payload.Length < CropPayloadSizeV1)
             return false;
+
+        byte version = payload[0];
+        if (version == SchemaVersion)
+        {
+            // v1: тип не сохранён — CropType.None, решает вызывающий.
+        }
+        else if (version == CropSchemaVersion)
+        {
+            if (payload.Length < CropPayloadSizeV2)
+                return false; // обрезанный v2: не угадываем тип
+        }
+        else
+        {
+            return false;
+        }
+
         stage = payload[1];
         if (stage < 1 || stage > 4)
             return false;
         growthTimer = IntToFloat(ReadInt(payload, 2));
         zoneId = ReadInt(payload, 6);
+
+        if (version == CropSchemaVersion)
+        {
+            byte typeByte = payload[10];
+            if (typeByte == 0)
+            {
+                // Type=0 (None) трактуем как «тип не сохранён» — как в v1.
+                cropType = CropType.None;
+            }
+            else
+            {
+                // Мусорный байт (испорченный payload) — безопасная пшеница.
+                cropType = CropRegistry.TryGet((CropType)typeByte, out _)
+                    ? (CropType)typeByte
+                    : CropType.Wheat;
+            }
+        }
         return true;
     }
 

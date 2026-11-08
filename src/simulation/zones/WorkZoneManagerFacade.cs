@@ -46,6 +46,15 @@ public sealed class WorkZoneManager
             if (value == null) return;
             lock (_evtLock)
             {
+                // AUDIT task-17 (N-2): тот же дефект, что чинили в FarmZoneManager
+                // (bughunt 12-13). Повторная подписка тем же делегатом заводила
+                // ВТОРОЙ wrapper и затирала ссылку на первый в словаре: первый
+                // оставался подписан на ZoneManager навсегда (утечка + обработчик
+                // звался дважды), а Remove снимал только последний — после
+                // «отписки» события продолжали приходить. Снимаем прежний wrapper
+                // ДО подписки нового: подписка идемпотентна.
+                if (_selectedHandlers.Remove(value, out var previousWrapper))
+                    Z.OnZoneSelected -= previousWrapper;
                 Action<Zone> wrapper = z => value(AdaptWork(z));
                 _selectedHandlers[value] = wrapper;
                 Z.OnZoneSelected += wrapper;
@@ -75,9 +84,9 @@ public sealed class WorkZoneManager
 
     private static WorkZone AdaptWork(Zone z)
     {
-        if (z == null || z.Kind != ZoneKind.Work) return null;
+        if (z == null || !z.IsWorkZone) return null;
         var w = new WorkZone(z.Id, z.Name, z.CenterX, z.CenterY, z.RadiusTiles,
-            z.DesiredWorkers, z.JobMask, z.ChunkIndices)
+            z.DesiredWorkers, z.JobMask, z.ChunkIndices, z.Kind)
         {
             TilesTarget = z.TilesTarget
         };
@@ -101,6 +110,19 @@ public sealed class WorkZoneManager
         return ok;
     }
 
+    /// <summary>
+    /// task-12/13: создать рабочую зону КОНКРЕТНОЙ ОТРАСЛИ (черновик зоны из HUD).
+    /// Маска работ и заявка на рабочих берутся из профиля отрасли.
+    /// </summary>
+    public bool CreateZoneAt(ZoneKind kind, int cx, int cy, int radiusTiles, int desiredWorkers, out WorkZone zone, out string failReason)
+    {
+        var profile = ZoneIndustryRegistry.Get(kind);
+        int workers = desiredWorkers > 0 ? desiredWorkers : profile.DefaultWorkers;
+        bool ok = Z.CreateWorkZoneAt(profile.Kind, cx, cy, radiusTiles, workers, out var z, out failReason);
+        zone = ok ? AdaptWork(z) : null;
+        return ok;
+    }
+
     public bool RemoveZone(int id) => Z.RemoveZone(id);
 
     /// <summary>§119 P0/P5: снести Work-зону с ЦЕНТРОМ в этой клетке (снос центрального блока).</summary>
@@ -108,7 +130,7 @@ public sealed class WorkZoneManager
 
     public bool TryGetZoneAt(int x, int y, out WorkZone zone)
     {
-        if (Z.TryGetZoneAt(x, y, out var z) && z.Kind == ZoneKind.Work)
+        if (Z.TryGetZoneAt(x, y, out var z) && z.IsWorkZone)
         {
             zone = AdaptWork(z);
             return true;
@@ -119,7 +141,7 @@ public sealed class WorkZoneManager
 
     public bool TryGetZoneById(int zoneId, out WorkZone zone)
     {
-        if (Z.TryGetZoneById(zoneId, out var z) && z.Kind == ZoneKind.Work)
+        if (Z.TryGetZoneById(zoneId, out var z) && z.IsWorkZone)
         {
             zone = AdaptWork(z);
             return true;
@@ -134,7 +156,7 @@ public sealed class WorkZoneManager
         var result = new List<WorkZone>(all.Count);
         foreach (var z in all)
         {
-            if (z.Kind == ZoneKind.Work)
+            if (z.IsWorkZone)
                 result.Add(AdaptWork(z));
         }
         return result;
@@ -175,9 +197,16 @@ public sealed class WorkZoneManager
         return AdaptWork(hit);
     }
 
+    /// <summary>
+    /// FIX (bughunt 15-2): снимаем выбор ЛЮБОЙ зоны (Work и Farm). Окно JobDisplay
+    /// одно на оба вида: раньше guard Kind==Work делал крестик в режиме фермы
+    /// no-op, OnZoneDeselected не выстреливал и окно не закрывалось.
+    /// Проверено grep-ом: единственные вызовы — из WorkZoneController (крестик и
+    /// «снести зону»), выбор Farm через FarmZoneManager не задет.
+    /// </summary>
     public void DeselectZone()
     {
-        if (Z.SelectedZone != null && Z.SelectedZone.Kind == ZoneKind.Work)
+        if (Z.SelectedZone != null)
             Z.DeselectZone();
     }
 

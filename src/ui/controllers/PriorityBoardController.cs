@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Godot;
 using Game.Core;
 using Game.Simulation;
@@ -27,15 +27,36 @@ public partial class PriorityBoardController : Control
 
     public event Action OnVisibilityToggled;
 
+    /// <summary>Кнопки уже подписаны (повторный Initialize не должен плодить подписки).</summary>
+    private bool _wired;
+
     public override void _Ready()
     {
-        Initialize(this);
+        // FIX (bughunt 15-1): HUD создаёт контроллер и сразу передаёт ему реальную
+        // панель из Prioritet.tscn. Если _Ready придёт ПОСЛЕ этого Initialize(ctrl),
+        // прежний код затирал _rootPanel собой (Visible=false на пустом контроллере)
+        // — панель оставалась спрятанной навсегда. Чужую панель не затираем.
+        if (_rootPanel == null || ReferenceEquals(_rootPanel, this))
+            Initialize(this);
+        else
+            RefreshLabels();
     }
 
     public void Initialize(Control targetNode)
     {
-        _rootPanel = targetNode ?? this;
+        if (targetNode == null)
+            targetNode = this;
+        // FIX (bughunt 15-1): идемпотентная инициализация — повторный вызов с тем же
+        // узлом не должен заново вешать обработчики на кнопки.
+        if (_wired && ReferenceEquals(_rootPanel, targetNode))
+        {
+            RefreshLabels();
+            return;
+        }
+
+        _rootPanel = targetNode;
         _rootPanel.Visible = false;
+
 
         // 1. Логистика (LogisticsSpecialist -> NumLog)
         var logContainer = _rootPanel.FindChild("LogisticsSpecialist", true, false);
@@ -85,11 +106,16 @@ public partial class PriorityBoardController : Control
         if (_buildPlusBtn != null) _buildPlusBtn.Pressed += () => ChangePriority(JobCategory.Construction, 1);
         if (_buildMinusBtn != null) _buildMinusBtn.Pressed += () => ChangePriority(JobCategory.Construction, -1);
 
+        _wired = true;
         RefreshLabels();
     }
 
     public void Open()
     {
+        // FIX (bughunt 15-1): окно обязано быть видимым, даже если сам контроллер
+        // (обёртка) был спрятан при инициализации. Поднимаем и обёртку, и панель:
+        // в Godot невидимый CanvasItem не рисует и своих детей.
+        Visible = true;
         if (_rootPanel != null) _rootPanel.Visible = true;
         RefreshLabels();
         OnVisibilityToggled?.Invoke();
@@ -97,6 +123,8 @@ public partial class PriorityBoardController : Control
 
     public void Close()
     {
+        // FIX (bughunt 15-1): прячем именно ПАНЕЛЬ, но не обёртку-контроллер —
+        // иначе следующий Open() снова упрётся в невидимого родителя.
         if (_rootPanel != null) _rootPanel.Visible = false;
         OnVisibilityToggled?.Invoke();
     }
@@ -109,7 +137,19 @@ public partial class PriorityBoardController : Control
             Open();
     }
 
-    public bool IsOpen => _rootPanel != null && _rootPanel.Visible;
+    /// <summary>
+    /// FIX (bughunt 15-1): «открыто» — это факт видимости панели в дереве, а не
+    /// только её локальный флаг. Иначе HUD считал окно открытым, пока родитель скрыт.
+    /// </summary>
+    public bool IsOpen
+    {
+        get
+        {
+            if (_rootPanel == null || !Visible || !_rootPanel.Visible)
+                return false;
+            return !_rootPanel.IsInsideTree() || _rootPanel.IsVisibleInTree();
+        }
+    }
 
     private void ChangePriority(JobCategory category, int delta)
     {

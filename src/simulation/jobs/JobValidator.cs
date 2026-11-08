@@ -41,6 +41,7 @@ public sealed class JobValidator
         {
             fixed_ += AuditIndexSlice(pool, ctx);
             fixed_ += AuditMarksSlice();
+            fixed_ += AuditOreSites(ctx);
         }
         catch (Exception ex)
         {
@@ -133,11 +134,22 @@ public sealed class JobValidator
             }
 
             bool anyoneCan = false;
+            // J-17: пробы — это просто первые 8 idle-агентов, их набор случаен по
+            // отношению к требованиям работы. Если работа требует топор, а у всех
+            // восьми проб топора нет, вердикт «никто не может» — слепой: живая
+            // работа получала 30-секундный кулдаун, хотя топор есть у другого
+            // агента. Поэтому судим только по пробам, которые в принципе способны
+            // взять эту работу по инструменту.
+            bool anyProbeHasTool = job.RequiredTool == ToolRequirement.None;
             for (int p = 0; p < probes.Length; p++)
             {
                 int agentIndex = probes[p];
                 if (agentIndex < 0)
                     break;
+
+                if (!anyProbeHasTool && (pool.EquippedTools[agentIndex] & job.RequiredTool) != 0)
+                    anyProbeHasTool = true;
+
                 try
                 {
                     if (handler.CanAgentExecute(agentIndex, job, pool, ctx))
@@ -156,6 +168,11 @@ public sealed class JobValidator
 
             if (!anyoneCan)
             {
+                // J-17: слепой вердикт (ни одна проба не имеет нужного инструмента)
+                // не даёт права ни удалять работу, ни вешать кулдаун — просто
+                // пропускаем её в этом слайсе.
+                if (!anyProbeHasTool)
+                    continue;
                 // Мёртвая задача: никто из probe не может. Два подслучая:
                 // а) метки в менеджере уже нет (удалили инструмент, а задача
                 //    осталась) — удаляем задачу, это и есть «лист забился»;
@@ -182,10 +199,50 @@ public sealed class JobValidator
     /// Идём по трём менеджерам по очереди (round-robin по _markCursor),
     /// чтобы не копировать все метки каждый тик.
     /// </summary>
+    /// <summary>
+    /// task-21: страховка «не строить поверх руды». Площадка, оказавшаяся на жиле
+    /// (старый сейв/мир/рассинхрон), снимается с возвратом материалов. Остров —
+    /// по массивам ctx (O(1)); мир — только по УЖЕ посчитанному полю руды.
+    /// </summary>
+    private int AuditOreSites(SimulationContext ctx)
+    {
+        if (ctx == null)
+            return 0;
+        var sites = ConstructionManager.Instance.GetAllSites();
+        if (sites.Count == 0)
+            return 0;
+
+        int fixed_ = 0;
+        foreach (var kvp in sites)
+        {
+            var pos = kvp.Key;
+            bool blocked = false;
+            if ((uint)pos.X < (uint)ctx.MapWidth && (uint)pos.Y < (uint)ctx.MapHeight)
+            {
+                if (ctx.OreType != null && ctx.OreType[pos.Y * ctx.MapWidth + pos.X] != OreConfig.None)
+                    blocked = true;
+            }
+            else
+            {
+                ulong seed = Game.Core.World.WorldModel.Seed;
+                // AUDIT task-17 (P4-1): «известный» набор вместо эфемерного кэша поля —
+                // иначе после эвикции/сброса кэша страховка перестаёт снимать сайты с руды.
+                if (seed != 0 &&
+                    OreWorldField.TryPeekKnownOreLocal(pos.X, pos.Y, out bool ore) && ore)
+                    blocked = true;
+            }
+
+            if (!blocked)
+                continue;
+            ConstructionManager.Instance.CancelSite(pos.X, pos.Y);
+            fixed_++;
+        }
+        return fixed_;
+    }
     private int AuditMarksSlice()
     {
         int fixed_ = 0;
-        int phase = _markCursor % 4;
+        int phase = _markCursor % 5;
         _markCursor++;
 
         var index = JobDispatcher.Instance.JobIndex;
@@ -241,6 +298,35 @@ public sealed class JobValidator
                         && ConstructionManager.Instance.IsStageAllowed(x, y, JobTypeId.Mining))
                     {
                         JobBroker.Instance.RegisterStoneMine(x, y);
+                        fixed_++;
+                    }
+                }
+                break;
+            }
+            case 3:
+            {
+                // task-4: рудные жилы (OreMining) — та же логика, что камень.
+                var ore = OreJobManager.Instance.GetAllMarkedOre();
+                int n = 0;
+                foreach (var (x, y) in ore)
+                {
+                    if (++n > MaxMarksPerTick)
+                        break;
+                    if (!index.HasJobAt(x, y, JobTypeId.OreMining))
+                    {
+                        JobBroker.Instance.RegisterOreMine(x, y);
+                        fixed_++;
+                    }
+                }
+                // task-8: потерянные задачи руды мира.
+                var worldOre = OreJobManager.Instance.GetAllWorldMarkedOre();
+                foreach (var (x, y) in worldOre)
+                {
+                    if (++n > MaxMarksPerTick)
+                        break;
+                    if (!index.HasJobAt(x, y, JobTypeId.OreMining))
+                    {
+                        JobBroker.Instance.RegisterOreMine(x, y);
                         fixed_++;
                     }
                 }
@@ -304,6 +390,10 @@ public sealed class JobValidator
             JobTypeId.Farming => FarmJobManager.Instance.IsPlotMarked(job.TargetX, job.TargetY),
             JobTypeId.TreeChopping => TreeJobManager.Instance.IsTreeMarked(job.TargetX, job.TargetY),
             JobTypeId.Mining => StoneJobManager.Instance.IsStoneMarked(job.TargetX, job.TargetY),
+            // task-4: руда — своя метка в OreJobManager.
+            // task-8: руда бывает и за кромкой (метки мира).
+            JobTypeId.OreMining => OreJobManager.Instance.IsOreMarked(job.TargetX, job.TargetY)
+                || OreJobManager.Instance.IsWorldOreMarked(job.TargetX, job.TargetY),
             JobTypeId.BlueprintDelivery or JobTypeId.Construction =>
                 BlueprintManager.Instance.IsBlueprintAt(job.TargetX, job.TargetY),
             // Planting/Harvest/Haul — меток в менеджерах нет (одноразовые),
@@ -313,25 +403,32 @@ public sealed class JobValidator
     }
 
     /// <summary>
-    /// Быстрый терраин-гард: клетка цели вообще проходима (Grass)?
-    /// Без lock'ов — чистые массивы ctx или WorldModel. Вода/гора после разметки
+    /// Быстрый терраин-гард: клетка цели вообще проходима (в карте, Grass)?
+    /// Без lock'ов и probe — чистые массивы ctx. Вода/гора после разметки
     /// (река/терраформинг) = работа мертва навсегда, а не «временно».
-    ///
-    /// §123: для клеток ВНУТРИ [0,MapWidth) — прежний быстрый путь (массив ctx).
-    /// Для клеток ЗА кромкой — WorldModel (единая дверь, работает для обеих сторон:
-    /// и для острова, и для стриминга, §122 проверено 262144 клетками, 0 расхождений).
-    /// Раньше: `(uint)x >= (uint)MapWidth → return false` — задача умирала ДО входа
-    /// в очередь, агент её даже не видел.
     /// </summary>
     private static bool IsTargetWalkable(JobData job, SimulationContext ctx)
     {
         if (ctx?.Ground == null)
             return true; // ctx битый — не судим, пусть решает probe-путь
-        if ((uint)job.TargetX < (uint)ctx.MapWidth && (uint)job.TargetY < (uint)ctx.MapHeight)
-            return ctx.Ground[job.TargetX, job.TargetY] == TileType.Grass;
-        // §123: за кромкой — спрашиваем WorldModel (CellAtLocal прибавляет WorldOrigin).
-        return Game.Core.World.WorldModel.TerrainAtLocal(job.TargetX, job.TargetY)
-            == Game.Core.WorldStreaming.BaseTerrainKind.Grass;
+
+        // J-06: за кромкой острова террейн спрашиваем у МИРА, а не объявляем
+        // недостижимым. Раньше любая цель вне `MapWidth/MapHeight` считалась «не
+        // проходимой» и работа УДАЛЯЛАСЬ с кулдауном до 30с — то есть задания,
+        // размеченные за 1024 (мир бесшовный), молча исчезали. Именно это давало
+        // симптом «работники не идут дальше 1024, даже если работа в 10 тайлах».
+        // Мир адресуется абсолютными координатами, поэтому спрашиваем
+        // `WorldModel.TerrainAt` — та же точка истины, что у рендера/стриминга.
+        if ((uint)job.TargetX >= (uint)ctx.MapWidth || (uint)job.TargetY >= (uint)ctx.MapHeight)
+        {
+            long wx = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginX + job.TargetX;
+            long wy = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginY + job.TargetY;
+            var terrain = Game.Core.World.WorldModel.TerrainAt(wx, wy);
+            return terrain != Game.Core.WorldStreaming.BaseTerrainKind.Water
+                && terrain != Game.Core.WorldStreaming.BaseTerrainKind.Mountain;
+        }
+
+        return ctx.Ground[job.TargetX, job.TargetY] == TileType.Grass;
     }
 
     /// <summary>
@@ -350,6 +447,12 @@ public sealed class JobValidator
                 break;
             case JobTypeId.Mining:
                 StoneJobManager.Instance.UnmarkStone(job.TargetX, job.TargetY);
+                break;
+            case JobTypeId.OreMining:
+                if (OreJobManager.Instance.IsWorldOreMarked(job.TargetX, job.TargetY))
+                    OreJobManager.Instance.UnmarkOreWorld(job.TargetX, job.TargetY);
+                else
+                    OreJobManager.Instance.UnmarkOre(job.TargetX, job.TargetY);
                 break;
             case JobTypeId.BlueprintDelivery:
             case JobTypeId.Construction:

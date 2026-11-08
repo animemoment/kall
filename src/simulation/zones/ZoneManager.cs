@@ -18,9 +18,7 @@ public sealed class ZoneManager
 {
 	public static ZoneManager Instance { get; } = new();
 
-	// J-05 FIX: 64 чанков × 16 тайлов покрывают весь остров (было 32×16=512,
-	// схлопывало 75% карты в крайние чанки).
-	private const int ChunkDim = 64;
+	private const int ChunkDim = 64; // 64x64 чанка = 1024x1024 тайлов (остров)
 	private const int WorkersPerChunkBudget = 48;
 	private const int MaxAssignPerChunk = 8;
 	private const int AgentReservedMarker = -2;
@@ -30,11 +28,15 @@ public sealed class ZoneManager
 	private readonly Dictionary<(int X, int Y), int> _tileToZoneId = new(4096);
 	private int _nextZoneId = 1;
 
+	/// <summary>
+	/// Санитарный предел координаты центра при ЗАГРУЗКЕ зоны из сейва (AUDIT task-17):
+	/// защищает от мусора в файле, но не зависит от ещё не установленных границ карты.
+	/// </summary>
+	private const int MaxRestoreCoordinate = 1 << 20;
+
 	// Границы карты для клиппа дисков Work-зон (B1: volatile — пишет sim, читает UI).
-	// Границы карты для клиппа дисков Work-зон (B1: volatile — пишет sim, читает UI).
-	// Канонический размер: только WorldModel.IslandTiles (литералы ловит guard magic_1024).
-	private static volatile int _mapW = Game.Core.World.WorldModel.IslandTiles;
-	private static volatile int _mapH = Game.Core.World.WorldModel.IslandTiles;
+	private static volatile int _mapW = 512;
+	private static volatile int _mapH = 512;
 
 	/// <summary>§119 P1: ширина карты для покрытий (ZoneCoverageMap).</summary>
 	public static int MapWidth => _mapW;
@@ -129,12 +131,107 @@ public sealed class ZoneManager
 		return result;
 	}
 
+	/// <summary>
+	/// AUDIT task-17 (M-4): восстановить Farm-зону из .zones.json С СОХРАНЁННЫМ id.
+	///
+	/// Раньше загрузка шла через <see cref="CreateFarmZones"/> и выдавала зоне НОВЫЙ
+	/// id: все внешние ссылки на зону (CropData.ZoneId в островных дельтах, будущие
+	/// привязки/отчёты по зонам) после перезапуска указывали в пустоту, а id зон
+	/// «плыли» от сессии к сессии. Теперь id сохраняется.
+	///
+	/// Защита от мусора в файле: клетки, уже занятые другой зоной, в новую не
+	/// попадают; если сохранённые клетки распались на несколько компонент
+	/// (в норме такого быть не может — ферма всегда создаётся связной), основная
+	/// компонента (содержащая первую клетку записи) получает сохранённый id,
+	/// остальные — новые id (иначе потеряли бы грядки).
+	///
+	/// Возвращает false, если данных нет/зона с таким id уже существует.
+	/// </summary>
+	public bool RestoreFarmZoneForPersistence(int id, string name,
+		List<(int X, int Y)> tiles, bool autoPlant, Game.Core.CropType crop, out Zone zone)
+	{
+		zone = null;
+		if (id < 1 || tiles == null || tiles.Count == 0)
+			return false;
+
+		var components = SplitIntoConnectedComponents(new HashSet<(int X, int Y)>(tiles));
+		if (components.Count == 0)
+			return false;
+
+		lock (_lock)
+		{
+			if (_zones.ContainsKey(id))
+				return false; // дубликат записи в файле — вторую не ставим
+
+			// Основная компонента — та, что содержит ПЕРВУЮ сохранённую клетку
+			// (по ней же ZonePersistence делает проверку идемпотентности).
+			int primary = 0;
+			for (int i = 0; i < components.Count; i++)
+			{
+				if (components[i].Contains(tiles[0]))
+				{
+					primary = i;
+					break;
+				}
+			}
+
+			for (int i = 0; i < components.Count; i++)
+			{
+				var comp = components[i];
+				var free = new HashSet<(int X, int Y)>(comp.Count);
+				foreach (var pos in comp)
+				{
+					if (!_tileToZoneId.ContainsKey(pos))
+						free.Add(pos);
+				}
+				if (free.Count == 0)
+					continue;
+
+				int zoneId;
+				if (i == primary)
+				{
+					zoneId = id;
+					if (zoneId >= _nextZoneId)
+						_nextZoneId = zoneId + 1;
+				}
+				else
+				{
+					zoneId = _nextZoneId++;
+				}
+
+				string zoneName = string.IsNullOrEmpty(name) ? $"Ферма #{zoneId}" : name;
+				if (i != primary)
+					zoneName = $"{zoneName} #{zoneId}";
+
+				var created = new Zone(zoneId, zoneName, ZoneKind.Farm, free)
+				{
+					Crop = crop,
+					AutoPlantEnabled = autoPlant,
+					// Семя = урожай культуры зоны (как в PlantingJobHandler.SeedItemFor):
+					// поле легаси, но пусть не врёт, если кто-то его прочитает.
+					RequiredSeedItem = CropRegistry.Get(crop).HarvestItem
+				};
+				_zones[zoneId] = created;
+				foreach (var pos in free)
+					_tileToZoneId[pos] = zoneId;
+				BumpZonesVersion_NoLock();
+				if (i == primary)
+					zone = created;
+			}
+		}
+
+		if (zone == null)
+			return false;
+		Callable.From(() => OnZonesUpdated?.Invoke()).CallDeferred();
+		return true;
+	}
+
 	public void SetAutoPlant(int zoneId, bool enabled)
 	{
 		Zone zone = null;
 		lock (_lock)
 		{
-			if (_zones.TryGetValue(zoneId, out zone) && zone.Kind == ZoneKind.Farm)
+			if (_zones.TryGetValue(zoneId, out zone) && zone.IsFarmZone)
 				zone.AutoPlantEnabled = enabled;
 			else
 				zone = null;
@@ -178,8 +275,8 @@ public sealed class ZoneManager
 				{
 					if (_zones.TryGetValue(zoneId, out var zone))
 					{
-						// Work-зоны неделимы: удаление тайлов из них запрещено.
-						if (zone.Kind == ZoneKind.Work) continue;
+						// Рабочие зоны неделимы: удаление тайлов из них запрещено.
+						if (zone.IsWorkZone) continue;
 						if (!zoneTilesToRemove.TryGetValue(zoneId, out var list))
 						{
 							list = new List<(int X, int Y)>();
@@ -241,6 +338,10 @@ public sealed class ZoneManager
 		for (int i = 0; i < tilesToRemove.Count; i++)
 		{
 			var pos = tilesToRemove[i];
+			if (CropGrowthManager.Instance.TryGetCrop(pos.X, pos.Y, out var crop) && crop.Stage == 4)
+			{
+				CropGrowthManager.Instance.HarvestCrop(pos.X, pos.Y, null);
+			}
 			CropGrowthManager.Instance.RemoveCrop(pos.X, pos.Y);
 			JobBroker.Instance.UnregisterPlanting(pos.X, pos.Y);
 			JobBroker.Instance.UnregisterHarvest(pos.X, pos.Y);
@@ -271,36 +372,66 @@ public sealed class ZoneManager
 	// ---------------- Work API ----------------
 
 	/// <summary>
-	/// §119 P0: создать Work-зону-бригадир = ЦЕНТР + РАДИУС (64..512, кламп),
+	/// §119 P0: создать рабочую зону-бригадир = ЦЕНТР + РАДИУС (64..512, кламп),
 	/// ровно ОДИН бит JobMask (одна зона = один тип работ), DesiredWorkers —
 	/// заявка без потолка (0..999). Клетки НЕ материализуются; пересечения
 	/// зон не режутся (партиция — P1). Параметр радиусный: UI-слайдер до P2
 	/// шлёт легаси-значение, оно клампится в 64..512.
+	///
+	/// ЛЕГАСИ-путь (старый WorkZoneController): тип зоны не передан — отрасль
+	/// восстанавливаем по маске работ (ZoneIndustryRegistry.FromLegacyJobMask),
+	/// имя зоны = название отрасли. Зона с Kind == Work больше не создаётся.
 	/// </summary>
 	public bool CreateWorkZoneAt(int cx, int cy, ulong jobMask, int radiusTiles, int desiredWorkers, out Zone zone, out string failReason)
 	{
+		ZoneKind kind = ZoneIndustryRegistry.FromLegacyJobMask(jobMask);
+		return CreateWorkZoneAt(kind, cx, cy, radiusTiles, desiredWorkers, jobMask, out zone, out failReason);
+	}
+
+	/// <summary>
+	/// task-12: создать рабочую зону ОТРАСЛИ. Маска берётся из профиля отрасли
+	/// (<see cref="ZoneIndustryProfile.PrimaryJob"/> — ровно один бит), имя зоны —
+	/// название отрасли («Станкостроение #7»), чтобы в окне зоны был виден её тип.
+	/// </summary>
+	public bool CreateWorkZoneAt(ZoneKind kind, int cx, int cy, int radiusTiles,
+		int desiredWorkers, out Zone zone, out string failReason)
+	{
+		var profile = ZoneIndustryRegistry.Get(kind);
+		return CreateWorkZoneAt(profile.Kind, cx, cy, radiusTiles, desiredWorkers,
+			ZoneIndustryRegistry.PrimaryJobMask(profile.Kind), out zone, out failReason);
+	}
+
+	private bool CreateWorkZoneAt(ZoneKind kind, int cx, int cy, int radiusTiles,
+		int desiredWorkers, ulong jobMask, out Zone zone, out string failReason)
+	{
 		zone = null;
 		failReason = null;
+		// Farm-зона — тайловый тип (грядки), радиусной моделью не создаётся.
+		if (kind.IsFarmZone())
+		{
+			failReason = "Farm-зона создаётся тайлами, а не радиусом";
+			return false;
+		}
 		// §119: ровно один тип работ — ровно один бит; бит 0 (JobTypeId.None) запрещён.
 		if (jobMask == 0 || (jobMask & (jobMask - 1)) != 0 || (jobMask & 1UL) != 0)
 		{
 			failReason = "маска должна содержать ровно один бит типа работ (не 0)";
 			return false;
 		}
-		if (cx < 0 || cy < 0)
+		int w = _mapW, h = _mapH;
+		if (cx < 0 || cy < 0 || cx >= w || cy >= h)
 		{
-			failReason = "центр вне карты (отрицательные координаты)";
+			failReason = "центр вне карты";
 			return false;
 		}
-		// J-05 FIX: центр МОЖЕТ быть за кромкой острова (клик по мировой карте,
-		// команда "создать Work-зону там" через мировой механизм). Кламп был
-		// ошибкой — Work-зона в мире это правильное поведение.
 		int r = Math.Clamp(radiusTiles, WorkZone.MinRadiusTiles, WorkZone.MaxRadiusTiles);
 		desiredWorkers = Math.Clamp(desiredWorkers, 0, WorkZone.MaxDesiredWorkers);
+		var industry = ZoneIndustryRegistry.Get(kind);
 		lock (_lock)
 		{
 			int id = _nextZoneId++;
-			zone = new Zone(id, $"Зона #{id}", cx, cy, r, desiredWorkers, jobMask, CalcChunkIndicesForDisc(cx, cy, r));
+			zone = new Zone(id, $"{industry.Title} #{id}", industry.Kind, cx, cy, r,
+				desiredWorkers, jobMask, CalcChunkIndicesForDisc(cx, cy, r));
 			_zones[id] = zone;
 			BumpZonesVersion_NoLock();
 		}
@@ -319,13 +450,42 @@ public sealed class ZoneManager
 	/// </summary>
 	public bool RestoreWorkZoneForPersistence(
 		int id, string name, int cx, int cy, int radiusTiles, int desiredWorkers,
-		ulong jobMask, int? priorityOverride, bool enabled, int anchorBlockId)
+		ulong jobMask, int? priorityOverride, bool enabled, int anchorBlockId,
+		ZoneKind kind = ZoneKind.Work)
 	{
 		if (id < 1 || jobMask == 0 || (jobMask & (jobMask - 1)) != 0 || (jobMask & 1UL) != 0)
 			return false;
-		int w = _mapW, h = _mapH;
-		if (cx < 0 || cy < 0 || cx >= w || cy >= h)
+		// AUDIT task-17 (blocker, совместимость сейвов): центр НЕ проверяем по
+		// _mapW/_mapH. Загрузка .zones.json идёт до старта симуляции, а границы
+		// карты выставляет только DispatchZones (SetMapBounds из ctx.MapWidth/Height):
+		// на ПЕРВОЙ загрузке после запуска игры они равны значениям по умолчанию
+		// 512×512, поэтому любая зона с центром в правой/нижней половине острова
+		// 1024² молча не восстанавливалась (зона пропадала из сейва без ошибки,
+		// а следующий SaveZones перезаписывал файл уже без неё).
+		// Для ЧТЕНИЯ сейва границы не авторитет: зона была проверена при создании
+		// (CreateWorkZoneAt), а ContainsTile/покрытие клипаются по живым границам.
+		if (cx < 0 || cy < 0 || cx > MaxRestoreCoordinate || cy > MaxRestoreCoordinate)
 			return false;
+		// СОВМЕСТИМОСТЬ СЕЙВОВ: старый .zones.json не хранит отрасль (kind="work") —
+		// восстанавливаем её по маске работ. Отрасль из файла главнее маски.
+		ZoneKind restoredKind = kind == ZoneKind.Work || kind.IsFarmZone()
+			? ZoneIndustryRegistry.FromLegacyJobMask(jobMask)
+			: kind.NormalizeLegacy();
+		if (restoredKind.IsFarmZone())
+			return false; // farm-зоны идут другой веткой загрузки (тайлы)
+		var industry = ZoneIndustryRegistry.Get(restoredKind);
+		// task-20: маска зоны обязана совпадать с ОСНОВНОЙ работой отрасли. Легаси-
+		// сейвы хранили Crafting/Construction и т.п. — без нормализации зона после
+		// загрузки не получила бы ни одной работы («зона-декорация»).
+		ulong primaryMask = ZoneIndustryRegistry.PrimaryJobMask(industry.Kind);
+		if (primaryMask != 0)
+			jobMask = primaryMask;
+		// Старые сейвы хранят авто-имя «Зона #N» (у зоны не было отрасли). Даём
+		// зоне человеческое имя отрасли, чтобы окно зоны показывало тип; имя,
+		// заданное игроком вручную, НЕ трогаем.
+		string restoredName = name;
+		if (string.IsNullOrEmpty(restoredName) || IsLegacyAutoZoneName(restoredName))
+			restoredName = $"{industry.Title} #{id}";
 		int r = Math.Clamp(radiusTiles, WorkZone.MinRadiusTiles, WorkZone.MaxRadiusTiles);
 		lock (_lock)
 		{
@@ -333,11 +493,11 @@ public sealed class ZoneManager
 				return false; // дубликат в файле — вторую молча не ставим
 			if (id >= _nextZoneId)
 				_nextZoneId = id + 1;
-			var zone = new Zone(id, string.IsNullOrEmpty(name) ? $"Зона #{id}" : name,
-				cx, cy, r, Math.Clamp(desiredWorkers, 0, WorkZone.MaxDesiredWorkers),
+			var zone = new Zone(id, restoredName,
+				industry.Kind, cx, cy, r, Math.Clamp(desiredWorkers, 0, WorkZone.MaxDesiredWorkers),
 				jobMask, CalcChunkIndicesForDisc(cx, cy, r))
 			{
-				PriorityOverride = priorityOverride is >= 1 and <= 10 ? priorityOverride : null,
+				PriorityOverride = priorityOverride is >= 0 and <= 10 ? priorityOverride : null,
 				Enabled = enabled,
 				AnchorBlockId = anchorBlockId
 			};
@@ -347,6 +507,20 @@ public sealed class ZoneManager
 		ScheduleRepartition();
 		Callable.From(() => OnZonesUpdated?.Invoke()).CallDeferred();
 		return true;
+	}
+
+	/// <summary>
+	/// Старое авто-имя зоны («Зона #7»), которое генерировал CreateWorkZoneAt до
+	/// task-12. Такие имена при загрузке заменяем на «&lt;Отрасль&gt; #id»;
+	/// имена, заданные игроком, не трогаем.
+	/// </summary>
+	private static bool IsLegacyAutoZoneName(string name)
+	{
+		if (string.IsNullOrEmpty(name))
+			return true;
+		if (!name.StartsWith("Зона #", StringComparison.Ordinal))
+			return false;
+		return int.TryParse(name.AsSpan(6), out _);
 	}
 
 	public bool RemoveZone(int id)
@@ -387,7 +561,7 @@ public sealed class ZoneManager
 			foreach (var kvp in _zones)
 			{
 				var z = kvp.Value;
-				if (z.Kind == ZoneKind.Work && z.CenterX == cx && z.CenterY == cy)
+				if (z.IsWorkZone && z.CenterX == cx && z.CenterY == cy)
 				{
 					targetId = kvp.Key;
 					break;
@@ -443,7 +617,7 @@ public sealed class ZoneManager
 			long bestDist = long.MaxValue;
 			foreach (var z in _zones.Values)
 			{
-				if (z.Kind != ZoneKind.Work || !z.ContainsTile(x, y))
+				if (!z.IsWorkZone || !z.ContainsTile(x, y))
 					continue;
 				long dx = x - z.CenterX;
 				long dy = y - z.CenterY;
@@ -472,6 +646,12 @@ public sealed class ZoneManager
 	private List<Zone> _dispatchSnap;
 	private int _dispatchSnapVersion = -1;
 	private int _zonesVersion;
+
+	// FIX (bughunt 13-10): отдельный кэш снимка ТОЛЬКО Work-зон. Диспатчу нужны
+	// именно они (Farm-зоны не раздаются), и round-robin должен считать их
+	// количество, а не общее число зон. Кэш валиден по той же версии состава.
+	private List<Zone> _dispatchWorkSnap;
+	private int _dispatchWorkSnapVersion = -1;
 
 	public List<Zone> GetAllZones()
 	{
@@ -509,6 +689,36 @@ public sealed class ZoneManager
 		Interlocked.Increment(ref _zonesVersion);
 	}
 
+	/// <summary>
+	/// FIX (bughunt 13-10): снимок ТОЛЬКО Work-зон для диспатч-прохода.
+	/// Farm-зоны в раздаче не участвуют, но раньше попадали в totalZones —
+	/// из-за этого Work-зона обслуживалась раз в N/4 проходов.
+	/// Возвращаемый список НЕ модифицировать (кэш). Только для sim-потока.
+	/// </summary>
+	public List<Zone> GetDispatchWorkSnapshot()
+	{
+		int v = Volatile.Read(ref _zonesVersion);
+		var snap = Volatile.Read(ref _dispatchWorkSnap);
+		if (snap != null && v == Volatile.Read(ref _dispatchWorkSnapVersion))
+			return snap;
+		lock (_lock)
+		{
+			v = _zonesVersion;
+			if (_dispatchWorkSnap != null && v == _dispatchWorkSnapVersion)
+				return _dispatchWorkSnap;
+			var fresh = new List<Zone>();
+			foreach (Zone z in _zones.Values)
+			{
+				if (z.IsWorkZone)
+					fresh.Add(z);
+			}
+			fresh.Sort(static (a, b) => a.Id.CompareTo(b.Id));
+			_dispatchWorkSnap = fresh;
+			Volatile.Write(ref _dispatchWorkSnapVersion, v);
+			return fresh;
+		}
+	}
+
 	/// <summary>То же, но под уже взятым _lock (инкремент int атомарен и без Interlocked).</summary>
 	private void BumpZonesVersion_NoLock()
 	{
@@ -525,7 +735,7 @@ public sealed class ZoneManager
 		int clamped = Math.Clamp(radius, WorkZone.MinRadiusTiles, WorkZone.MaxRadiusTiles);
 		lock (_lock)
 		{
-			if (!_zones.TryGetValue(id, out var zone) || zone.Kind != ZoneKind.Work)
+			if (!_zones.TryGetValue(id, out var zone) || !zone.IsWorkZone)
 				return false;
 			zone.RadiusTiles = clamped;
 			zone.TilesTarget = clamped; // легаси-поле: до P2 хранит радиус
@@ -544,7 +754,7 @@ public sealed class ZoneManager
 		bool ok;
 		lock (_lock)
 		{
-			ok = _zones.TryGetValue(id, out var zone) && zone.Kind == ZoneKind.Work;
+			ok = _zones.TryGetValue(id, out var zone) && zone.IsWorkZone;
 			if (ok)
 			{
 				zone.DesiredWorkers = Math.Clamp(v, 0, WorkZone.MaxDesiredWorkers);
@@ -563,7 +773,7 @@ public sealed class ZoneManager
 		bool ok;
 		lock (_lock)
 		{
-			ok = _zones.TryGetValue(id, out var zone) && zone.Kind == ZoneKind.Work;
+			ok = _zones.TryGetValue(id, out var zone) && zone.IsWorkZone;
 			if (ok)
 			{
 				zone.Enabled = enabled;
@@ -580,10 +790,10 @@ public sealed class ZoneManager
 
 	public bool SetWorkPriorityOverride(int id, int v)
 	{
-		int clamped = Math.Clamp(v, 1, 10);
+		int clamped = Math.Clamp(v, 0, 10);
 		lock (_lock)
 		{
-			if (!_zones.TryGetValue(id, out var zone) || zone.Kind != ZoneKind.Work)
+			if (!_zones.TryGetValue(id, out var zone) || !zone.IsWorkZone)
 				return false;
 			zone.PriorityOverride = clamped;
 		}
@@ -641,15 +851,13 @@ public sealed class ZoneManager
 		if (ctx != null)
 			SetMapBounds(ctx.MapWidth, ctx.MapHeight);
 		// P0-3: кэшированный снимок вместо new List + Sort на каждый диспатч.
-		var zones = GetDispatchSnapshot();
+		// FIX (bughunt 13-10): планировать round-robin по WORK-зонам, а не по всем:
+		// Farm-зоны в раздаче не участвуют, но раньше попадали в totalZones, и
+		// Work-зона обслуживалась раз в N/4 проходов вместо 4 зон за проход.
+		var zones = GetDispatchWorkSnapshot();
 		if (zones.Count == 0) return 0;
 		if (JobDispatcher.Instance.JobIndex.UnclaimedCount <= 0) return 0;
 		if (JobDispatcher.Instance.IdleWorkers.TotalIdleCount <= 0) return 0;
-		// Только Work-зоны участвуют в раздаче.
-		int workCount = 0;
-		for (int i = 0; i < zones.Count; i++)
-			if (zones[i].Kind == ZoneKind.Work) workCount++;
-		if (workCount == 0) return 0;
 		int totalZones = zones.Count;
 		int toProcess = Math.Min(MaxZonesPerPass, totalZones);
 		int oldScan = Interlocked.Add(ref _zoneScanIndex, toProcess) - toProcess;
@@ -658,7 +866,13 @@ public sealed class ZoneManager
 		for (int zi = 0; zi < toProcess; zi++)
 		{
 			var zone = zones[(baseIdx + zi) % totalZones];
-			if (zone.Kind != ZoneKind.Work) continue;
+			// FIX (bughunt 13-1): выключенная зона не диспатчит и НЕ владеет клетками
+			// (контракт ZoneCoverageMap.cs:15 и фильтр WorkerAssignmentSystem) — проверка
+			// ДО ResetAssigned, чтобы выключенная зона не «теряла» счётчик просто так.
+			if (!zone.Enabled) continue;
+			// FIX (bughunt 13-2): DesiredWorkers == 0 — это «зона не просит рабочих»
+			// (XML-doc Zone/WorkZone), а не «без потолка»: зона не получает никого.
+			if (zone.DesiredWorkers <= 0) continue;
 			zone.ResetAssigned();
 			int zoneAssigned = 0;
 			var chunks = zone.ChunkIndices;
@@ -666,7 +880,9 @@ public sealed class ZoneManager
 			if (chunks == null || tiles == null) continue;
 			foreach (int chunkIdx in chunks)
 			{
-				if (zone.DesiredWorkers > 0 && zoneAssigned >= zone.DesiredWorkers)
+				// FIX (bughunt 13-2): потолок заявки действует всегда (0 отсечён выше),
+				// раньше при 0 условие было ложным и потолка не было вовсе.
+				if (zoneAssigned >= zone.DesiredWorkers)
 					break;
 				if (JobDispatcher.Instance.JobIndex.GetChunkJobCount(chunkIdx) == 0)
 					continue;
@@ -678,7 +894,7 @@ public sealed class ZoneManager
 				{
 					if (assigned >= MaxAssignPerChunk)
 						break;
-					if (zone.DesiredWorkers > 0 && zoneAssigned >= zone.DesiredWorkers)
+					if (zoneAssigned >= zone.DesiredWorkers)
 						break;
 					int agentIndex = buf[wi];
 					if (agentIndex < 0 || agentIndex >= pool.Capacity)
@@ -695,8 +911,23 @@ public sealed class ZoneManager
 							chunkIdx, workerTx, workerTy,
 							pool.EquippedTools[agentIndex],
 							pool, agentIndex, ctx,
-							out var activeJob))
+							out var activeJob,
+							zone.JobMask))
 						{
+							// J-18: принадлежность клетки зоне проверяем ДО OnStart.
+							// Раньше работа чужой зоны (чанк может пересекать несколько
+							// зон) уже запускалась через OnStart и тут же отменялась
+							// через OnCancel — двойной churn на каждую такую выдачу.
+							// Теперь такие работы просто не берём: клейм снимается,
+							// агент остаётся свободным и ищет дальше.
+							if (!zone.Matches(activeJob.TypeId) || !zone.ContainsTile(activeJob.TargetX, activeJob.TargetY))
+							{
+								JobDispatcher.Instance.JobIndex.ReleaseWorkerClaim(activeJob.Id);
+								pool.CurrentJobId[agentIndex] = -1;
+								pool.CurrentJobType[agentIndex] = JobTypeId.None;
+								continue;
+							}
+
 							JobDispatcher.Instance.IdleWorkers.RemoveIdleWorker(agentIndex, pool);
 							pool.CurrentJobId[agentIndex] = activeJob.Id;
 							pool.CurrentJobType[agentIndex] = activeJob.TypeId;
@@ -718,20 +949,8 @@ public sealed class ZoneManager
 									}
 									else
 									{
-										if (!zone.Matches(activeJob.TypeId) || !zone.ContainsTile(activeJob.TargetX, activeJob.TargetY))
-										{
-											try { handler.OnCancel(agentIndex, pool, ctx); }
-											catch (Exception ex)
-											{
-												GD.PrintErr($"[ZoneManager] Ошибка OnCancel для агента #{agentIndex}: {ex.Message}");
-											}
-											JobDispatcher.Instance.JobIndex.ReleaseWorkerClaim(activeJob.Id);
-											pool.CurrentJobId[agentIndex] = -1;
-											pool.CurrentJobType[agentIndex] = JobTypeId.None;
-											pool.States[agentIndex] = AgentState.Idle;
-											JobDispatcher.Instance.IdleWorkers.AddIdleWorker(agentIndex, pool);
-											continue;
-										}
+										// Принадлежность зоне уже проверена до OnStart (J-18),
+										// поэтому здесь только фиксация выдачи.
 										pool.LastJobCategory[agentIndex] = (int)JobPriorityManager.Instance.GetCategory(activeJob.TypeId);
 										zone.RegisterAssigned();
 										assigned++;

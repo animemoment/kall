@@ -14,12 +14,12 @@ namespace Game.Core.WorldStreaming;
 // (по клетке через Set), водная подпитка влажности (RebuildWaterNear по
 // перенесённому Ground — тот же BFS, что делает Initialize зоны), Climate, Seed.
 //
-// ЗАФИКСИРОВАННОЕ ОГРАНИЧЕНИЕ (§118): якорь восстановления плодородия
-// FertilityMap._base переносится через публичный SeedBaseFromCurrent()
-// (14-03, 2026-10-31): у зоны якорь уже стоит с Initialize, поэтому у цели он
-// равен перенесённому стартовому состоянию. Живая миграция «потикавшей» зоны
-// (когда _cur уже истощён) по-прежнему требует CopyFrom-API у FertilityMap/
-// HumidityMap — это фаза 4.
+// ЗАФИКСИРОВАННОЕ ОГРАНИЧЕНИЕ (§118, не костыль): якорь восстановления
+// плодородия FertilityMap._base НЕ переносится — публичного API записи нет
+// (файл не этой фазы). Для сценария «мост при создании зоны» это невидимо:
+// истощённых клеток ещё нет (DrainAfterHarvest не звался), _cur == значениям
+// Initialize, восстановление под паром не требуется. Живая миграция
+// «потикавшей» зоны — фаза 4 (нужен CopyFrom-API у FertilityMap/HumidityMap).
 //
 // Мета-статистики LakeCount/LakeSizes/RiverBranchCount/MainRiverLength/
 // LandConnectivity НЕ переносятся: GenerateColonyWindow их тоже НЕ заполняет
@@ -110,13 +110,19 @@ public static class MapDataShim
         }
         target.Humidity.RebuildWaterNear(target.Ground);
 
-        // 14-03: якорь восстановления плодородия (_base) переносится ОТДЕЛЬНО —
-        // Set пишет только _cur. Без этого BaseAt нового MapData возвращал 0 и
-        // «пар» (восстановление после уборки) не работал никогда: клетка навсегда
-        // оставалась истощённой ×0.8 за каждый урожай.
-        target.Fertility.SeedBaseFromCurrent();
+        // FIX (bughunt 02-2): якорь «пара» переносится ОТДЕЛЬНО — Set() пишет только
+        // текущее значение и _base не трогает. Без этой строки восстановление под
+        // паром не работало никогда: плодородие после сбора урожая только падало.
+        target.Fertility.CopyBaseFrom(source.Fertility);
 
         target.Climate = source.Climate;
         target.Seed = source.Seed;
+
+        // task-5: рудные месторождения по геологическим правилам. Прод-путь
+// (Main: ActiveArea → MapData) готовой климат-сетки не имеет — пасс семплит
+// её сам по (seed, version, абсолютным координатам зоны), §7.1/§7.2.
+        // Детерминизм: полный 64-битный сид мира + версия генератора.
+        OreDepositGenerator.Generate(target, source.WorldSeedFull, source.GeneratorVersion,
+            source.ZoneOriginX, source.ZoneOriginY);
     }
 }

@@ -32,6 +32,14 @@ public sealed class ZoneCoverageMap
     /// <summary>0 = клетка ничья; иначе zoneId (1..65535).</summary>
     private volatile Dictionary<JobTypeId, ushort[]> _maps = new();
 
+    /// <summary>
+    /// J-15: буферы карт для переиспользования. `_previous` — набор, снятый с
+    /// публикации в этом пересчёте (читатели ещё могут его держать), `_retired` —
+    /// снятый пересчётом раньше, он уже безопасен для Array.Clear.
+    /// </summary>
+    private Dictionary<JobTypeId, ushort[]> _previous = new();
+    private Dictionary<JobTypeId, ushort[]> _retired = new();
+
     private readonly object _rebuildGate = new();
     private int _dirty;
     private long _lastRebuildMs = long.MinValue;
@@ -42,42 +50,13 @@ public sealed class ZoneCoverageMap
     /// <summary>Заявить пересчёт (вызывается ZoneManager.ScheduleRepartition).</summary>
     public void RequestRebuild() => Volatile.Write(ref _dirty, 1);
 
-    /// <summary>
-    /// Кэш последней пары «тип → карта»: словарь типов на горячем пуш-пути.
-    /// Холдер НЕИЗМЕНЯЕМ после создания (тип+карта+снимок словаря в одном объекте),
-    /// поэтому гонка чтения не может смешать тип одной карты с массивом другой.
-    /// </summary>
-    private sealed class LastLookup
-    {
-        public readonly Dictionary<JobTypeId, ushort[]> Owner;
-        public readonly JobTypeId Type;
-        public readonly ushort[] Map;
-
-        public LastLookup(Dictionary<JobTypeId, ushort[]> owner, JobTypeId type, ushort[] map)
-        {
-            Owner = owner;
-            Type = type;
-            Map = map;
-        }
-    }
-
-    private LastLookup? _lastLookup;
-
     /// <summary>O(1) владелец клетки по типу работ. false — клетка ничья.</summary>
     public bool TryGetOwner(int x, int y, JobTypeId type, out int zoneId)
     {
         zoneId = 0;
         var maps = _maps;
-        LastLookup? last = _lastLookup;
-        ushort[] map;
-        if (last != null && last.Type == type && ReferenceEquals(last.Owner, maps))
-            map = last.Map;
-        else
-        {
-            if (!maps.TryGetValue(type, out map))
-                return false;
-            _lastLookup = new LastLookup(maps, type, map);
-        }
+        if (!maps.TryGetValue(type, out var map))
+            return false;
         int w = _w;
         if ((uint)x >= (uint)w || (uint)y >= (uint)_h)
             return false;
@@ -135,7 +114,7 @@ public sealed class ZoneCoverageMap
         var byType = new Dictionary<JobTypeId, List<Zone>>();
         foreach (var z in zones)
         {
-            if (z.Kind != ZoneKind.Work || !z.Enabled || z.DesiredWorkers <= 0)
+            if (!z.IsWorkZone || !z.Enabled || z.DesiredWorkers <= 0)
                 continue;
             if (z.JobMask == 0 || (z.JobMask & (z.JobMask - 1UL)) != 0)
                 continue; // P0 гарантирует ровно один бит; защита от кривых данных
@@ -149,17 +128,42 @@ public sealed class ZoneCoverageMap
 
         foreach (var kv in byType)
         {
-            var map = new ushort[_w * _h];
+            // J-15: карта типа — это ushort[1024*1024] = 2 МБ, и раньше она
+            // выделялась заново на каждый пересчёт (несколько типов ⇒ ~10 МБ
+            // мусора на пересчёт, заметная нагрузка на GC при массовой разметке).
+            // Переиспользуем буферы из набора, снятого с публикации ДВА пересчёта
+            // назад: к этому моменту читатели (TryGetOwner читает _maps один раз в
+            // локальную переменную) его уже не держат, поэтому Array.Clear не
+            // может испортить чужое чтение.
             var list = kv.Value;
             list.Sort(static (a, b) =>
             {
                 int c = b.AssignedCount.CompareTo(a.AssignedCount);
                 return c != 0 ? c : a.Id.CompareTo(b.Id);
             });
+
+            ushort[] map;
+            if (_retired.TryGetValue(kv.Key, out var reusable) && reusable.Length == (int)cells)
+            {
+                map = reusable;
+                Array.Clear(map, 0, map.Length);
+                _retired.Remove(kv.Key);
+            }
+            else
+            {
+                map = new ushort[_w * _h];
+            }
+
             foreach (var z in list)
                 PaintZoneOnMap(map, z, _w, _h);
             fresh[kv.Key] = map;
         }
+
+        // Ротация буферов: retired ← прежний опубликованный набор (он снят с
+        // публикации только что, поэтому им ещё могут пользоваться читатели —
+        // в оборот он пойдёт через один пересчёт), published ← fresh.
+        _retired = _previous;
+        _previous = _maps;
 
         // Атомарная замена: читатели видят либо старый, либо новый полный набор.
         _maps = fresh;
@@ -201,6 +205,12 @@ public sealed class ZoneCoverageMap
         lock (_rebuildGate)
         {
             _maps = new Dictionary<JobTypeId, ushort[]>();
+            // AUDIT task-17 (N-6): раньше буферы предыдущих пересчётов
+            // (_previous/_retired — по 2 МБ на тип работ) оставались висеть до
+            // следующего rebuild, т.е. после смены мира/сида зря держали десятки МБ.
+            // Мир сменился — старые покрытия невалидны, освобождаем сразу.
+            _previous = new Dictionary<JobTypeId, ushort[]>();
+            _retired = new Dictionary<JobTypeId, ushort[]>();
             Volatile.Write(ref _dirty, 0);
             _lastRebuildMs = long.MinValue;
             _builtVersion = -1;

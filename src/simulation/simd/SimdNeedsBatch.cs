@@ -43,9 +43,28 @@ public static class SimdNeedsBatch
 			throw new ArgumentOutOfRangeException(nameof(index), "index вне [0, Capacity).");
 		ValidateDeltaTime(deltaTime);
 
-		// Голод: +0.5/игровую минуту (только верхний clamp — как в скаляре).
+		// Голод: +0.5/игровую минуту (GD-12: при 100% включается таймер истощения).
 		float hunger = pool.Hunger[index] + AgentNeedsConfig.HungerPerGameSec * deltaTime;
-		pool.Hunger[index] = hunger > 100f ? 100f : hunger;
+		if (hunger >= 100f)
+		{
+			pool.Hunger[index] = 100f;
+			if (pool.StarvationTimer != null)
+			{
+				pool.StarvationTimer[index] += deltaTime;
+				if (pool.StarvationTimer[index] >= 36000f) // 3 игровых дня
+				{
+					pool.Speed[index] = 0f; // кома/ступор от смертельного голода
+				}
+			}
+		}
+		else
+		{
+			pool.Hunger[index] = hunger;
+			if (pool.StarvationTimer != null)
+			{
+				pool.StarvationTimer[index] = 0f;
+			}
+		}
 
 		// Сон: +0.3/мин (только верхний clamp — как в скаляре).
 		float sleep = pool.Sleep[index] + AgentNeedsConfig.SleepPerGameSec * deltaTime;

@@ -1,0 +1,74 @@
+[
+  {
+    "id": 0,
+    "name": "Desert",
+    "description": "Пустыня / сухой песок / пляжи",
+    "min_temp": 35000,
+    "max_temp": 65535,
+    "min_moist": 0,
+    "max_moist": 20000
+  },
+  {
+    "id": 1,
+    "name": "Steppe",
+    "description": "Степь / сухая трава",
+    "min_temp": 25000,
+    "max_temp": 50000,
+    "min_moist": 15000,
+    "max_moist": 32000
+  },
+  {
+    "id": 2,
+    "name": "DeepWater",
+    "description": "Глубокая вода / океаны",
+    "min_temp": 0,
+    "max_temp": 65535,
+    "min_moist": 0,
+    "max_moist": 65535
+  },
+  {
+    "id": 3,
+    "name": "Mountain",
+    "description": "Горы / скальные пики",
+    "min_temp": 0,
+    "max_temp": 65535,
+    "min_moist": 0,
+    "max_moist": 65535
+  },
+  {
+    "id": 4,
+    "name": "Plains",
+    "description": "Равнина / поля",
+    "min_temp": 25000,
+    "max_temp": 45000,
+    "min_moist": 30000,
+    "max_moist": 48000
+  },
+  {
+    "id": 5,
+    "name": "Forest",
+    "description": "Лесной массив",
+    "min_temp": 20000,
+    "max_temp": 48000,
+    "min_moist": 42000,
+    "max_moist": 65535
+  },
+  {
+    "id": 6,
+    "name": "Swamp",
+    "description": "Болото / влажная низина",
+    "min_temp": 28000,
+    "max_temp": 55000,
+    "min_moist": 52000,
+    "max_moist": 65535
+  },
+  {
+    "id": 7,
+    "name": "Glacier",
+    "description": "Ледник / тундра / вечная мерзлота",
+    "min_temp": 0,
+    "max_temp": 18000,
+    "min_moist": 0,
+    "max_moist": 65535
+  }
+]

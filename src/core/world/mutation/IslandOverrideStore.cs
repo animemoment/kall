@@ -305,11 +305,12 @@ public sealed class IslandOverrideStore : IWorldMutationSink
                 if (len > 0)
                     writer.Write(payload, 0, len);
             }
+            // N-01: fsync гарантирует сброс данных на диск до атомарной замены файла.
+            stream.Flush(flushToDisk: true);
         }
 
-        if (File.Exists(path))
-            File.Delete(path);
-        File.Move(temp, path);
+        // N-01: Атомарная замена файла вместо Delete+Move (при сбое питания старый файл цел).
+        File.Move(temp, path, overwrite: true);
     }
 
     /// <summary>
@@ -318,8 +319,29 @@ public sealed class IslandOverrideStore : IWorldMutationSink
     /// </summary>
     public bool Load(string path)
     {
-        if (string.IsNullOrEmpty(path) || !File.Exists(path))
+        if (string.IsNullOrEmpty(path))
             return false;
+
+        // N-01: подхватываем temp-файл, если процесс упал между flush и move.
+        if (!File.Exists(path))
+        {
+            string temp = path + TempSuffix;
+            if (File.Exists(temp))
+            {
+                try
+                {
+                    File.Move(temp, path, overwrite: true);
+                }
+                catch
+                {
+                    path = temp;
+                }
+            }
+            else
+            {
+                return false;
+            }
+        }
 
         using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
         using (var reader = new BinaryReader(stream))

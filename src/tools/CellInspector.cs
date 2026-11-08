@@ -41,7 +41,7 @@ public partial class CellInspector : RefCounted
         GeneratedCell cell = WorldCellQuery.CellAt(seed, ver, x, y);
 
         // 1. Покрытие островом (рендерер земли внутри окна IslandTiles) и стримингом.
-        bool islandCovers = WorldPlacementPass.IsOnIsland(x, y);
+        bool islandCovers = WorldPlacementPass.IsIslandCell(x, y);
 
         // 2. Декор: два независимых мнения об одной и той же клетке.
         bool genTree = false, genStone = false;
@@ -61,8 +61,9 @@ public partial class CellInspector : RefCounted
         ushort fertility = StreamingWorldView.SoilFertilityAtCell(seed, ver, x, y);
         (bool streamTree, bool streamStone) = WorldGenV2.DecorPass(x, y, in cell, fertility);
 
-        // 3. Индекс работ: пирамида покрывает 1024×1024 (J-05 исправлен). Клетка за
-        //    кромкой острова падает в крайние чанки (кламп защитный, а не схлопывание).
+        // 3. Индекс работ: сегодня — пирамида 512×512 с клампами (J-05, отдельный
+        //    трек волны 2 мастер-плана). Честно показываем кламп: «clamped» = клетка
+        //    за пределами покрытия пирамиды (ChunkDim чанков × 16 тайлов = 512).
         int chunkIndex = JobSpatialPyramid.GetChunkIndexStatic((int)x, (int)y);
         int chunkCx = chunkIndex % JobSpatialPyramid.ChunkDim;
         int chunkCy = chunkIndex / JobSpatialPyramid.ChunkDim;
@@ -163,7 +164,7 @@ public partial class CellInspector : RefCounted
             long x = vertical ? fixedCoord : i;
             long y = vertical ? i : fixedCoord;
             GeneratedCell cell = WorldCellQuery.CellAt(seed, ver, x, y);
-            bool islandCovers = WorldPlacementPass.IsOnIsland(x, y);
+            bool islandCovers = WorldPlacementPass.IsIslandCell(x, y);
 
             bool genTree = false, genStone = false;
             try
@@ -180,24 +181,25 @@ public partial class CellInspector : RefCounted
             int chunkIndex = JobSpatialPyramid.GetChunkIndexStatic((int)x, (int)y);
             int cx = chunkIndex % JobSpatialPyramid.ChunkDim;
             int cy = chunkIndex / JobSpatialPyramid.ChunkDim;
-            // Кламп защитный (крайний чанк для координат вне 0..1023), НЕ схлопывание.
-            bool outOfIsland = x < 0 || y < 0 || x >= (long)JobSpatialPyramid.ChunkDim * 16 || y >= (long)JobSpatialPyramid.ChunkDim * 16;
-            if (outOfIsland) jobClamp++; // диагностика: клетка вне прямого покрытия (крайний чанк)
+            bool clamped = (x >> JobSpatialPyramid.ChunkShift) > JobSpatialPyramid.ChunkDim - 1
+                        || (y >> JobSpatialPyramid.ChunkShift) > JobSpatialPyramid.ChunkDim - 1
+                        || x < 0 || y < 0;
 
             bool toolOk = true; // гейт снят: размещение за кромкой принимается (исполнитель — RENDER_SYNC_PLAN фаза 4)
 
             bool decorOk = genTree == streamTree && genStone == streamStone;
             if (!decorOk) decorDiff++;
+            if (clamped) jobClamp++;
             if (!toolOk) toolBlocked++;
             total++;
 
             sb.Append(x.ToString().PadRight(7));
             sb.Append(cell.Terrain.ToString().PadRight(9));
             sb.Append((decorOk ? "ok" : "DIFF").PadRight(6));
-            sb.Append((outOfIsland ? $"edge({cx},{cy})" : "ok").PadRight(7));
+            sb.Append((clamped ? $"clamp({cx},{cy})" : "ok").PadRight(7));
             sb.Append((toolOk ? "ok" : "BLOCKED").PadRight(7));
             if (!decorOk) sb.Append(" decor");
-            if (outOfIsland) sb.Append(" jobs");
+            if (clamped) sb.Append(" jobs");
             if (!toolOk) sb.Append(" tools");
             sb.Append('\n');
         }

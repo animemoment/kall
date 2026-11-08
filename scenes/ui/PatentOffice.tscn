@@ -1,0 +1,51 @@
+[gd_scene format=3 uid="uid://cfds10hubnbcu"]
+
+[ext_resource type="Texture2D" uid="uid://cdm3dwn6dswrs" path="res://ui/assets/textures/icons/PatentIcon.png" id="1_5ckr6"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_u0ya7"]
+bg_color = Color(0, 0, 0, 1)
+
+[node name="Control" type="Control" unique_id=1828557041]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Panel" type="Panel" parent="." unique_id=533681057]
+layout_mode = 0
+offset_left = 16.0
+offset_top = 132.0
+offset_right = 883.0
+offset_bottom = 1080.0
+
+[node name="HScrollBar" type="HScrollBar" parent="Panel" unique_id=1769576448]
+layout_mode = 0
+offset_left = -16.0
+offset_right = 867.0
+offset_bottom = 948.0
+theme_override_styles/scroll = SubResource("StyleBoxFlat_u0ya7")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="Panel/HScrollBar" unique_id=408090636]
+layout_mode = 0
+offset_left = 28.0
+offset_top = 70.0
+offset_right = 94.0
+offset_bottom = 948.0
+theme_override_constants/separation = 196
+
+[node name="PatentIcon" type="TextureRect" parent="Panel/HScrollBar/VBoxContainer" unique_id=702301349]
+custom_minimum_size = Vector2(64, 64)
+custom_maximum_size = Vector2(64, 64)
+layout_mode = 2
+texture = ExtResource("1_5ckr6")
+
+[node name="Backdrop" type="ColorRect" parent="." unique_id=50383735]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.025, 0.025, 0.03, 1)

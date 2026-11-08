@@ -4,12 +4,9 @@ using Game.Core.World;
 using Game.Core.WorldStreaming;
 using Game.Core.WorldStreaming.Integration;
 using Game.Simulation;
-using Game.Tools;
-using Game.UI.Tools;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -20,7 +17,12 @@ public enum MapMode
 {
 	Normal,
 	Humidity,
-	Fertility
+	Fertility,
+	// task-6: оверлеи MapModeOverlayRenderer (руды/высоты/склад/работы).
+	Ore,
+	Elevation,
+	Stockpile,
+	Jobs
 }
 
 public partial class MapRenderer : Node2D
@@ -44,7 +46,7 @@ public partial class MapRenderer : Node2D
 	/// вырастет 512→1024, follow-окно остаётся 512×512 и продолжает следить за камерой —
 	/// его размер обусловлен зоной видимости камеры, а не размером острова.
 	/// </summary>
-	public const int TerrainWindowTiles = 512;
+	public const int TerrainWindowTiles = 1024;
 
 	/// <summary>Квант сдвига follow-окна в тайлах: 1 чанк стриминга = 64 клетки.</summary>
 	private const int TerrainWindowShift = 64;
@@ -75,10 +77,24 @@ public partial class MapRenderer : Node2D
 	public const int SourceSand       = 17;
 	// §119 P5: центральный блок (central.png) — одиночный спрайт 64x64.
 	public const int SourceCentralBlock = 18;
-	// §122: зона склада — ОДИН рантайм-тайл для острова и мира (ToolVisualSpec).
-	public const int SourceStockpile = 19;
 	// Композитный объединенный атлас декораций (деревья + камни) для батчинга в 1 DrawCall
 	public const int SourceObjectComposite = 20;
+	// task-16: СТАНКИ отраслей. Каждый — отдельный Source; тайл мультиклеточный
+	// (размер из арта, BuildingFootprint), чтобы спрайт и габариты совпадали.
+	public const int SourceSawmill      = 21;
+	public const int SourceSmelter      = 22;
+	public const int SourceAnvil        = 23;
+	public const int SourceWorkbench    = 24;
+	public const int SourceSpinningWheel = 25;
+	public const int SourceLoom         = 26;
+	public const int SourceMill         = 27;
+	public const int SourceAssemblyLine = 28;
+	// Полы (дерево, камень, бетон) и крыши (жилая непрозрачная, промышленная затемняющая)
+	public const int SourceFloorWood     = 30;
+	public const int SourceFloorStone    = 31;
+	public const int SourceFloorConcrete = 32;
+	public const int SourceRoofResidential = 33;
+	public const int SourceRoofIndustrial  = 34;
 	// Ghost-призрак: TileSet _ghostLayer — ДУБЛЬ сценового wall-набора с
 	// добавленными одиночными Source (трава/грядка/мебель). Id взяты с запасом
 	// от сценовых (там максимум ~16), чтобы не пересекаться с terrain-источниками.
@@ -93,6 +109,20 @@ public partial class MapRenderer : Node2D
 	public const int GhostNightstandSource = 116;
 	// §119 P5: ghost центрального блока.
 	public const int GhostCentralBlockSource = 117;
+	// task-16: ghost станков (мультиклеточные призраки по габаритам арта).
+	public const int GhostSawmillSource       = 118;
+	public const int GhostSmelterSource       = 119;
+	public const int GhostAnvilSource         = 120;
+	public const int GhostWorkbenchSource     = 121;
+	public const int GhostSpinningWheelSource = 122;
+	public const int GhostLoomSource          = 123;
+	public const int GhostMillSource          = 124;
+	public const int GhostAssemblyLineSource  = 125;
+	public const int GhostFloorWoodSource       = 130;
+	public const int GhostFloorStoneSource      = 131;
+	public const int GhostFloorConcreteSource   = 132;
+	public const int GhostRoofResidentialSource = 133;
+	public const int GhostRoofIndustrialSource  = 134;
 
 	/// <summary>
 	/// Сид карты. 0 = случайный каждый запуск, иначе фиксированный (для дебага/повторов).
@@ -143,6 +173,19 @@ public partial class MapRenderer : Node2D
 	private const string TextureCentralBlock = "uid://dsiddo1lt1scb";
 	private const string TextureSand = "uid://cmxrvsia7sdqi";
 
+	// task-16: станки отраслей. Арт скопирован в ui/assets/textures/building/,
+	// размеры 64..192 × 64..256 px (1×1…3×4 клетки) — габариты в BuildingFootprint.
+	// res://-путь, а не uid: новые файлы импортируются редактором (или .import,
+	// подготовленным рядом с png), uid ещё не закреплён в сцене.
+	private const string TextureSawmill      = "res://ui/assets/textures/building/sawmill.png";
+	private const string TextureSmelter      = "res://ui/assets/textures/building/smelter.png";
+	private const string TextureAnvil        = "res://ui/assets/textures/building/anvil.png";
+	private const string TextureWorkbench    = "res://ui/assets/textures/building/workbench.png";
+	private const string TextureSpinningWheel = "res://ui/assets/textures/building/spinning.png";
+	private const string TextureLoom         = "res://ui/assets/textures/building/loom.png";
+	private const string TextureMill         = "res://ui/assets/textures/building/mill.png";
+	private const string TextureAssemblyLine = "res://ui/assets/textures/building/assembly.png";
+
 	private const int WallAtlasColumns = 7;
 	private const int WallAtlasRows = 7;
 	private const int WallAtlasTilePx = 64;
@@ -167,10 +210,19 @@ public partial class MapRenderer : Node2D
 	private TerrainTileLayer _farmBlueprintTerrain;
 	private HumidityOverlayRenderer _humidityOverlay;
 	private FertilityOverlayRenderer _fertilityOverlay;
+	// task-6: оверлей режимов Ore/Elevation/Stockpile/Jobs (одна текстура на карту).
+	private MapModeOverlayRenderer _mapModeOverlay;
 	private TileMapLayer _stockpileLayer;
 	private TileMapLayer _objectLayer;
+	// Руда (task-3): отдельный слой, Z над травой/фермой/складом, под деревьями
+	// и агентами. Тайл выбирается по нормализованной маске соседей (47 значений),
+	// композитные атласы строит OreTileSetBuilder лениво по (ore_type, state).
+	private TileMapLayer _oreLayer;
+	private OreTileSetBuilder _oreTiles;
+	private TileMapLayer _floorLayer;
 	private TileMapLayer _wallLayer;
 	private TileMapLayer _buildingLayer;
+	private TileMapLayer _roofLayer;
 	private TileMapLayer _ghostLayer;
 	private TileMapLayer _blueprintLayer;
 
@@ -179,7 +231,11 @@ public partial class MapRenderer : Node2D
 	private MapData _pendingMapData;
 	private WallBuildManager _wallBuildManager;
 
-	private readonly ConcurrentQueue<Vector2I> _choppedTreesQueue = new();
+	// C-08: поколение карты. Очереди батчинга хранят клетки в координатах и слоях
+	// текущей карты; при ApplyMap счётчик растёт, и всё, что успело попасть в очередь
+	// от прошлого мира (задержка дренажа, ещё живой старый sim-поток), отбрасывается
+	// при дренаже, а не рисуется поверх новой карты.
+	private int _mapGeneration;
 
 	// П.2: батчинг SetCell/EraseCell. События менеджеров только складывают клетки в очередь,
 	// реальный TileMap трогаем раз в кадр ограниченным бюджетом — иначе 1000 завершений
@@ -191,13 +247,41 @@ public partial class MapRenderer : Node2D
 		public readonly int Source;
 		public readonly Vector2I Atlas;
 		public readonly bool Erase;
-		public PendingCell(TileMapLayer layer, Vector2I pos, int source, Vector2I atlas, bool erase)
+		// C-08: поколение карты на момент постановки в очередь.
+		public readonly int Generation;
+		public PendingCell(TileMapLayer layer, Vector2I pos, int source, Vector2I atlas, bool erase, int generation)
 		{
-			Layer = layer; Pos = pos; Source = source; Atlas = atlas; Erase = erase;
+			Layer = layer; Pos = pos; Source = source; Atlas = atlas; Erase = erase; Generation = generation;
 		}
 	}
 	private readonly ConcurrentQueue<PendingCell> _pendingCells = new();
+
+	// C-08: то же поколение для очереди стирания деревьев/камня.
+	private readonly struct ChoppedCell
+	{
+		public readonly Vector2I Pos;
+		public readonly int Generation;
+		public ChoppedCell(Vector2I pos, int generation) { Pos = pos; Generation = generation; }
+	}
+	private readonly ConcurrentQueue<ChoppedCell> _choppedTreesQueue = new();
+
+	// C-08: единая точка постановки клетки в очередь — штампует текущим поколением.
+	private void EnqueuePending(TileMapLayer layer, Vector2I pos, int source, Vector2I atlas, bool erase)
+		=> _pendingCells.Enqueue(new PendingCell(layer, pos, source, atlas, erase, _mapGeneration));
+
 	private const int MaxCellsPerFrame = 2048;
+
+	// R-02: бюджет дренажа очереди клеток задан ВРЕМЕНЕМ, а не числом клеток.
+	// 1.5 мс на кадр — цена, которую ещё можно отдать симуляции (было: фиксированные
+	// 16384 SetCell = 2–10 мс при непустом бэклоге). PendingFlushHardCapCells — страховка
+	// от прыгнувших/замороженных часов, не больше прежнего худшего случая за кадр.
+	private const double PendingFlushBudgetMs = 1.5;
+	private const int PendingFlushHardCapCells = 4096;
+	// Маска проверки часов: раз в 64 применённые клетки (2^k-1).
+	private const int PendingFlushClockMask = 63;
+	// R-05: счётчик кадров для редкой проверки «в слое призрака есть клетки».
+	private const int GhostVisibilityCheckFrames = 4;
+	private int _ghostVisibilityFrame;
 	private bool _blueprintRefreshQueued;
 	private long _lastBlueprintRefreshMs;
 	// Стандарт слоёв: движковый автотайлинг через TerrainTileLayer
@@ -221,14 +305,35 @@ public partial class MapRenderer : Node2D
 	private readonly List<(int X, int Y, int Stage)> _progressDrain = new(256);
 	private readonly List<(int X, int Y)> _progressStale = new(128);
 	private float _progressSweepTimer;
+	// FIX (bughunt 14-2): пока слой прогресса скрыт LOD'ом, дельты стадий
+	// нельзя выбрасывать — DrainDirty снимает клетку из _queued, и после
+	// приближения иконка навсегда залипала на устаревшей стадии. Копим
+	// последнюю стадию по клетке здесь (-1 = стереть при показе слоя).
+	private readonly Dictionary<Vector2I, int> _progressHiddenStages = new(128);
+	// Предел буфера скрытого слоя: живых работ на карте заведомо меньше.
+	// Переполнение = аномальная сессия ⇒ не копим память, а помечаем, что
+	// при следующем показе слой надо перерисовать целиком.
+	private const int ProgressHiddenStagesLimit = 4096;
+	private bool _progressFullRedrawNeeded;
 
 	private Action<(int X, int Y)> _onZoneTileAdded;
 	private Action<(int X, int Y)> _onZoneTileRemoved;
 	private Action<(int X, int Y)[]> _onZoneTilesBatchAdded;
 	private Action<(int X, int Y)[]> _onZoneTilesBatchRemoved;
 
+	// FIX (bughunt 14-3): подписки на ConstructionManager были анонимными
+	// лямбдами — снять их в _ExitTree было невозможно, менеджер держал
+	// освобождённый MapRenderer в invocation list и звал его после смены сцены.
+	private Action<List<ConstructionSite>> _onSitesBatchAdded;
+	private Action<ConstructionSite> _onSiteAdded;
+	private Action<(int X, int Y)> _onSiteRemoved;
+	private Action<List<(int X, int Y)>> _onSitesBatchRemoved;
+	private Action<ConstructionSite> _onSiteCompleted;
+
 	private Action<(int X, int Y), BuildingType> _onBuildingPlaced;
 	private Action<(int X, int Y)> _onBuildingRemoved;
+	private Action<StructureInstance> _onStructureAdded;
+	private Action<(int X, int Y), StructureDefinition> _onStructureRemoved;
 
 	private Action<(int X, int Y)> _onPlotMarked;
 	private Action<List<(int X, int Y)>> _onPlotsBatchMarked;
@@ -245,8 +350,84 @@ public partial class MapRenderer : Node2D
 	public WallBuildManager WallBuildManager => _wallBuildManager;
 	public TileMapLayer GhostLayer => _ghostLayer;
 	public TileMapLayer WallLayer => _wallLayer;
+	public TileMapLayer FloorLayer => _floorLayer;
+	public TileMapLayer RoofLayer => _roofLayer;
+	/// <summary>Слой руды (task-3) — для инструментов/диагностики, только чтение.</summary>
+	public TileMapLayer OreLayer => _oreLayer;
 	public ShadowCasterRenderer ShadowRenderer { get; private set; }
 	public StockpileItemRenderer StockpileItems { get; private set; }
+
+	// --- Диагностика шва для SeamInspector (src/tools): только чтение ---
+
+	/// <summary>Любой тайл островных слоёв в этой клетке — диагностика шва.</summary>
+	public bool HasAnyTileAt(int x, int y)
+	{
+		var pos = new Vector2I(x, y);
+		return HasSourceId(_groundLayer, pos)
+			|| HasSourceId(_mountainLayer, pos)
+			|| HasSourceId(_farmLayer, pos)
+			|| HasSourceId(_oreLayer, pos)
+			|| HasSourceId(_objectLayer, pos)
+			|| HasSourceId(_wallLayer, pos)
+			|| HasSourceId(_buildingLayer, pos)
+			|| HasSourceId(_blueprintLayer, pos)
+			|| HasSourceId(_wallBlueprintLayer, pos);
+	}
+
+	private static bool HasSourceId(TileMapLayer layer, Vector2I pos)
+		=> layer != null && layer.GetCellSourceId(pos) != -1;
+
+	/// <summary>Текущий левый-верхний угол follow-окна террейна (диагностика шва).</summary>
+	public Vector2I TerrainWindowOrigin
+		=> new(_currentTerrainOriginX == long.MinValue ? 0 : (int)_currentTerrainOriginX,
+			   _currentTerrainOriginY == long.MinValue ? 0 : (int)_currentTerrainOriginY);
+
+	/// <summary>Что нарисовано в клетке острова во всех слоях — диагностика шва.</summary>
+	public string DescribeCellVisual(int x, int y)
+	{
+		var pos = new Vector2I(x, y);
+		var sb = new System.Text.StringBuilder(256);
+		sb.Append("MapRenderer: cell=(").Append(x).Append(',').Append(y).Append(")");
+		AppendLayer(sb, "ground", _groundLayer, pos);
+		AppendLayer(sb, "mountain", _mountainLayer, pos);
+		AppendLayer(sb, "farm", _farmLayer, pos);
+		AppendLayer(sb, "ore", _oreLayer, pos);
+		AppendLayer(sb, "object", _objectLayer, pos);
+		AppendLayer(sb, "wall", _wallLayer, pos);
+		AppendLayer(sb, "building", _buildingLayer, pos);
+		AppendLayer(sb, "blueprint", _blueprintLayer, pos);
+		return sb.Append('\n').ToString();
+	}
+
+	/// <summary>Компактная строка диагностики клетки (для полосы/сводки).</summary>
+	public string CompactCellVisual(int x, int y)
+	{
+		var pos = new Vector2I(x, y);
+		return HasAnyTileAt(x, y) ? $"map:(src={CompactSources(pos)})" : "map:-";
+
+		string CompactSources(Vector2I p)
+		{
+			var parts = new System.Collections.Generic.List<string>(4);
+			void Add(string name, TileMapLayer layer)
+			{
+				int src = layer != null ? layer.GetCellSourceId(p) : -1;
+				if (src == -1) return;
+				parts.Add(name + "=" + src + ":" + layer.GetCellAtlasCoords(p));
+			}
+			Add("g", _groundLayer);
+			Add("w", _wallLayer);
+			Add("b", _buildingLayer);
+			return string.Join(",", parts);
+		}
+	}
+
+	private static void AppendLayer(System.Text.StringBuilder sb, string name, TileMapLayer layer, Vector2I pos)
+	{
+		if (layer == null) return;
+		int src = layer.GetCellSourceId(pos);
+		if (src == -1) return;
+		sb.Append(' ').Append(name).Append('=').Append(src).Append(':').Append(layer.GetCellAtlasCoords(pos));
+	}
 
 	public event Action OnMapApplied;
 
@@ -321,15 +502,32 @@ public partial class MapRenderer : Node2D
 		_stockpileLayer = new TileMapLayer
 		{
 			Name = "StockpileLayer",
-			// §122: цвет запечён в общий тайл ToolVisualSpec. Модуляция белая,
-			// иначе тот же фиолетовый умножался бы дважды и уезжал в розовый.
-			Modulate = Colors.White,
+			Modulate = new Color(0.65f, 0.15f, 0.9f, 0.45f),
 			RenderingQuadrantSize = 128
 		};
 		AddChild(_stockpileLayer);
 
+		// Руда: child до ObjectLayer — рисуется над землёй/фермой/складом и под
+		// деревьями/камнями/агентами. TileSet наполняется в ApplyMap.
+		_oreLayer = new TileMapLayer { Name = "OreLayer", RenderingQuadrantSize = 128 };
+		AddChild(_oreLayer);
+
+		// task-6: оверлей РЕЖИМОВ КАРТЫ (месторождения/высоты/склад/работы).
+		// Одна RGBA-текстура на размер карты (NEAREST), прозрачная вне данных.
+		// Создаётся ПОСЛЕ складского/рудного слоёв (перекрывает их цветом режима),
+		// но ДО деревьев/камней/зданий/агентов — мир остаётся читаемым.
+		_mapModeOverlay = new MapModeOverlayRenderer { Name = "MapModeOverlay" };
+		AddChild(_mapModeOverlay);
+		_mapModeOverlay.Visible = false;
+		// Клетки складских зон берём из этого слоя (у StockpileManager нет списка зон).
+		_mapModeOverlay.BindStockpileLayer(_stockpileLayer);
+
 		_objectLayer = new TileMapLayer { Name = "ObjectLayer", RenderingQuadrantSize = 128 };
 		AddChild(_objectLayer);
+
+		// Слой полов (дерево, камень, бетон): над землей, под мебелью, станками и стенами
+		_floorLayer = new TileMapLayer { Name = "FloorLayer", RenderingQuadrantSize = 128 };
+		AddChild(_floorLayer);
 
 		_buildingLayer = new TileMapLayer { Name = "BuildingLayer", RenderingQuadrantSize = 128 };
 		AddChild(_buildingLayer);
@@ -355,6 +553,10 @@ public partial class MapRenderer : Node2D
 
 		_wallLayer = new TileMapLayer { Name = "WoodWallLayer", RenderingQuadrantSize = 128 };
 		AddChild(_wallLayer);
+
+		// Слой непрозрачных крыш жилых зданий: ZIndex = 8 (перекрывает стены, интерьер, кровати и спящих жителей)
+		_roofLayer = new TileMapLayer { Name = "RoofLayer", RenderingQuadrantSize = 128, ZIndex = 8 };
+		AddChild(_roofLayer);
 
 		_ghostLayer = new TileMapLayer
 		{
@@ -388,67 +590,146 @@ public partial class MapRenderer : Node2D
 		var stockpileItemRenderer = new StockpileItemRenderer { Name = "StockpileItemRenderer" };
 		AddChild(stockpileItemRenderer);
 		StockpileItems = stockpileItemRenderer;
+		// R-01: канал подсветки склада при наведении. Отдельный Node2D, а не Modulate
+		// слоя: склад — это набор клеток, подсвечивать надо только клетку под курсором.
+		var stockpileHover = new StockpileHoverRenderer { Name = "StockpileHoverRenderer" };
+		AddChild(stockpileHover);
+		// task-18: контур/заливка/подпись РАДИУСНЫХ зон-отраслей (§119 центр+радиус).
+		// Отдельный Node2D (ZIndex 8: выше земли, ниже агентов) — как FarmZoneRenderer,
+		// но геометрия — окружность по радиусу, а не клетки. Добавляем здесь, а не в
+		// Main.cs: scenes/ по правилу src-only не трогаем (тот же приём, что у
+		// StockpileItemRenderer выше).
+		var industryZoneRenderer = new IndustryZoneRenderer { Name = "IndustryZoneRenderer" };
+		AddChild(industryZoneRenderer);
+		var serviceRadiusOverlay = new ServiceRadiusOverlayRenderer { Name = "ServiceRadiusOverlay" };
+		AddChild(serviceRadiusOverlay);
 		TreeJobManager.Instance.OnTreeChopped += OnTreeChopped;
 		// Подписка строго один раз: ApplyMap() вызывается при каждой загрузке карты,
 		// и подписка внутри него накапливала N обработчиков (каждый добытый камень
 		// обрабатывался N раз) и удерживала освобождённый MapRenderer в invocation list.
 		StoneJobManager.Instance.OnStoneMined += OnStoneMined;
+		// task-4: запас/состояние жилы изменились или она выработана — перерисовать
+		// клетку и 8 соседей (маска зависима от соседей). События уже отложенные.
+		OreJobManager.Instance.OnOreChanged += OnOreCellChanged;
+		OreJobManager.Instance.OnOreDepleted += OnOreCellChanged;
 
-		_onZoneTileAdded = pos => _pendingCells.Enqueue(new PendingCell(_stockpileLayer, new Vector2I(pos.X, pos.Y), SourceStockpile, AtlasOrigin, false));
-		_onZoneTileRemoved = pos => _pendingCells.Enqueue(new PendingCell(_stockpileLayer, new Vector2I(pos.X, pos.Y), 0, AtlasOrigin, true));
-		_onZoneTilesBatchAdded = arr => { foreach (var pos in arr) _pendingCells.Enqueue(new PendingCell(_stockpileLayer, new Vector2I(pos.X, pos.Y), SourceStockpile, AtlasOrigin, false)); };
-		_onZoneTilesBatchRemoved = arr => { foreach (var pos in arr) _pendingCells.Enqueue(new PendingCell(_stockpileLayer, new Vector2I(pos.X, pos.Y), 0, AtlasOrigin, true)); };
+		_onZoneTileAdded = pos => EnqueuePending(_stockpileLayer, new Vector2I(pos.X, pos.Y), SourceGrass, AtlasOrigin, false);
+		_onZoneTileRemoved = pos => EnqueuePending(_stockpileLayer, new Vector2I(pos.X, pos.Y), 0, AtlasOrigin, true);
+		_onZoneTilesBatchAdded = arr => { foreach (var pos in arr) EnqueuePending(_stockpileLayer, new Vector2I(pos.X, pos.Y), SourceGrass, AtlasOrigin, false); };
+		_onZoneTilesBatchRemoved = arr => { foreach (var pos in arr) EnqueuePending(_stockpileLayer, new Vector2I(pos.X, pos.Y), 0, AtlasOrigin, true); };
 		StockpileManager.Instance.OnZoneTileAdded += _onZoneTileAdded;
 		StockpileManager.Instance.OnZoneTileRemoved += _onZoneTileRemoved;
 		StockpileManager.Instance.OnZoneTilesBatchAdded += _onZoneTilesBatchAdded;
 		StockpileManager.Instance.OnZoneTilesBatchRemoved += _onZoneTilesBatchRemoved;
 
-		ConstructionManager.Instance.OnSitesBatchAdded += sites =>
+		_onSitesBatchAdded = sites =>
 		{
 			foreach (var s in sites)
 			{
 				if (s.Definition.IsWall)
 					_wallBlueprints?.MarkDirty(new Vector2I(s.X, s.Y));
 				else
-					_pendingCells.Enqueue(new PendingCell(_blueprintLayer, new Vector2I(s.X, s.Y), SourceForBuilding(s.Definition.Type), AtlasOrigin, false));
+					EnqueuePending(_blueprintLayer, new Vector2I(s.X, s.Y), SourceForBuilding(s.Definition.Type), AtlasOrigin, false);
 			}
 		};
-		ConstructionManager.Instance.OnSiteAdded += s =>
+		_onSiteAdded = s =>
 		{
 			if (s.Definition.IsWall)
 				_wallBlueprints?.MarkDirty(new Vector2I(s.X, s.Y));
 			else
-				_pendingCells.Enqueue(new PendingCell(_blueprintLayer, new Vector2I(s.X, s.Y), SourceForBuilding(s.Definition.Type), AtlasOrigin, false));
+				EnqueuePending(_blueprintLayer, new Vector2I(s.X, s.Y), SourceForBuilding(s.Definition.Type), AtlasOrigin, false);
 		};
-		ConstructionManager.Instance.OnSiteRemoved += pos =>
-		{
-			MarkWallBlueprintRemoved(pos.X, pos.Y);
-		};
-		ConstructionManager.Instance.OnSitesBatchRemoved += list =>
+		_onSiteRemoved = pos => MarkWallBlueprintRemoved(pos.X, pos.Y);
+		_onSitesBatchRemoved = list =>
 		{
 			foreach (var pos in list)
-			{
 				MarkWallBlueprintRemoved(pos.X, pos.Y);
-			}
 		};
-		ConstructionManager.Instance.OnSiteCompleted += s =>
-		{
-			_wallBlueprints?.MarkDirty(new Vector2I(s.X, s.Y));
-		};
+		_onSiteCompleted = s =>
+        {
+            if (s.Definition.IsWall)
+            {
+                _wallBlueprints?.MarkDirty(new Vector2I(s.X, s.Y));
+            }
+            else
+            {
+                // task-16: у не-стен (мебель/станки) чертёж рисовался в
+                // _blueprintLayer той же текстурой. После постройки стираем его,
+                // иначе 50%-призрак чертежа навсегда лежал поверх готового
+                // станка (building-слой ниже blueprint-слоя). Для мультиклеточного
+                // тайла EraseCell по origin убирает весь тайл.
+                EnqueuePending(_blueprintLayer, new Vector2I(s.X, s.Y), 0, AtlasOrigin, true);
+            }
+        };
+
+		// FIX (bughunt 14-3): подписки держим в полях и снимаем в _ExitTree. Раньше
+		// здесь были анонимные лямбды: снять их было нечем, поэтому каждый заход в игру
+		// навсегда оставлял живой MapRenderer (и 512 КБ terrain-буферов) в делегатах
+		// ConstructionManager, а его _pendingCells рос без дренажа.
+		ConstructionManager.Instance.OnSitesBatchAdded += _onSitesBatchAdded;
+		ConstructionManager.Instance.OnSiteAdded += _onSiteAdded;
+		ConstructionManager.Instance.OnSiteRemoved += _onSiteRemoved;
+		ConstructionManager.Instance.OnSitesBatchRemoved += _onSitesBatchRemoved;
+		ConstructionManager.Instance.OnSiteCompleted += _onSiteCompleted;
 
 		_onBuildingPlaced = (pos, type) =>
 		{
 			int sourceId = SourceForBuilding(type);
-			_pendingCells.Enqueue(new PendingCell(_buildingLayer, new Vector2I(pos.X, pos.Y), sourceId, AtlasOrigin, false));
+			EnqueuePending(_buildingLayer, new Vector2I(pos.X, pos.Y), sourceId, AtlasOrigin, false);
 			ShadowRenderer?.AddCaster(pos.X, pos.Y);
 		};
 		_onBuildingRemoved = pos =>
 		{
-			_pendingCells.Enqueue(new PendingCell(_buildingLayer, new Vector2I(pos.X, pos.Y), 0, AtlasOrigin, true));
+			EnqueuePending(_buildingLayer, new Vector2I(pos.X, pos.Y), 0, AtlasOrigin, true);
 			ShadowRenderer?.RemoveCaster(pos.X, pos.Y);
 		};
 		BuildingManager.Instance.OnBuildingPlaced += _onBuildingPlaced;
 		BuildingManager.Instance.OnBuildingRemoved += _onBuildingRemoved;
+
+		_onStructureAdded = inst =>
+		{
+			if (inst?.Definition == null) return;
+			var pos = new Vector2I(inst.X, inst.Y);
+			var def = inst.Definition;
+			if (def.IsFloor)
+			{
+				int sourceId = SourceForBuilding(def.Type);
+				EnqueuePending(_floorLayer, pos, sourceId, AtlasOrigin, false);
+			}
+			else if (def.IsRoof)
+			{
+				EnqueuePending(_roofLayer, pos, SourceRoofResidential, AtlasOrigin, false);
+				ShadowRenderer?.AddCaster(inst.X, inst.Y);
+			}
+			else if (!def.IsWall)
+			{
+				int sourceId = SourceForBuilding(def.Type);
+				EnqueuePending(_buildingLayer, pos, sourceId, AtlasOrigin, false);
+				if (def.CastsShadow)
+					ShadowRenderer?.AddCaster(inst.X, inst.Y);
+			}
+		};
+
+		_onStructureRemoved = (pos, def) =>
+		{
+			var vpos = new Vector2I(pos.X, pos.Y);
+			if (def != null && def.IsFloor)
+			{
+				EnqueuePending(_floorLayer, vpos, 0, AtlasOrigin, true);
+			}
+			else if (def != null && def.IsRoof)
+			{
+				EnqueuePending(_roofLayer, vpos, 0, AtlasOrigin, true);
+				ShadowRenderer?.RemoveCaster(pos.X, pos.Y);
+			}
+			else if (def != null && !def.IsWall)
+			{
+				EnqueuePending(_buildingLayer, vpos, 0, AtlasOrigin, true);
+				ShadowRenderer?.RemoveCaster(pos.X, pos.Y);
+			}
+		};
+		StructureManager.Instance.OnStructureAdded += _onStructureAdded;
+		StructureManager.Instance.OnStructureRemoved += _onStructureRemoved;
 
 		_onPlotMarked = pos => _farmBlueprintTerrain?.MarkDirty(new Vector2I(pos.X, pos.Y));
 		_onPlotsBatchMarked = list =>
@@ -517,18 +798,18 @@ public partial class MapRenderer : Node2D
 			int budget = MaxCellsPerFrame;
 			while (budget-- > 0 && _choppedTreesQueue.TryDequeue(out var cell))
 			{
-				_objectLayer.EraseCell(cell);
+				// C-08: клетка прошлого мира не должна стирать тайл нового.
+				if (cell.Generation != Volatile.Read(ref _mapGeneration))
+					continue;
+				_objectLayer.EraseCell(cell.Pos);
 			}
 		}
-		// Flush батча клеток: адаптивный бюджет — при массовой разметке (500x500 фермы)
-		// обрабатываем до 16384 клеток за кадр, чтобы экран мгновенно заполнялся без фризов
-		int cellsBudget = _pendingCells.Count > 4096 ? 16384 : MaxCellsPerFrame;
-		while (cellsBudget-- > 0 && _pendingCells.TryDequeue(out var pc))
-		{
-			if (pc.Layer == null) continue;
-			if (pc.Erase) pc.Layer.EraseCell(pc.Pos);
-			else pc.Layer.SetCell(pc.Pos, pc.Source, pc.Atlas);
-		}
+		// R-02: дренаж очереди клеток — отдельным методом с бюджетом ПО ВРЕМЕНИ.
+		// Раньше здесь стоял фиксированный счётчик: при массовой разметке (склад/ферма
+		// до 250k клеток) каждый кадр гарантированно съедал 16384 SetCell, а SetCell
+		// инвалидирует квадрант TileMapLayer и перестраивает его меш ⇒ спайк 2–10 мс
+		// ровно на клике назначения работы.
+		FlushPendingCells();
 		// Дебаунс 200мс: при массовой стройке (1000 чертежей батчем) полный
 		// Clear+SetCell всех чертежей каждый кадр давал десятки мс фриза.
 		// Флаг лишь коалесцирует события, гейт — по wall-clock.
@@ -545,34 +826,52 @@ public partial class MapRenderer : Node2D
 			_humidityOverlay.RefreshThrottled(Humidity, delta);
 		else if (CurrentMapMode == MapMode.Fertility && _fertilityOverlay != null)
 			_fertilityOverlay.RefreshThrottled(Fertility, delta);
+		// task-6: руды/высоты/склад/работы — оверлей обновляет себя по таймеру и
+		// событиям данных (не в кадре: реально перестраивается не чаще 0.35–1с).
+		else if (_mapModeOverlay != null && MapModeOverlayRenderer.Handles(CurrentMapMode))
+			_mapModeOverlay.RefreshThrottled(delta);
 		// Стандарт: terrain-слои флашатся через TerrainTileLayer.
 		// WallBuildManager копит NotifyChanged дебаунсом 200мс — сливаем хвост
 		// здесь же (главный поток, _Process), иначе пачка стен висела бы в
 		// _pending до следующей одиночной стены.
 		_wallBuildManager?.FlushPending();
-		// Terrain-флаш обоих слоёв стен: построенные — по IsWallAt (плюс стены мира:
-		// один слой на обе стороны, иначе автотайл рвётся на кромке), чертежи — только
-		// WoodWall-чертежи (мебель в этот слой не попадает).
-		_builtWalls?.Flush(c => StructureManager.Instance.IsWallAt(c.X, c.Y)
-			|| (WorldWallLookup?.Invoke(c.X, c.Y) ?? false));
-		_wallBlueprints?.Flush(c => ConstructionManager.Instance.IsWallSiteAt(c.X, c.Y)
-			|| (WorldWallPlanLookup?.Invoke(c.X, c.Y) ?? false));
+		// Terrain-флаш обоих слоёв стен: построенные — по IsWallAt, чертежи —
+		// только WoodWall-чертежи (мебель в этот слой не попадает).
+		_builtWalls?.Flush(c => StructureManager.Instance.IsWallAt(c.X, c.Y));
+		_wallBlueprints?.Flush(c => ConstructionManager.Instance.IsWallSiteAt(c.X, c.Y));
 		_farmTerrain?.Flush(c => FarmJobManager.Instance.IsGardenBed(c.X, c.Y));
 		_farmBlueprintTerrain?.Flush(c => FarmJobManager.Instance.IsPlotMarked(c.X, c.Y));
-		// Macro-LOD: при сильном отдалении (Zoom < 0.22x) скрываем микро-слои,
-		// которые неразличимы глазом, но создают десятки тысяч CanvasItems.
+		// R-05: слой призрака создавался видимым, и Visible больше никто не ставил —
+		// при незачищенных клетках (инструмент отменили/отпустили) призрак продолжал
+		// светиться. Прячем слой, когда в нём нет клеток. У TileMapLayer нет счётчика
+		// клеток без аллокации (GetUsedCells создаёт движковый массив), поэтому
+		// проверяем раз в 4 кадра (~66 мс): появление призрака запаздывает незаметно,
+		// зато в _Process нет аллокации на каждый кадр.
+		if (_ghostLayer != null && (++_ghostVisibilityFrame % GhostVisibilityCheckFrames) == 0)
+		{
+			bool hasGhost = _ghostLayer.GetUsedCells().Count > 0;
+			if (_ghostLayer.Visible != hasGhost)
+				_ghostLayer.Visible = hasGhost;
+		}
+		// Macro-LOD: при сильном отдалении (Zoom < 0.35x) скрываем микро-слои и чертежи (ST-17: минус до 400 Draw Calls)
 		var cam = GetViewport()?.GetCamera2D();
 		float zoom = cam?.Zoom.X ?? 1f;
-		if (_workProgressLayer != null)
-		{
-			bool showProgress = zoom >= 0.22f;
-			if (_workProgressLayer.Visible != showProgress)
-				_workProgressLayer.Visible = showProgress;
-		}
-		if (ShadowRenderer != null && zoom < 0.22f && ShadowRenderer.Visible)
-		{
-			ShadowRenderer.Visible = false;
-		}
+		bool showDetail = zoom >= 0.35f;
+
+		if (_workProgressLayer != null && _workProgressLayer.Visible != showDetail)
+			_workProgressLayer.Visible = showDetail;
+
+		if (_farmBlueprintLayer != null && _farmBlueprintLayer.Visible != showDetail)
+			_farmBlueprintLayer.Visible = showDetail;
+
+		if (_wallBlueprintLayer != null && _wallBlueprintLayer.Visible != showDetail)
+			_wallBlueprintLayer.Visible = showDetail;
+
+		if (_blueprintLayer != null && _blueprintLayer.Visible != showDetail)
+			_blueprintLayer.Visible = showDetail;
+
+		if (ShadowRenderer != null && ShadowRenderer.Visible != showDetail)
+			ShadowRenderer.Visible = showDetail;
 
 		FlushWorkProgress(delta);
 
@@ -600,9 +899,7 @@ public partial class MapRenderer : Node2D
 				{
 					byte[] readyBuf = _pendingReadyBuffer;
 					_pendingReadyBuffer = null;
-					if (_pendingReadyGen == _terrainWindowGen
-						&& _pendingReadyOriginX == targetOriginX
-						&& _pendingReadyOriginY == targetOriginY)
+					if (_pendingReadyGen == _terrainWindowGen)
 					{
 						ApplyTerrainBuffer(_pendingReadyOriginX, _pendingReadyOriginY, readyBuf);
 						_terrainWindowValidGen = _pendingReadyGen;
@@ -614,6 +911,42 @@ public partial class MapRenderer : Node2D
 					RequestTerrainWindowUpdate(targetOriginX, targetOriginY);
 				}
 			}
+		}
+	}
+
+	/// <summary>
+	/// R-02: применение очереди клеток порцией по ВРЕМЕНИ (PendingFlushBudgetMs) вместо
+	/// фиксированных 16384 SetCell за кадр. Остаток остаётся в ConcurrentQueue (инвариант
+	/// «пишут события, читает главный поток» сохранён) и доезжает следующими кадрами:
+	/// картинка та же, пика «клик назначения работы» нет.
+	/// </summary>
+	private void FlushPendingCells()
+	{
+		// Пустая очередь — быстрый выход: не читаем часы и не запускаем цикл каждый кадр.
+		if (_pendingCells.IsEmpty) return;
+
+		// Бюджет в тиках Stopwatch считается один раз на кадр — деления в горячем пути нет.
+		long budgetTicks = (long)(PendingFlushBudgetMs * System.Diagnostics.Stopwatch.Frequency / 1000);
+		long start = System.Diagnostics.Stopwatch.GetTimestamp();
+		int applied = 0;
+
+		while (_pendingCells.TryDequeue(out var pc))
+		{
+			if (pc.Layer != null)
+			{
+				if (pc.Erase) pc.Layer.EraseCell(pc.Pos);
+				else pc.Layer.SetCell(pc.Pos, pc.Source, pc.Atlas);
+			}
+
+			// Клетка применена ДО проверки бюджета: иначе при кадре короче бюджета
+			// очередь не рассосалась бы никогда. Потолок — страховка от прыгнувших часов.
+			if (++applied >= PendingFlushHardCapCells)
+				break;
+
+			// Часы читаем раз в пачку клеток (маска), а не на каждую клетку.
+			if ((applied & PendingFlushClockMask) == 0
+				&& System.Diagnostics.Stopwatch.GetTimestamp() - start >= budgetTicks)
+				break;
 		}
 	}
 
@@ -1055,6 +1388,14 @@ public partial class MapRenderer : Node2D
 			if (mode == MapMode.Fertility)
 				_fertilityOverlay.Refresh(Fertility);
 		}
+		if (_mapModeOverlay != null)
+		{
+			bool handled = MapModeOverlayRenderer.Handles(mode);
+			// Видимость ставим ДО SetMode: SetMode сразу строит текстуру, если видим
+			// (повторный RefreshNow здесь не нужен — иначе двойная сборка на переключении).
+			_mapModeOverlay.Visible = handled;
+			_mapModeOverlay.SetMode(mode);
+		}
 		OnMapModeChanged?.Invoke(mode);
 	}
 
@@ -1072,13 +1413,27 @@ public partial class MapRenderer : Node2D
 			_fertilityOverlay.Refresh(Fertility);
 	}
 
+	/// <summary>
+	/// task-6: перестроить оверлей режимов карты немедленно (руды/высоты/склад/работы).
+	/// Нужно после массовых изменений данных (например, отработка жилы), если ждать
+	/// таймер обновления не хочется.
+	/// </summary>
+	public void RefreshMapModeOverlay()
+	{
+		if (_mapModeOverlay != null && MapModeOverlayRenderer.Handles(CurrentMapMode))
+			_mapModeOverlay.RefreshNow();
+	}
+
 	public void ClearAllLayers()
 	{
 		_groundLayer?.Clear();
 		_objectLayer?.Clear();
 		_mountainLayer?.Clear();
+		_oreLayer?.Clear();
 		_wallLayer?.Clear();
+		_floorLayer?.Clear();
 		_buildingLayer?.Clear();
+		_roofLayer?.Clear();
 		_farmLayer?.Clear();
 		_farmBlueprintLayer?.Clear();
 		_farmTerrain?.Clear();
@@ -1130,6 +1485,11 @@ public partial class MapRenderer : Node2D
 
 			TileSet objectTileSet = CreateObjectTileSet();
 			_objectLayer.TileSet = objectTileSet;
+
+			// Руда (task-3): кодовый TileSet, композиты строятся лениво при первой
+			// клетке пары (ore_type, state) — 0–5 жил ⇒ сотни файлов, не 3243.
+			_oreTiles = new OreTileSetBuilder();
+			_oreLayer.TileSet = _oreTiles.TileSet;
 
 			
 
@@ -1206,6 +1566,10 @@ public partial class MapRenderer : Node2D
 
 			_mountains.RebuildAll(mountainCells);
 
+			// Руда: заливаем клетки с OreType != 0 (детерминированные месторождения
+			// заглушки геологии). Ошибки арта не валят слой — клетки пропускаются.
+			FillOreLayer(mapData);
+
 			// Слои стен/чертежей/госта используют TileSet с terrain-разметкой
 			// из сцены (wood_wall_tile в Main.tscn) — автотайлинг везде считает
 			// сам Godot через SetCellsTerrainConnect. Кодовый CreateBuildingTileSet
@@ -1227,6 +1591,12 @@ public partial class MapRenderer : Node2D
 			_wallBlueprintLayer.TileSet = wallTerrainTileSet;
 			_blueprintLayer.TileSet = buildingTileSet;
 			_buildingLayer.TileSet = buildingTileSet;
+
+			TileSet floorTileSet = CreateFloorTileSet();
+			_floorLayer.TileSet = floorTileSet;
+
+			TileSet roofTileSet = CreateRoofTileSet();
+			_roofLayer.TileSet = roofTileSet;
 
 			TileSet farmTerrainTileSet = GetGardenBedTerrainTileSet() ?? buildingTileSet;
 			_farmLayer.TileSet = farmTerrainTileSet;
@@ -1255,6 +1625,9 @@ public partial class MapRenderer : Node2D
 				_wallBuildManager.GetAllWalls(),
 				BuildingManager.Instance.GetAllBuildings());
 
+			// task-6: оверлей режимов карты получает новую карту (размер/данные руды).
+			_mapModeOverlay?.SetMap(mapData);
+
 			OnMapApplied?.Invoke();
 		}
 		catch (Exception ex)
@@ -1276,7 +1649,7 @@ public partial class MapRenderer : Node2D
 		_wallBlueprints?.MarkDirty(new Vector2I(x - 1, y));
 		_wallBlueprints?.MarkDirty(new Vector2I(x, y + 1));
 		_wallBlueprints?.MarkDirty(new Vector2I(x, y - 1));
-		_pendingCells.Enqueue(new PendingCell(_blueprintLayer, new Vector2I(x, y), 0, AtlasOrigin, true));
+		EnqueuePending(_blueprintLayer, new Vector2I(x, y), 0, AtlasOrigin, true);
 	}
 
 	private void OnBlueprintChanged((int X, int Y) pos, BuildingType type)
@@ -1284,7 +1657,7 @@ public partial class MapRenderer : Node2D
 		if (type == BuildingType.WoodWall)
 			_wallBlueprints?.MarkDirty(new Vector2I(pos.X, pos.Y));
 		else
-			_pendingCells.Enqueue(new PendingCell(_blueprintLayer, new Vector2I(pos.X, pos.Y), SourceForBuilding(type), AtlasOrigin, false));
+			EnqueuePending(_blueprintLayer, new Vector2I(pos.X, pos.Y), SourceForBuilding(type), AtlasOrigin, false);
 	}
 
 	private void RefreshAllBlueprints()
@@ -1336,7 +1709,7 @@ public partial class MapRenderer : Node2D
 		else
 		{
 			// Мебель и верстак: стираем одиночное превью + один спрайт в building-слой.
-			_pendingCells.Enqueue(new PendingCell(_blueprintLayer, new Vector2I(pos.X, pos.Y), 0, AtlasOrigin, true));
+			EnqueuePending(_blueprintLayer, new Vector2I(pos.X, pos.Y), 0, AtlasOrigin, true);
 			BuildingManager.Instance.AddBuilding(pos.X, pos.Y, type);
 		}
 	}
@@ -1350,7 +1723,7 @@ public partial class MapRenderer : Node2D
 		// (IWorldMutationSink/IslandMutationMirror). Рендеру остаётся только погасить
 		// спрайт и тень.
 		ShadowRenderer?.RemoveCaster(pos.X, pos.Y);
-		_choppedTreesQueue.Enqueue(new Vector2I(pos.X, pos.Y));
+		_choppedTreesQueue.Enqueue(new ChoppedCell(new Vector2I(pos.X, pos.Y), Volatile.Read(ref _mapGeneration))); // C-08: штамп поколения
 	}
 
 	private void OnStoneMined((int X, int Y) pos)
@@ -1358,7 +1731,194 @@ public partial class MapRenderer : Node2D
 		// См. комментарий в OnTreeChopped: запись в _pendingMapData была мёртвой.
 		// Россыпь гасит спрайт; симуляционный флаг снимает MiningJobHandler, зеркалит фасад.
 		ShadowRenderer?.RemoveCaster(pos.X, pos.Y);
-		_choppedTreesQueue.Enqueue(new Vector2I(pos.X, pos.Y));
+		_choppedTreesQueue.Enqueue(new ChoppedCell(new Vector2I(pos.X, pos.Y), Volatile.Read(ref _mapGeneration))); // C-08: штамп поколения
+	}
+
+	// ================= Руда (task-3) =================
+
+	/// <summary>
+	/// Залить слой руды из MapData: маска соседей → ячейка композитного атласа.
+	/// Только главный поток (ApplyMap уже в нём).
+	/// </summary>
+	private void FillOreLayer(MapData mapData)
+	{
+		if (_oreLayer == null || mapData?.OreType == null)
+			return;
+		_oreLayer.Clear();
+		int width = mapData.Width;
+		int height = mapData.Height;
+		byte[] oreType = mapData.OreType;
+		for (int y = 0; y < height; y++)
+		{
+			int row = y * width;
+			for (int x = 0; x < width; x++)
+			{
+				if (oreType[row + x] != OreConfig.None)
+					RefreshOreCellInternal(mapData, x, y);
+			}
+		}
+	}
+
+	/// <summary>
+	/// Перерисовать тайл руды клетки по текущему запасу/состоянию и маске соседей.
+	/// Клетка без руды — EraseCell. ВЫЗЫВАТЬ ТОЛЬКО ИЗ ГЛАВНОГО ПОТОКА:
+	/// из sim-потока — через <c>Callable.From(() => RefreshOreCell(x,y)).CallDeferred()</c>.
+	/// </summary>
+	public void RefreshOreCell(int x, int y)
+	{
+		MapData mapData = _currentMapData ?? _pendingMapData;
+		if (mapData == null)
+			return;
+		RefreshOreCellInternal(mapData, x, y);
+	}
+
+	private void RefreshOreCellInternal(MapData mapData, int x, int y)
+	{
+		if (_oreLayer == null || mapData?.OreType == null)
+			return;
+		if ((uint)x >= (uint)mapData.Width || (uint)y >= (uint)mapData.Height)
+			return;
+
+		var pos = new Vector2I(x, y);
+		int idx = mapData.OreIndex(x, y);
+		if (mapData.OreType[idx] == OreConfig.None)
+		{
+			_oreLayer.EraseCell(pos);
+			return;
+		}
+		if (_oreTiles == null)
+			return;
+
+		byte mask = ComputeIslandOreMask(mapData, x, y, mapData.OreType[idx]);
+		int maskIndex = OreMaskHelper.IndexOf(mask);
+		if (maskIndex < 0)
+		{
+			// Недопустимая маска (битые данные) — не рисуем мусор.
+			_oreLayer.EraseCell(pos);
+			return;
+		}
+
+		if (!_oreTiles.TryGetTile(mapData.OreType[idx], mapData.OreState[idx], maskIndex,
+				out int sourceId, out Vector2I atlasCoords))
+		{
+			// Арта нет (warning один раз в билдере) — клетку пропускаем.
+			return;
+		}
+		_oreLayer.SetCell(pos, sourceId, atlasCoords);
+	}
+
+	/// <summary>
+	/// Перерисовать клетку и 8 соседей: снятие/выработка жилы меняет маску соседей
+	/// (углы и стороны). Главный поток, из sim — CallDeferred.
+	/// </summary>
+	public void RefreshOreArea(int x, int y)
+	{
+		for (int oy = -1; oy <= 1; oy++)
+			for (int ox = -1; ox <= 1; ox++)
+				RefreshOreCell(x + ox, y + oy);
+	}
+
+	/// <summary>
+	/// Событие OreJobManager (уже доставлено в главный поток через CallDeferred):
+	/// запас сменил состояние rich→normal→poor или жила выработана — обновляем
+	/// спрайт клетки и соседей (их маска тоже изменилась).
+	/// </summary>
+	private void OnOreCellChanged((int X, int Y) pos) => RefreshOreArea(pos.X, pos.Y);
+
+	// ================= task-8: персистентность руды на острове =================
+
+	/// <summary>
+	/// Наложить мутации руды мира (<see cref="OreWorldState"/>) на массивы острова
+	/// после генерации карты: клетки, добытые в прошлой сессии, не «возвращаются».
+	/// </summary>
+	public void ApplyWorldOreStateToIsland()
+	{
+		MapData mapData = _currentMapData;
+		if (mapData?.OreType == null)
+			return;
+		int width = mapData.Width;
+		int height = mapData.Height;
+		foreach (var (localX, localY, reserve) in OreWorldState.Enumerate())
+		{
+			if ((uint)localX >= (uint)width || (uint)localY >= (uint)height)
+				continue;
+			ApplyWorldOreToIslandCellInternal(mapData, localX, localY, reserve);
+		}
+	}
+
+	/// <summary>Применить одну запись руды из чанк-стора к острову (загрузка дельты).</summary>
+	public void ApplyWorldOreToIslandCell(int localX, int localY)
+	{
+		MapData mapData = _currentMapData ?? _pendingMapData;
+		if (mapData?.OreType == null)
+			return;
+		if (!OreWorldState.TryGet(localX, localY, out ushort reserve))
+			return;
+		ApplyWorldOreToIslandCellInternal(mapData, localX, localY, reserve);
+	}
+
+	/// <summary>
+	/// Маска соседей руды для клетки острова (task-9). Сосед за кромкой окна
+	/// спрашивается у канонического поля мира (<see cref="OreWorldField"/>), а не
+	/// считается «нет руды»: иначе на кромке 1024 у тела, пересекающего границу,
+	/// пропадали бы биты E/N/S/W и появлялся видимый шов.
+	/// Координаты MapData локальны окну; окно MapRenderer всегда в начале холста
+	/// (origin 0), поэтому local == canvas-координата для OreWorldField.
+	/// </summary>
+	private static byte ComputeIslandOreMask(MapData mapData, int x, int y, byte type)
+	{
+		byte mask = 0;
+		bool n = SameOre(mapData, x, y - 1, type);
+		bool e = SameOre(mapData, x + 1, y, type);
+		bool s = SameOre(mapData, x, y + 1, type);
+		bool w = SameOre(mapData, x - 1, y, type);
+		if (n) mask |= OreMaskHelper.N;
+		if (e) mask |= OreMaskHelper.E;
+		if (s) mask |= OreMaskHelper.S;
+		if (w) mask |= OreMaskHelper.W;
+		if (n && e && SameOre(mapData, x + 1, y - 1, type)) mask |= OreMaskHelper.NE;
+		if (e && s && SameOre(mapData, x + 1, y + 1, type)) mask |= OreMaskHelper.SE;
+		if (s && w && SameOre(mapData, x - 1, y + 1, type)) mask |= OreMaskHelper.SW;
+		if (w && n && SameOre(mapData, x - 1, y - 1, type)) mask |= OreMaskHelper.NW;
+		return mask;
+	}
+
+	private static bool SameOre(MapData mapData, int x, int y, byte type)
+	{
+		if ((uint)x < (uint)mapData.Width && (uint)y < (uint)mapData.Height)
+		{
+			int idx = y * mapData.Width + x;
+			return mapData.OreType[idx] == type;
+		}
+		// За кромкой окна — каноническое поле мира (единый источник истины).
+		ulong seed = Game.Core.World.WorldModel.Seed;
+		uint ver = Game.Core.World.WorldModel.Version;
+		if (seed == 0)
+			return false;
+		return OreWorldField.GetEffectiveTypeLocal(x, y, seed, ver) == type;
+	}
+
+	private void ApplyWorldOreToIslandCellInternal(MapData mapData, int localX, int localY, ushort reserve)
+	{
+		if ((uint)localX >= (uint)mapData.Width || (uint)localY >= (uint)mapData.Height)
+			return;
+		int idx = mapData.OreIndex(localX, localY);
+		if (reserve == 0)
+		{
+			if (mapData.OreType[idx] == OreConfig.None)
+				return;
+			mapData.OreType[idx] = OreConfig.None;
+			mapData.OreReserve[idx] = 0;
+			mapData.OreState[idx] = (byte)OreState.Poor;
+		}
+		else
+		{
+			if (mapData.OreType[idx] == OreConfig.None)
+				return; // базовой руды нет — мутация не про эту карту
+			mapData.OreReserve[idx] = reserve;
+			mapData.OreState[idx] = (byte)OreConfig.StateFor(reserve, mapData.OreReserveInitial[idx]);
+		}
+		RefreshOreArea(localX, localY);
 	}
 
 	private TileSet CreateGroundTileSet()
@@ -1367,24 +1927,7 @@ public partial class MapRenderer : Node2D
 		AddGroundAtlasSource(tileSet, TextureGrass, "grass", SourceGrass);
 		AddGroundAtlasSource(tileSet, TextureWater, "water", SourceWater);
 		AddGroundAtlasSource(tileSet, TextureSand, "sand", SourceSand);
-		// §122: общий тайл склада, а не тонированная трава. Тот же вызов делает
-		// StreamingWorldView — кромка больше не меняет текстуру зоны.
-		AddGeneratedSingleTile(tileSet, ToolVisualSpec.CreateStockpileZoneTexture(), SourceStockpile);
 		return tileSet;
-	}
-
-	/// <summary>Одиночный 64×64 source из готовой рантайм-текстуры.</summary>
-	private static void AddGeneratedSingleTile(TileSet tileSet, Texture2D texture, int sourceId)
-	{
-		if (tileSet == null || texture == null || tileSet.HasSource(sourceId))
-			return;
-		var src = new TileSetAtlasSource
-		{
-			Texture = texture,
-			TextureRegionSize = new Vector2I(TileSizePx, TileSizePx)
-		};
-		src.CreateTile(Vector2I.Zero);
-		tileSet.AddSource(src, sourceId);
 	}
 
 	private void AddGroundAtlasSource(TileSet tileSet, string uid, string name, int sourceId)
@@ -1544,6 +2087,21 @@ public partial class MapRenderer : Node2D
 			BuildingType.Bench => SourceBench,
 			BuildingType.Nightstand => SourceNightstand,
 			BuildingType.CentralBlock => SourceCentralBlock,
+			// task-16: станки отраслей (мультиклеточные Source из building/*.png).
+			BuildingType.Sawmill => SourceSawmill,
+			BuildingType.Smelter => SourceSmelter,
+			BuildingType.Anvil => SourceAnvil,
+			BuildingType.Workbench => SourceWorkbench,
+			BuildingType.SpinningWheel => SourceSpinningWheel,
+			BuildingType.Loom => SourceLoom,
+			BuildingType.Mill => SourceMill,
+			BuildingType.AssemblyLine => SourceAssemblyLine,
+			// Полы и крыша
+			BuildingType.WoodFloor => SourceFloorWood,
+			BuildingType.StoneFloor => SourceFloorStone,
+			BuildingType.ConcreteFloor => SourceFloorConcrete,
+			BuildingType.RoofResidential => SourceRoofResidential,
+			BuildingType.RoofIndustrial => SourceRoofIndustrial,
 			_ => SourceWall,
 		};
 	}
@@ -1601,6 +2159,16 @@ public partial class MapRenderer : Node2D
 		// §119 P5: центральный блок — тем же одиночным спрайтом.
 		AddSingleTile(tileSet, TextureCentralBlock, "central_block", SourceCentralBlock);
 
+		// task-16: СТАНКИ отраслей — мультиклеточные тайлы (габарит из арта).
+		AddMultiTile(tileSet, TextureSawmill, "sawmill", SourceSawmill, BuildingType.Sawmill);
+		AddMultiTile(tileSet, TextureSmelter, "smelter", SourceSmelter, BuildingType.Smelter);
+		AddMultiTile(tileSet, TextureAnvil, "anvil", SourceAnvil, BuildingType.Anvil);
+		AddMultiTile(tileSet, TextureWorkbench, "workbench", SourceWorkbench, BuildingType.Workbench);
+		AddMultiTile(tileSet, TextureSpinningWheel, "spinning_wheel", SourceSpinningWheel, BuildingType.SpinningWheel);
+		AddMultiTile(tileSet, TextureLoom, "loom", SourceLoom, BuildingType.Loom);
+		AddMultiTile(tileSet, TextureMill, "mill", SourceMill, BuildingType.Mill);
+		AddMultiTile(tileSet, TextureAssemblyLine, "assembly_line", SourceAssemblyLine, BuildingType.AssemblyLine);
+
 		var gardenBedTexture = LoadTexture(TextureGardenBed, "garden_beds");
 		if (gardenBedTexture != null)
 		{
@@ -1630,6 +2198,44 @@ public partial class MapRenderer : Node2D
 	}
 
 	/// <summary>
+	/// Мультиклеточный спрайт станка (task-16): один тайл размером w×h клеток,
+	/// чтобы картинка и габариты постройки совпадали. Арт обязан покрывать
+	/// заявленный габарит — иначе тайл урезается по фактическому размеру файла.
+	/// </summary>
+	private void AddMultiTile(TileSet tileSet, string textureRef, string name, int sourceId, BuildingType type)
+	{
+		var tex = LoadTexture(textureRef, name);
+		if (tex == null)
+		{
+			GD.PrintErr($"MapRenderer: текстура станка '{name}' ({textureRef}) не найдена!");
+			return;
+		}
+		int w = BuildingFootprint.WidthOf(type);
+		int h = BuildingFootprint.HeightOf(type);
+		int texW = Math.Max(1, tex.GetWidth() / TileSizePx);
+		int texH = Math.Max(1, tex.GetHeight() / TileSizePx);
+		if (texW < w || texH < h)
+		{
+			GD.PrintErr($"MapRenderer: '{name}' арт {texW}×{texH} меньше габарита {w}×{h} — тайл урезан.");
+			w = texW;
+			h = texH;
+		}
+		var src = new TileSetAtlasSource
+		{
+			Texture = tex,
+			TextureRegionSize = new Vector2I(TileSizePx, TileSizePx)
+		};
+		src.CreateTile(Vector2I.Zero, new Vector2I(w, h));
+		// Godot рисует тайл ЦЕНТРОМ на клетке (texture_origin=0): сверхкрупный
+		// тайл W×H симметрично вылезает за габарит на (W-1)/2 и (H-1)/2 клетки
+		// влево-вверх — соседние постройки «наезжали» друг на друга. Сдвигаем
+		// origin, чтобы текстура ложилась ровно в клетки (X..X+W-1, Y..Y+H-1).
+		TileData td = src.GetTileData(Vector2I.Zero, 0);
+		td.TextureOrigin = new Vector2I((w - 1) * TileSizePx / 2, (h - 1) * TileSizePx / 2);
+		tileSet.AddSource(src, sourceId);
+	}
+
+	/// <summary>
 	/// Дубликат сценового wall-TileSet + одиночные ghost-Source (трава/грядка/
 	/// мебель) под константами Ghost*Source. Клон нужен, т.к. исходный набор
 	/// из сцены AddSource не принимает (чужой ресурс), а номера 0/6 в нём
@@ -1651,14 +2257,76 @@ public partial class MapRenderer : Node2D
 		AddGhostSingleTile(ghost, TextureBench, "ghost_bench", GhostBenchSource);
 		AddGhostSingleTile(ghost, TextureNightstand, "ghost_nightstand", GhostNightstandSource);
 		AddGhostSingleTile(ghost, TextureCentralBlock, "ghost_central_block", GhostCentralBlockSource);
+		// task-16: ghost станков — те же мультиклеточные габариты, что у готового тайла.
+		AddGhostMultiTile(ghost, TextureSawmill, "ghost_sawmill", GhostSawmillSource, BuildingType.Sawmill);
+		AddGhostMultiTile(ghost, TextureSmelter, "ghost_smelter", GhostSmelterSource, BuildingType.Smelter);
+		AddGhostMultiTile(ghost, TextureAnvil, "ghost_anvil", GhostAnvilSource, BuildingType.Anvil);
+		AddGhostMultiTile(ghost, TextureWorkbench, "ghost_workbench", GhostWorkbenchSource, BuildingType.Workbench);
+		AddGhostMultiTile(ghost, TextureSpinningWheel, "ghost_spinning_wheel", GhostSpinningWheelSource, BuildingType.SpinningWheel);
+		AddGhostMultiTile(ghost, TextureLoom, "ghost_loom", GhostLoomSource, BuildingType.Loom);
+		AddGhostMultiTile(ghost, TextureMill, "ghost_mill", GhostMillSource, BuildingType.Mill);
+		AddGhostMultiTile(ghost, TextureAssemblyLine, "ghost_assembly_line", GhostAssemblyLineSource, BuildingType.AssemblyLine);
+		// Ghost полов и крыши
+		AddGhostCustomTile(ghost, FloorRoofTextureHelper.GetWoodFloorTexture(), GhostFloorWoodSource);
+		AddGhostCustomTile(ghost, FloorRoofTextureHelper.GetStoneFloorTexture(), GhostFloorStoneSource);
+		AddGhostCustomTile(ghost, FloorRoofTextureHelper.GetConcreteFloorTexture(), GhostFloorConcreteSource);
+		AddGhostCustomTile(ghost, FloorRoofTextureHelper.GetRoofResidentialTexture(), GhostRoofResidentialSource);
+		AddGhostCustomTile(ghost, FloorRoofTextureHelper.GetRoofIndustrialTexture(), GhostRoofIndustrialSource);
 		return ghost;
+	}
+
+	private TileSet CreateFloorTileSet()
+	{
+		var tileSet = new TileSet { TileSize = new Vector2I(TileSizePx, TileSizePx) };
+		AddCustomAtlasSource(tileSet, FloorRoofTextureHelper.GetWoodFloorTexture(), SourceFloorWood);
+		AddCustomAtlasSource(tileSet, FloorRoofTextureHelper.GetStoneFloorTexture(), SourceFloorStone);
+		AddCustomAtlasSource(tileSet, FloorRoofTextureHelper.GetConcreteFloorTexture(), SourceFloorConcrete);
+		return tileSet;
+	}
+
+	private TileSet CreateRoofTileSet()
+	{
+		var tileSet = new TileSet { TileSize = new Vector2I(TileSizePx, TileSizePx) };
+		AddCustomAtlasSource(tileSet, FloorRoofTextureHelper.GetRoofResidentialTexture(), SourceRoofResidential);
+		AddCustomAtlasSource(tileSet, FloorRoofTextureHelper.GetRoofIndustrialTexture(), SourceRoofIndustrial);
+		return tileSet;
+	}
+
+	private static void AddCustomAtlasSource(TileSet tileSet, Texture2D tex, int sourceId)
+	{
+		if (tileSet == null || tex == null || tileSet.HasSource(sourceId)) return;
+		var src = new TileSetAtlasSource { Texture = tex, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
+		src.CreateTile(Vector2I.Zero);
+		tileSet.AddSource(src, sourceId);
+	}
+
+	private static void AddGhostCustomTile(TileSet tileSet, Texture2D tex, int sourceId)
+	{
+		if (tileSet == null || tex == null || tileSet.HasSource(sourceId)) return;
+		var src = new TileSetAtlasSource { Texture = tex, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
+		src.CreateTile(Vector2I.Zero);
+		tileSet.AddSource(src, sourceId);
 	}
 
 	private void AddGhostStockpileTile(TileSet tileSet, int sourceId)
 	{
-		// §122: тот же тайл и тот же цвет, что у готовой зоны. Прозрачность
-		// добавляет Modulate ghost-слоя, а не вторая палитра.
-		AddGeneratedSingleTile(tileSet, ToolVisualSpec.CreateStockpileZoneTexture(0.55f), sourceId);
+		if (tileSet.HasSource(sourceId))
+			return;
+		var img = Image.CreateEmpty(TileSizePx, TileSizePx, false, Image.Format.Rgba8);
+		var fillColor = new Color(0.65f, 0.15f, 0.9f, 0.55f);
+		var borderColor = new Color(0.85f, 0.35f, 1f, 0.95f);
+		for (int y = 0; y < TileSizePx; y++)
+		{
+			for (int x = 0; x < TileSizePx; x++)
+			{
+				bool isBorder = x <= 1 || x >= TileSizePx - 2 || y <= 1 || y >= TileSizePx - 2;
+				img.SetPixel(x, y, isBorder ? borderColor : fillColor);
+			}
+		}
+		var tex = ImageTexture.CreateFromImage(img);
+		var src = new TileSetAtlasSource { Texture = tex, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
+		src.CreateTile(Vector2I.Zero);
+		tileSet.AddSource(src, sourceId);
 	}
 
 	private void AddGhostSingleTile(TileSet tileSet, string textureUid, string name, int sourceId)
@@ -1670,6 +2338,32 @@ public partial class MapRenderer : Node2D
 			return;
 		var src = new TileSetAtlasSource { Texture = tex, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
 		src.CreateTile(Vector2I.Zero);
+		tileSet.AddSource(src, sourceId);
+	}
+
+	/// <summary>task-16: ghost станка мультиклеточным тайлом (габарит = арт).</summary>
+	private void AddGhostMultiTile(TileSet tileSet, string textureRef, string name, int sourceId, BuildingType type)
+	{
+		if (tileSet.HasSource(sourceId))
+			return;
+		var tex = LoadTexture(textureRef, name);
+		if (tex == null)
+			return;
+		int w = BuildingFootprint.WidthOf(type);
+		int h = BuildingFootprint.HeightOf(type);
+		int texW = Math.Max(1, tex.GetWidth() / TileSizePx);
+		int texH = Math.Max(1, tex.GetHeight() / TileSizePx);
+		if (texW < w || texH < h)
+		{
+			w = texW;
+			h = texH;
+		}
+		var src = new TileSetAtlasSource { Texture = tex, TextureRegionSize = new Vector2I(TileSizePx, TileSizePx) };
+		src.CreateTile(Vector2I.Zero, new Vector2I(w, h));
+		// Та же правка центра, что в AddMultiTile: ghost обязан совпадать с
+		// будущим габаритом постройки, иначе призрак стоит со сдвигом.
+		TileData ghostTd = src.GetTileData(Vector2I.Zero, 0);
+		ghostTd.TextureOrigin = new Vector2I((w - 1) * TileSizePx / 2, (h - 1) * TileSizePx / 2);
 		tileSet.AddSource(src, sourceId);
 	}
 
@@ -1693,6 +2387,21 @@ public partial class MapRenderer : Node2D
 			BuildingType.Bench => GhostBenchSource,
 			BuildingType.Nightstand => GhostNightstandSource,
 			BuildingType.CentralBlock => GhostCentralBlockSource,
+			// task-16: призраки станков (мультиклеточные, как готовые тайлы).
+			BuildingType.Sawmill => GhostSawmillSource,
+			BuildingType.Smelter => GhostSmelterSource,
+			BuildingType.Anvil => GhostAnvilSource,
+			BuildingType.Workbench => GhostWorkbenchSource,
+			BuildingType.SpinningWheel => GhostSpinningWheelSource,
+			BuildingType.Loom => GhostLoomSource,
+			BuildingType.Mill => GhostMillSource,
+			BuildingType.AssemblyLine => GhostAssemblyLineSource,
+			// Полы и крыша
+			BuildingType.WoodFloor => GhostFloorWoodSource,
+			BuildingType.StoneFloor => GhostFloorStoneSource,
+			BuildingType.ConcreteFloor => GhostFloorConcreteSource,
+			BuildingType.RoofResidential => GhostRoofResidentialSource,
+			BuildingType.RoofIndustrial => GhostRoofIndustrialSource,
 			_ => -1,
 		};
 	}
@@ -1752,39 +2461,6 @@ public partial class MapRenderer : Node2D
 		return _cachedGardenBedTerrainTileSet;
 	}
 
-	/// <summary>
-	/// Мост «мир → стеновые слои острова». Задаётся снаружи (StreamingWorldView).
-	/// Зачем: Godot считает соединяемость автотайла ТОЛЬКО внутри одного TileMapLayer.
-	/// Пока остров и мир рисовали стены в разных слоях, на кромке 1023|1024 каждая
-	/// сторона рисовала «торец» — стена визуально не соединялась. Теперь стены мира
-	/// кладутся в те же два слоя, что и островные, и шов считает один автотайл.
-	/// </summary>
-	public static Func<long, long, bool> WorldWallLookup;
-
-	/// <summary>То же для чертежей стен за кромкой.</summary>
-	public static Func<long, long, bool> WorldWallPlanLookup;
-
-	/// <summary>
-	/// Пометить клетку мира (+ 8 соседей) грязной в стеновых слоях острова:
-	/// маска автотайла зависит от соседей, поэтому без них торец останется.
-	/// Вызывается из StreamingWorldView при появлении/снятии стены за кромкой.
-	/// </summary>
-	public void MarkWallCellDirty(long x, long y)
-	{
-		if (x < int.MinValue || x > int.MaxValue || y < int.MinValue || y > int.MaxValue)
-			return;
-		int cx = (int)x, cy = (int)y;
-		for (int dy = -1; dy <= 1; dy++)
-		{
-			for (int dx = -1; dx <= 1; dx++)
-			{
-				var c = new Vector2I(cx + dx, cy + dy);
-				_builtWalls?.MarkDirty(c);
-				_wallBlueprints?.MarkDirty(c);
-			}
-		}
-	}
-
 	private void OnWallTilesUpdated(List<(int X, int Y)> changedTiles)
 	{
 		if (_wallLayer?.TileSet == null) return;
@@ -1806,6 +2482,15 @@ public partial class MapRenderer : Node2D
 	{
 		try
 		{
+			if (ResourceLoader.Exists(pathOrUid))
+				return ResourceLoader.Load<Texture2D>(pathOrUid);
+			string globalPath = ProjectSettings.GlobalizePath(pathOrUid);
+			if (System.IO.File.Exists(globalPath))
+			{
+				var img = Image.LoadFromFile(globalPath);
+				if (img != null)
+					return ImageTexture.CreateFromImage(img);
+			}
 			return ResourceLoader.Load<Texture2D>(pathOrUid);
 		}
 		catch (Exception ex)
@@ -1815,154 +2500,33 @@ public partial class MapRenderer : Node2D
 		}
 	}
 
-	// ================== СЕЙМ-ИНСПЕКТОР ==================
-
-	/// <summary>
-	/// Что MapRenderer РЕАЛЬНО нарисовал в клетке (островная сторона).
-	/// Печатает каждый слой: source, атлас-координаты, текстуру (файл или runtime),
-	/// видимость и modulate. Расхождение этого текста с DescribeCellVisual у
-	/// StreamingWorldView и есть визуальный баг стыка.
-	/// </summary>
-	public string DescribeCellVisual(int cellX, int cellY)
-	{
-		var sb = new StringBuilder(640);
-		bool inside = WorldPlacementPass.IsOnIsland(cellX, cellY);
-		sb.Append($"MapRenderer cell=({cellX},{cellY}) insideIsland={inside}\n");
-
-		if (_terrainTypeTexture != null)
-		{
-			sb.Append("  ShaderGround   ")
-			  .Append(VisualDescribe.Texture(_terrainTypeTexture))
-			  .Append(" window=").Append(_currentTerrainOriginX).Append(',').Append(_currentTerrainOriginY)
-			  .Append('\n');
-		}
-
-		DescribeCellLayer(sb, "Ground", _groundLayer, cellX, cellY);
-		DescribeCellLayer(sb, "Mountain", _mountainLayer, cellX, cellY);
-		DescribeCellLayer(sb, "Farm", _farmLayer, cellX, cellY);
-		DescribeCellLayer(sb, "FarmPlan", _farmBlueprintLayer, cellX, cellY);
-		DescribeCellLayer(sb, "Stockpile", _stockpileLayer, cellX, cellY);
-		DescribeCellLayer(sb, "Object", _objectLayer, cellX, cellY);
-		DescribeCellLayer(sb, "Building", _buildingLayer, cellX, cellY);
-		DescribeCellLayer(sb, "Blueprint", _blueprintLayer, cellX, cellY);
-		DescribeCellLayer(sb, "WallPlan", _wallBlueprintLayer, cellX, cellY);
-		DescribeCellLayer(sb, "Wall", _wallLayer, cellX, cellY);
-		DescribeCellLayer(sb, "Ghost", _ghostLayer, cellX, cellY);
-		DescribeCellLayer(sb, "WorkProgress", _workProgressLayer, cellX, cellY);
-		return sb.ToString();
-	}
-
-	/// <summary>
-	/// Тело короткой строки для сетки 10×10: только НЕПУСТЫЕ слои, текстура в виде
-	/// «файл#атлас» и тинт. Полная карточка — <see cref="DescribeCellVisual"/>.
-	/// </summary>
-	public string CompactCellVisual(int cellX, int cellY)
-	{
-		bool inside = WorldPlacementPass.IsOnIsland(cellX, cellY);
-		var sb = new StringBuilder(128);
-		sb.Append("in=").Append(inside ? '1' : '0');
-		CompactCellLayer(sb, "Ground", _groundLayer, cellX, cellY);
-		CompactCellLayer(sb, "Mountain", _mountainLayer, cellX, cellY);
-		CompactCellLayer(sb, "Farm", _farmLayer, cellX, cellY);
-		CompactCellLayer(sb, "FarmPlan", _farmBlueprintLayer, cellX, cellY);
-		CompactCellLayer(sb, "Stockpile", _stockpileLayer, cellX, cellY);
-		CompactCellLayer(sb, "Object", _objectLayer, cellX, cellY);
-		CompactCellLayer(sb, "Building", _buildingLayer, cellX, cellY);
-		CompactCellLayer(sb, "Blueprint", _blueprintLayer, cellX, cellY);
-		CompactCellLayer(sb, "WallPlan", _wallBlueprintLayer, cellX, cellY);
-		CompactCellLayer(sb, "Wall", _wallLayer, cellX, cellY);
-		CompactCellLayer(sb, "Ghost", _ghostLayer, cellX, cellY);
-		CompactCellLayer(sb, "WorkProgress", _workProgressLayer, cellX, cellY);
-		return sb.ToString();
-	}
-
-	/// <summary>Окно шейдерной земли (для шапки сетки 10×10).</summary>
-	public Vector2I TerrainWindowOrigin => new(
-		(int)Math.Clamp(_currentTerrainOriginX, int.MinValue, int.MaxValue),
-		(int)Math.Clamp(_currentTerrainOriginY, int.MinValue, int.MaxValue));
-
-	private static void CompactCellLayer(StringBuilder sb, string name, TileMapLayer layer, int cellX, int cellY)
-	{
-		if (layer == null)
-			return;
-		var pos = new Vector2I(cellX, cellY);
-		int sourceId = layer.GetCellSourceId(pos);
-		if (sourceId < 0)
-			return;
-
-		Vector2I atlasCoords = layer.GetCellAtlasCoords(pos);
-		var atlasSource = layer.TileSet?.GetSource(sourceId) as TileSetAtlasSource;
-		sb.Append(' ').Append(name).Append('=')
-		  .Append(VisualDescribe.Short(atlasSource?.Texture, atlasSource, atlasCoords));
-
-		string tint = VisualDescribe.ShortTint(layer.Modulate);
-		if (tint.Length > 0)
-			sb.Append(' ').Append(tint);
-	}
-
-	/// <summary>Есть ли в клетке хоть один тайл любого островного слоя.</summary>
-	public bool HasAnyTileAt(int cellX, int cellY)
-	{
-		return HasTile(_groundLayer, cellX, cellY)
-			|| HasTile(_mountainLayer, cellX, cellY)
-			|| HasTile(_farmLayer, cellX, cellY)
-			|| HasTile(_farmBlueprintLayer, cellX, cellY)
-			|| HasTile(_stockpileLayer, cellX, cellY)
-			|| HasTile(_objectLayer, cellX, cellY)
-			|| HasTile(_buildingLayer, cellX, cellY)
-			|| HasTile(_blueprintLayer, cellX, cellY)
-			|| HasTile(_wallBlueprintLayer, cellX, cellY)
-			|| HasTile(_wallLayer, cellX, cellY)
-			|| HasTile(_ghostLayer, cellX, cellY)
-			|| HasTile(_workProgressLayer, cellX, cellY);
-	}
-
-	private static bool HasTile(TileMapLayer layer, int cellX, int cellY)
-		=> layer != null && layer.GetCellSourceId(new Vector2I(cellX, cellY)) >= 0;
-
-	/// <summary>
-	/// Одна строка на слой. Пустой слой печатается тоже: «пусто» — это информация,
-	/// без неё не отличить «не нарисовано» от «слоя нет».
-	/// </summary>
-	private static void DescribeCellLayer(StringBuilder sb, string name, TileMapLayer layer, int cellX, int cellY)
-	{
-		if (layer == null)
-		{
-			sb.Append("  ").Append(name.PadRight(14)).Append(" <no layer>\n");
-			return;
-		}
-
-		var pos = new Vector2I(cellX, cellY);
-		int sourceId = layer.GetCellSourceId(pos);
-		string state = $"vis={(layer.Visible ? "y" : "n")} mod={layer.Modulate} z={layer.ZIndex}";
-
-		if (sourceId < 0)
-		{
-			sb.Append("  ").Append(name.PadRight(14)).Append(" empty ").Append(state).Append('\n');
-			return;
-		}
-
-		Vector2I atlasCoords = layer.GetCellAtlasCoords(pos);
-		var atlasSource = layer.TileSet?.GetSource(sourceId) as TileSetAtlasSource;
-		sb.Append("  ").Append(name.PadRight(14))
-		  .Append(" src=").Append(sourceId)
-		  .Append(" atlas=").Append(atlasCoords)
-		  .Append(' ').Append(VisualDescribe.Texture(atlasSource?.Texture, atlasSource, atlasCoords))
-		  .Append(' ').Append(state)
-		  .Append('\n');
-	}
-
 	public override void _ExitTree()
 	{
 		TreeJobManager.Instance.OnTreeChopped -= OnTreeChopped;
 		StoneJobManager.Instance.OnStoneMined -= OnStoneMined;
+		OreJobManager.Instance.OnOreChanged -= OnOreCellChanged;
+		OreJobManager.Instance.OnOreDepleted -= OnOreCellChanged;
 		StockpileManager.Instance.OnZoneTileAdded -= _onZoneTileAdded;
 		StockpileManager.Instance.OnZoneTileRemoved -= _onZoneTileRemoved;
 		StockpileManager.Instance.OnZoneTilesBatchAdded -= _onZoneTilesBatchAdded;
 		StockpileManager.Instance.OnZoneTilesBatchRemoved -= _onZoneTilesBatchRemoved;
 
+		// FIX (bughunt 14-3): снимаем подписки ConstructionManager (были анонимными).
+		ConstructionManager.Instance.OnSitesBatchAdded -= _onSitesBatchAdded;
+		ConstructionManager.Instance.OnSiteAdded -= _onSiteAdded;
+		ConstructionManager.Instance.OnSiteRemoved -= _onSiteRemoved;
+		ConstructionManager.Instance.OnSitesBatchRemoved -= _onSitesBatchRemoved;
+		ConstructionManager.Instance.OnSiteCompleted -= _onSiteCompleted;
+
+		// FIX (bughunt 14-9): статический Instance не должен переживать свой узел —
+		// иначе между сменами сцены он указывает на освобождённый MapRenderer.
+		if (ReferenceEquals(Instance, this))
+			Instance = null;
+
 		BuildingManager.Instance.OnBuildingPlaced -= _onBuildingPlaced;
 		BuildingManager.Instance.OnBuildingRemoved -= _onBuildingRemoved;
+		StructureManager.Instance.OnStructureAdded -= _onStructureAdded;
+		StructureManager.Instance.OnStructureRemoved -= _onStructureRemoved;
 
 		FarmJobManager.Instance.OnPlotMarked -= _onPlotMarked;
 		FarmJobManager.Instance.OnPlotsBatchMarked -= _onPlotsBatchMarked;

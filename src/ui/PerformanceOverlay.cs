@@ -3,7 +3,6 @@ using Game.Core;
 using Game.Core.World;
 using Game.Core.WorldStreaming;
 using Game.Simulation;
-using Game.Tools;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -122,14 +121,6 @@ public partial class PerformanceOverlay : CanvasLayer
 
 	private Button _fpsButton;
 	private Button _simBackendButton;
-
-	// Сейм-инспектор: последняя клетка мира под курсором (пока курсор не над панелью).
-	private Vector2I _lastHoverTile;
-	private bool _hasLastHoverTile;
-
-	// Режим «нажал Seam → кликнул клетку»: следующий клик по миру снимает 10×10.
-	private Button _seamButton;
-	private bool _seamPickArmed;
 	private int _fpsPresetIndex = 0;
 	private static readonly (int MaxFps, DisplayServer.VSyncMode Vsync, string Label)[] FpsPresets = new[]
 	{
@@ -314,13 +305,6 @@ public partial class PerformanceOverlay : CanvasLayer
 		});
 		_toolsRow.AddChild(_freezeButton);
 
-		// Сейм-инспектор: серия «нажал Seam → кликнул клетку мира» — 10×10 текстур.
-		// Курсор при клике по кнопке уже на панели, поэтому клетку берём из режима,
-		// а не из текущей позиции мыши.
-		_seamButton = MakeTrackedButton("Seam", "стык острова и мира", ToggleSeamPick);
-		_seamButton.TooltipText = "Нажми, затем кликни по клетке мира: 10×10 текстур вокруг (F8 — по клетке под курсором)";
-		_toolsRow.AddChild(_seamButton);
-
 		// Ряд 4: метки + заметки
 		_marksRow = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Pass };
 		_marksRow.AddThemeConstantOverride("separation", 4);
@@ -382,38 +366,6 @@ public partial class PerformanceOverlay : CanvasLayer
 
 		AddChild(_panel);
 		_panel.Visible = _isVisible;
-
-		// Draw-call batching: panel + button/field backgrounds in one canvas item under
-		// the panel (measured: F3 ~205 → ~110 draw calls, look unchanged).
-		StyleBoxBatcher.Attach(_panel, host: this);
-
-		Font panelFont = MakeBatchFriendlyFont(_label.GetThemeFont("normal_font"));
-		_panel.Theme = new Theme { DefaultFont = panelFont };
-
-		// [b] in the report is drawn with the normal font: the bold font keeps glyphs in
-		// its own texture and every [b] broke text batching (measured −28 draw calls).
-		// Emphasis stays via [color].
-		_label.AddThemeFontOverride("normal_font", panelFont);
-		_label.AddThemeFontOverride("bold_font", panelFont);
-	}
-
-	/// <summary>
-	/// Own copy of the UI font for the panel with subpixel positioning off.
-	/// Why (measured 2026-10-28): with SUBPIXEL_POSITIONING_AUTO every glyph is cached in
-	/// several sub-pixel variants, the 16px glyph cache overflows into a second texture
-	/// and neighbouring letters alternate between the two pages. Each page switch is a
-	/// new draw call: the F3 text alone cost 150–900 draw calls depending on how full the
-	/// cache was. With subpixel off the same text is ~3 draw calls. Only the F3 panel
-	/// uses this copy; the game UI font is untouched.
-	/// </summary>
-	private static Font MakeBatchFriendlyFont(Font source)
-	{
-		if (source is not FontFile file)
-			return source;
-		var copy = (FontFile)file.Duplicate();
-		copy.SubpixelPositioning = TextServer.SubpixelPositioning.Disabled;
-		copy.ClearCache();
-		return copy;
 	}
 
 	private void ToggleMiniMode()
@@ -434,38 +386,6 @@ public partial class PerformanceOverlay : CanvasLayer
 		{
 			_isVisible = !_isVisible;
 			_panel.Visible = _isVisible;
-			GetViewport().SetInputAsHandled();
-			return;
-		}
-
-		// F8 — карточка стыка для клетки под курсором (не открывая панель).
-		if (@event is InputEventKey seamKey && seamKey.Pressed && !seamKey.Echo
-			&& (seamKey.Keycode == Key.F8 || seamKey.PhysicalKeycode == Key.F8))
-		{
-			ProbeSeamAt(CurrentProbeTile());
-			GetViewport().SetInputAsHandled();
-			return;
-		}
-
-		// Режим «Seam → клик по клетке»: ловим клик до GUI и до мира.
-		if (_seamPickArmed && @event is InputEventKey cancelKey && cancelKey.Pressed && !cancelKey.Echo
-			&& cancelKey.Keycode == Key.Escape)
-		{
-			_seamPickArmed = false;
-			UpdateSeamButtonText();
-			_copyStatus.Text = "SEAM: отменено";
-			_copyStatusTimer = 2f;
-			return;
-		}
-
-		if (_seamPickArmed && @event is InputEventMouseButton pick && pick.Pressed && pick.ButtonIndex == MouseButton.Left)
-		{
-			if (_isVisible && _panel != null && _panel.GetGlobalRect().HasPoint(pick.Position))
-				return; // клик по панели клетку не выбирает
-
-			_seamPickArmed = false;
-			UpdateSeamButtonText();
-			ProbeSeamAt(TileAtScreen(pick.Position));
 			GetViewport().SetInputAsHandled();
 			return;
 		}
@@ -526,98 +446,19 @@ public partial class PerformanceOverlay : CanvasLayer
 		}
 	}
 
-	// ================== СЕЙМ-ИНСПЕКТОР (кнопка Seam / F8) ==================
-
-	/// <summary>
-	/// Запомнить клетку мира под курсором. Клик по кнопке Seam уводит курсор на панель,
-	/// поэтому кнопка берёт последнюю клетку ДО клика, а не позицию в момент нажатия.
-	/// </summary>
-	private void UpdateHoverTile()
-	{
-		var viewport = GetViewport();
-		if (viewport == null)
-			return;
-		Vector2 mouse = viewport.GetMousePosition();
-		if (_isVisible && _panel != null && _panel.GetGlobalRect().HasPoint(mouse))
-			return; // курсор над панелью — мир не обновляем
-		_lastHoverTile = TileAtScreen(mouse);
-		_hasLastHoverTile = true;
-	}
-
-	private Vector2I TileAtScreen(Vector2 screenPos)
-	{
-		var viewport = GetViewport();
-		if (viewport == null)
-			return Vector2I.Zero;
-		Vector2 worldPos = (Vector2)(viewport.GetCanvasTransform().AffineInverse() * screenPos);
-		var pim = PlayerInteractionManager.Instance;
-		if (pim != null && pim.WallLayer != null && GodotObject.IsInstanceValid(pim.WallLayer))
-			return pim.WallLayer.LocalToMap(pim.WallLayer.ToLocal(worldPos));
-		return new Vector2I(
-			Mathf.FloorToInt(worldPos.X / MapRenderer.TileSizePx),
-			Mathf.FloorToInt(worldPos.Y / MapRenderer.TileSizePx));
-	}
-
-	private Vector2I CurrentProbeTile()
-	{
-		if (_hasLastHoverTile)
-			return _lastHoverTile;
-		var viewport = GetViewport();
-		Vector2 center = viewport != null ? viewport.GetVisibleRect().Size * 0.5f : Vector2.Zero;
-		return TileAtScreen(center);
-	}
-
-	private void ToggleSeamPick()
-	{
-		_seamPickArmed = !_seamPickArmed;
-		UpdateSeamButtonText();
-		if (_seamPickArmed)
-		{
-			_copyStatus.Text = "SEAM: кликни по клетке мира (Esc — отмена)";
-			_copyStatusTimer = 8f;
-		}
-	}
-
-	private void UpdateSeamButtonText()
-	{
-		if (_seamButton != null)
-			_seamButton.Text = _seamPickArmed ? "Seam ●" : "Seam";
-	}
-
-	/// <summary>
-	/// Снимок клетки: сетка 10×10 (кто рисует, какие слои, файл/атлас/тинт) +
-	/// полная карточка центральной клетки. Результат идёт в Output, буфер обмена
-	/// и user://seam_probe_last.txt.
-	/// </summary>
-	private void ProbeSeamAt(Vector2I tile)
-	{
-		try
-		{
-			var probe = new SeamInspector();
-			string text = $"=== SEAM PROBE ({tile.X},{tile.Y}) ===\n"
-				+ probe.VisualGrid(tile.X, tile.Y, 10) + "\n"
-				+ probe.Visual(tile.X, tile.Y);
-
-			GD.Print(text);
-			DisplayServer.ClipboardSet(text);
-
-			using var file = FileAccess.Open("user://seam_probe_last.txt", FileAccess.ModeFlags.Write);
-			file?.StoreString(text);
-
-			_copyStatus.Text = $"SEAM ({tile.X},{tile.Y}) → 10×10 в буфере";
-			_copyStatusTimer = 3f;
-		}
-		catch (Exception ex)
-		{
-			_copyStatus.Text = "SEAM: error";
-			_copyStatusTimer = 3f;
-			GD.PrintErr("[SEAM PROBE] " + ex);
-		}
-	}
+	// L-07 (FIX bughunt 01-01): снимок разбивки draw calls ПРЕДЫДУЩЕГО кадра.
+	private DrawCallSplit.SplitEntry[] _dcSplitCache = new DrawCallSplit.SplitEntry[0];
 
 	public override void _Process(double delta)
 	{
-		UpdateHoverTile();
+		// L-07 (FIX bughunt 01-01): разбивка draw calls живёт один кадр, но снимать её
+		// нужно В КОНЦЕ кадра, а не в начале того же прохода. Раньше Reset() и Snapshot()
+		// вызывались в одном _Process: между ними ни один рендерер не успевал Report()
+		// (единственный вызов — AgentRenderer в _Draw, т.е. ПОСЛЕ обоих) → разбивка была
+		// пуста всегда, а «не размечено» равнялось полному числу draw calls.
+		// Теперь в начале прохода забираем ПРЕДЫДУЩИЙ завершённый кадр, затем обнуляем.
+		DrawCallSplit.Snapshot(out _dcSplitCache);
+		DrawCallSplit.Reset();
 
 		// Плавное затухание статуса копирования
 		if (_copyStatusTimer > 0f)
@@ -750,8 +591,13 @@ public partial class PerformanceOverlay : CanvasLayer
 
 		int day = TimeManager.Instance != null ? TimeManager.Instance.DayNumber : 1;
 		float timeOfDay = TimeManager.Instance != null ? TimeManager.Instance.TimeOfDaySeconds : 0f;
-		int hour = (int)(timeOfDay / 3600f);
-		int minute = (int)((timeOfDay % 3600f) / 60f);
+		// FIX (bughunt 01-02): игровой час — не 3600 секунд! WorldTime: сутки = 12000 с,
+		// час = 500 с. С делением на 3600 отчёт печатал «День 1, 00:58» вместо 07:00,
+		// и час всегда лежал в 0..3.
+		int hour = (int)(timeOfDay / WorldTime.SecondsPerHour);
+		int minute = (int)((timeOfDay % WorldTime.SecondsPerHour) / (WorldTime.SecondsPerHour / 60f));
+		if (hour < 0) hour = 0; else if (hour > 23) hour = 23;
+		if (minute < 0) minute = 0; else if (minute > 59) minute = 59;
 
 		int activeJobs = JobBroker.Instance != null ? JobBroker.Instance.ActiveBlueprintCount : 0;
 		int groundItems = GroundItemManager.Instance != null ? GroundItemManager.Instance.TotalGroundPilesCount : 0;
@@ -873,6 +719,42 @@ public partial class PerformanceOverlay : CanvasLayer
 				  $"[color=#61afef]Objects (CanvasItems):[/color] {objects:N0}  |  " +
 				  $"[color=#e5c07b]Primitives:[/color] {prims:N0}  |  " +
 				  $"[b]VRAM:[/b] {vramMb:F1} MB  |  [b]RAM:[/b] {ramMb} MB\n");
+
+		// L-07: разбивка «400 draw calls» по группам. Одно число нельзя ни
+		// подтвердить, ни адресно уменьшить. Неразмеченный остаток печатаем
+		// явно — это и есть участки рендера, которые ещё не отчитываются.
+		// FIX (bughunt 01-01): берём кеш предыдущего кадра (см. _Process), иначе
+		// Snapshot здесь читал уже обнулённые Reset() счётчики и всегда был пуст.
+		var dcSplit = _dcSplitCache;
+		if (drawCalls > 0)
+		{
+			int dcAccounted = 0;
+			for (int i = 0; i < dcSplit.Length; i++)
+				dcAccounted += dcSplit[i].DrawCalls;
+			// Считаем остаток от ТОГО ЖЕ снимка: статический TotalReported к этому
+			// моменту уже обнулён Reset() и дал бы «не размечено = drawCalls».
+			long dcUnaccounted = drawCalls > dcAccounted ? drawCalls - dcAccounted : 0;
+			var dcSb = new StringBuilder(256);
+			dcSb.Append("  [color=#5c6370]DC по группам:[/color] ");
+			foreach (var d in dcSplit)
+				dcSb.Append($"{d.Group} {d.DrawCalls} ({d.Percent:F0}%)  |  ");
+			dcSb.Append($"[color=#e06c75]не размечено {dcUnaccounted}[/color]  " +
+						$"[color=#5c6370](итог {drawCalls})[/color]\n");
+			sb.Append(dcSb);
+		}
+
+		// L-06: видимость работы диспатчера. Раньше examined/assigned/время
+		// считались в JobDispatcher и никуда не выводились — «медленную выдачу»
+		// нельзя было ни подтвердить, ни адресно уменьшить.
+		GameProfiler.SnapshotCounters(out var scopeCounters);
+		foreach (var c in scopeCounters)
+		{
+			if (c.Name != "Simulation.JobDispatch")
+				continue;
+			sb.Append($"  [color=#98c379]Dispatch:[/color] examined {c.TotalA:N0}  |  assigned {c.TotalB:N0}  |  " +
+					  $"[b]{c.AvgMsPerCall:F2}ms[/b]/call  |  {c.Calls} вызовов за окно\n");
+			break;
+		}
 
 		if (simCycle.Calls > 0 || simCycle.CallsPerSec > 0)
 		{

@@ -103,7 +103,7 @@ public sealed class FarmingJobHandler : IJobHandler
             pool.CurrentJobId[agentIndex] = -1;
             pool.CurrentJobType[agentIndex] = JobTypeId.None;
             pool.States[agentIndex] = AgentState.Idle;
-            JobDispatcher.Instance.IdleWorkers.AddIdleWorker(agentIndex, pool);
+            JobDispatcher.ReturnAgentAfterJob(agentIndex, pool); // J-10: Worker зоны не уходит в общий пул
         }
     }
 

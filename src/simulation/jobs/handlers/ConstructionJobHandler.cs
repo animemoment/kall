@@ -24,10 +24,10 @@ public sealed class ConstructionJobHandler : IJobHandler
                 return false;
         }
 
-        // Разрешено только если площадка в стадии Assembling
+        // B-01 / U-02: Разрешено только если площадка в стадии Assembling и на 100% снабжена материалами
         if (ConstructionManager.Instance.TryGetSite(job.TargetX, job.TargetY, out var site))
         {
-            if (site.Stage != ConstructionStage.Assembling)
+            if (site.Stage != ConstructionStage.Assembling || !site.IsFullySupplied)
                 return false;
         }
         else if (!ConstructionManager.Instance.IsStageAllowed(job.TargetX, job.TargetY, JobTypeId.Construction))
@@ -49,6 +49,18 @@ public sealed class ConstructionJobHandler : IJobHandler
 
     public void OnStart(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
+        // B-01 / U-02: Запрет монтажа каркаса до 100% доставки материалов
+        float startFraction = 0f;
+        if (ConstructionManager.Instance.TryGetSite(job.TargetX, job.TargetY, out var startSite))
+        {
+            if (startSite.Stage != ConstructionStage.Assembling || !startSite.IsFullySupplied)
+            {
+                JobDispatcher.Instance.ReleaseJobWorkerForStuck(agentIndex, pool, ctx);
+                return;
+            }
+            startFraction = Math.Clamp(startSite.WorkProgress, 0f, 1f);
+        }
+
         pool.WaypointCount[agentIndex] = 0;
         pool.WaypointIndex[agentIndex] = 0;
 
@@ -63,9 +75,6 @@ public sealed class ConstructionJobHandler : IJobHandler
         // P7б §119: стройка продолжается с доли, уже накопленной ПЛОЩАДКОЙ
         // (site.WorkProgress — per-cell store), а не с нуля: прерванный
         // строитель не сбрасывает прогресс стен.
-        float startFraction = 0f;
-        if (ConstructionManager.Instance.TryGetSite(job.TargetX, job.TargetY, out var startSite))
-            startFraction = Math.Clamp(startSite.WorkProgress, 0f, 1f);
         pool.WorkProgress[agentIndex] = startFraction * BuildDuration;
         pool.StuckTimer[agentIndex] = 0f;
     }
@@ -144,7 +153,7 @@ public sealed class ConstructionJobHandler : IJobHandler
             pool.CurrentJobId[agentIndex] = -1;
             pool.CurrentJobType[agentIndex] = JobTypeId.None;
             pool.States[agentIndex] = AgentState.Idle;
-            JobDispatcher.Instance.IdleWorkers.AddIdleWorker(agentIndex, pool);
+            JobDispatcher.ReturnAgentAfterJob(agentIndex, pool); // J-10: Worker зоны не уходит в общий пул
         }
     }
 

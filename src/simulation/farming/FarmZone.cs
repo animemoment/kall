@@ -9,6 +9,9 @@ public sealed class FarmZone
     public string Name { get; set; }
     public HashSet<(int X, int Y)> Tiles { get; }
     public ItemId RequiredSeedItem { get; set; } = ItemId.Grain;
+
+    /// <summary>Какая культура выращивается в этой зоне (выбирается игроком в окне фермы).</summary>
+    public Game.Core.CropType Crop { get; set; } = Game.Core.CropType.Wheat;
     public bool AutoPlantEnabled { get; set; } = false;
 
     public int TotalTiles => Tiles.Count;

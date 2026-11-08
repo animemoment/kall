@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "generated_by": "texture registry migration (§129)",
+  "note": "Single source of truth for texture references. Prefer uid:// over res:// paths: a UID survives a file rename, a path does not. Load through src/ui/resources/TextureRegistry.cs, never inline a raw uid in code. null means the file does not exist yet: CropRenderer falls back to wheat_icon until the phase art is drawn.",
+  "groups": {
+    "terrain": {
+      "grass": "uid://bw85uoku784o5",
+      "sand": "uid://cmxrvsia7sdqi",
+      "water": "uid://cmi8pjecdx35",
+      "mountains": "uid://de7mit41ukuoq",
+      "garden_bed": "uid://47god8qachvh"
+    },
+    "objects": {
+      "tree": "uid://c70p6ktr0vcx6",
+      "tree_1": "uid://ddkl165hm35rp",
+      "tree_2": "uid://do5qth6ieq2q4",
+      "tree_3": "uid://n3xkro0lffbt",
+      "stone": "uid://du6ur8mvtu3le",
+      "central_block": "uid://dsiddo1lt1scb",
+      "wooden_wall": "uid://chubmh2ufwgwp"
+    },
+    "furniture": {
+      "work_table": "uid://rp2bpb5c7k2y",
+      "bed": "uid://0uf8ok6dxhyi",
+      "bench": "uid://bi667xckuklur",
+      "nightstand": "uid://ir5jk74j01fg"
+    },
+    "crops": {
+      "phase1": null,
+      "phase2": null,
+      "phase3": null,
+      "phase4": null,
+      "wheat_icon": "uid://bwtxffukyyje0"
+    },
+    "items": {
+      "log": "uid://by88ysblfuqqu",
+      "grain": "uid://byln5m1aam7tg",
+      "stone": "uid://du6ur8mvtu3le"
+    },
+    "effects": {
+      "process_of_work": "uid://qqhtvxqngv4a",
+      "agents": "uid://clysp24n2dgat"
+    },
+    "ui": {
+      "logistic_zone": "uid://0yf5li4bs2me",
+      "wheat": "uid://bwtxffukyyje0",
+      "exchange": "uid://w880x1smnak8",
+      "farming": "uid://yvw1b2pmcsfr",
+      "check_mark": "uid://yvagabo1xd7m",
+      "world_map": "uid://du3tdtxkt0h8s"
+    }
+  }
+}

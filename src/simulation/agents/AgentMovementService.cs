@@ -1,7 +1,7 @@
 using System;
 using System.Numerics;
-using System.Runtime.CompilerServices;
 using System.Threading;
+using System.Runtime.CompilerServices;
 using Game.Core;
 
 namespace Game.Simulation;
@@ -14,6 +14,55 @@ public sealed class AgentMovementService
     private const int TileShift = 6; // 1 << 6 = 64 (TileSize)
 
     private static readonly (int dx, int dy)[] PushAwayNeighbors = { (1, 0), (-1, 0), (0, 1), (0, -1) };
+
+    // ==================================================================
+    // R-04 / R-10: КЭШ ТЕРРЕЙНА ЗА КРОМКОЙ ОСТРОВА
+    //
+    // Дефект: `IsTileBlocked` для клеток вне окна колонии звал
+    // `WorldModel.TerrainAt` → полный `UnifiedWorldGenerator.SampleCell`
+    // (тектоника/Voronoi/18 полей) БЕЗ кэша, по 1–5 раз на суб-степ на агента.
+    // Агенты штатно ходят за кромку (работа в мире), поэтому именно это, а не A*,
+    // было главной причиной невыполнения бюджета `Phase2_ParallelUpdate`.
+    //
+    // Террейн детерминирован от (seed, origin, координата), поэтому кэшируем ответ
+    // по клетке. Ключ — colony-координаты (они же уникальны при фиксированном
+    // origin), значение — 1 байт «непроходимо». Кэш инвалидируется при смене
+    // seed/origin (штамп) и ограничен по размеру, чтобы не расти бесконечно
+    // при дальних походах.
+    // ==================================================================
+    private const int WorldTerrainCacheCap = 262_144; // ~256 КБ на записи словаря
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, byte> _worldTerrainCache = new();
+    private static long _worldTerrainStamp = long.MinValue;
+
+    /// <summary>R-04/R-10: террейн мира с кэшем по клетке (вода/гора = непроходимо).</summary>
+    private static bool IsWorldTileBlockedCached(long wx, long wy, int tx, int ty)
+    {
+        // Штамп «мир тот же»: seed и origin. Смена любого — кэш невалиден.
+        long stamp = unchecked((long)Game.Core.World.WorldModel.Seed
+            ^ ((long)((ulong)Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginX * 0x9E3779B97F4A7C15UL))
+            ^ ((long)((ulong)Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginY * 0xC2B2AE3D27D4EB4FUL)));
+        if (Volatile.Read(ref _worldTerrainStamp) != stamp)
+        {
+            _worldTerrainCache.Clear();
+            Volatile.Write(ref _worldTerrainStamp, stamp);
+        }
+
+        long key = ((long)tx << 32) ^ (uint)ty;
+        if (_worldTerrainCache.TryGetValue(key, out byte cached))
+            return cached != 0;
+
+        var terrain = Game.Core.World.WorldModel.TerrainAt(wx, wy);
+        bool blocked = terrain == Game.Core.WorldStreaming.BaseTerrainKind.Water
+                    || terrain == Game.Core.WorldStreaming.BaseTerrainKind.Mountain
+                    || Game.Core.World.WorldCostCache.CostAt(wx, wy) == Game.Core.World.WorldCostCache.CostBlocked;
+
+        // Ограничение размера: при переполнении просто не кэшируем новые клетки —
+        // деградация до прежнего поведения, а не утечка памяти.
+        if (_worldTerrainCache.Count < WorldTerrainCacheCap)
+            _worldTerrainCache[key] = blocked ? (byte)1 : (byte)0;
+        return blocked;
+    }
 
     /// <summary>
     /// Движение агента к цели с поддержкой иерархического поиска пути.
@@ -116,24 +165,6 @@ public sealed class AgentMovementService
         // ---- Фаза 3: запрос иерархического пути для дальних маршрутов или при застревании ----
         if (!reached && pool.WaypointCount[agentIndex] == 0)
         {
-            // §123: цель за кромкой острова — островной HPA там не работает (сетка
-            // 1024×1024, packed int). Но мировой HPA (WorldPathfinder) работает:
-            // он строит окна из WorldCostCache и сшивает длинные маршруты.
-            int worldTargetTx = (int)target.X >> TileShift;
-            int worldTargetTy = (int)target.Y >> TileShift;
-            if ((uint)worldTargetTx >= (uint)ctx.MapWidth || (uint)worldTargetTy >= (uint)ctx.MapHeight
-                || worldTargetTx < 0 || worldTargetTy < 0)
-            {
-                // Пробуем мировой путь; если не вышло — прямое движение по прямой
-                // с обходом препятствий (скольжение вдоль стен).
-                if (RequestWorldPath(agentIndex, target, pool, ctx))
-                    return reached;
-
-                pool.StepTargetX[agentIndex] = target.X;
-                pool.StepTargetY[agentIndex] = target.Y;
-                return reached;
-            }
-
             float dx = target.X - pool.PositionX[agentIndex];
             float dy = target.Y - pool.PositionY[agentIndex];
             float minDist = 4.0f * ctx.TileSize;
@@ -177,163 +208,46 @@ public sealed class AgentMovementService
         if (sx == tx && sy == ty)
             return;
 
-        // P0-1: без Stopwatch/счётчиков на запрос — A* идёт из тысяч агентов,
-        // каждый Count = lock(_cLock). Тяжёлые пути видны по кванту Phase2.
-        // ZERO-ALLOC: используем TryFindPathScratch без создания new int[smoothed] на каждый вызов!
-        bool ok = HierarchicalPathfinder.Instance.TryFindPathScratch(sx, sy, tx, ty, out int[] path, out int count);
-        if (ok)
+        // Unified Ultra Pathfinder: абсолютный глобальный мир (0 байт GC, ~1.5 - 5.5 мкс)
+        long originX = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginX;
+        long originY = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginY;
+        long wsx = originX + sx;
+        long wsy = originY + sy;
+        long wtx = originX + tx;
+        long wty = originY + ty;
+
+        Span<Game.Simulation.Pathfinding.Long2> waypoints = stackalloc Game.Simulation.Pathfinding.Long2[AgentPathConfig.MaxWaypoints];
+        if (Game.Simulation.Pathfinding.UnifiedPathfinder.Instance.TryFindPath(wsx, wsy, wtx, wty, waypoints, out int count) && count > 0)
         {
-            if (count > 0)
+            int cap = Math.Min(count, AgentPathConfig.MaxWaypoints);
+            int wpBase = agentIndex * AgentPathConfig.MaxWaypoints;
+            int written = 0;
+
+            for (int k = 0; k < cap; k++)
             {
-                int cap = Math.Min(count, AgentPathConfig.MaxWaypoints);
-                int wpBase = agentIndex * AgentPathConfig.MaxWaypoints;
-                for (int k = 0; k < cap; k++)
+                long lx = waypoints[k].X - originX;
+                long ly = waypoints[k].Y - originY;
+                if (lx >= short.MinValue && lx <= short.MaxValue && ly >= short.MinValue && ly <= short.MaxValue)
                 {
-                    int packed = path[k];
-                    pool.WaypointX[wpBase + k] = (short)(packed % ctx.MapWidth);
-                    pool.WaypointY[wpBase + k] = (short)(packed / ctx.MapWidth);
+                    pool.WaypointX[wpBase + written] = (short)lx;
+                    pool.WaypointY[wpBase + written] = (short)ly;
+                    written++;
                 }
-                pool.WaypointCount[agentIndex] = (byte)cap;
+            }
+
+            if (written > 0)
+            {
+                pool.WaypointCount[agentIndex] = (byte)written;
                 pool.WaypointIndex[agentIndex] = 0;
                 pool.StepTargetX[agentIndex] = pool.WaypointX[wpBase] * ctx.TileSize + 32f;
                 pool.StepTargetY[agentIndex] = pool.WaypointY[wpBase] * ctx.TileSize + 32f;
+                pool.PathRequestCooldown[agentIndex] = 1.5f;
+                return;
             }
-
-            pool.PathRequestCooldown[agentIndex] = 1.5f;
-        }
-        else
-        {
-            // Не удалось построить (изолированный регион/препятствие) — увеличиваем кулдаун с джиттером,
-            // чтобы не спамить A* на каждом тике при недостижимой цели
-            pool.PathRequestCooldown[agentIndex] = 3.0f + (float)ParallelRng.NextDouble() * 2.0f;
-        }
-    }
-
-    // ------------------------------------------------------------------------------------
-    // Мировой HPA (стриминг): маршруты за кромкой острова
-    // ------------------------------------------------------------------------------------
-
-    /// <summary>Сколько окон мира разрешено строить за <see cref="WorldPathRefillMs"/>.</summary>
-    private const int MaxWorldPathBurst = 4;
-    private const int WorldPathRefillMs = 100;
-
-    private static long _worldPathRefillMs;
-    private static int _worldPathBudget = MaxWorldPathBurst;
-
-    /// <summary>
-    /// Мягкий бюджет на построение мировых окон: одно окно 640×640 — это 410 тысяч
-    /// вызовов CostAt плюс сборка порталов. Тысячи агентов за кромкой не должны
-    /// разом положить кадр симуляции, поэтому окна строятся порциями.
-    /// </summary>
-    private static bool TryTakeWorldPathBudget()
-    {
-        long now = Environment.TickCount64;
-        if (now - _worldPathRefillMs >= WorldPathRefillMs)
-        {
-            _worldPathRefillMs = now;
-            Volatile.Write(ref _worldPathBudget, MaxWorldPathBurst);
-        }
-        return Interlocked.Decrement(ref _worldPathBudget) >= 0;
-    }
-
-    /// <summary>
-    /// Построить путь ПО МИРУ для агента, чья цель за кромкой острова.
-    /// true — вейпоинты записаны в пул, агент пойдёт по ним (а не по прямой).
-    /// </summary>
-    private bool RequestWorldPath(int agentIndex, Vector2 target, AgentDataPool pool, SimulationContext ctx)
-    {
-        if (pool.PathRequestCooldown[agentIndex] > 0f)
-            return false;
-        if (!TryTakeWorldPathBudget())
-            return false;
-
-        long worldOriginX = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginX;
-        long worldOriginY = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginY;
-
-        int sx = (int)pool.PositionX[agentIndex] >> TileShift;
-        int sy = (int)pool.PositionY[agentIndex] >> TileShift;
-        int tx = (int)target.X >> TileShift;
-        int ty = (int)target.Y >> TileShift;
-        if (sx == tx && sy == ty)
-            return false;
-
-        bool ok = Game.Simulation.Pathfinding.WorldPathfinder.Instance.TryFindPath(
-            worldOriginX + sx, worldOriginY + sy, worldOriginX + tx, worldOriginY + ty,
-            out int[] path, out int count,
-            out long winOx, out long winOy, out int winWidth);
-
-        int wpBase = agentIndex * AgentPathConfig.MaxWaypoints;
-        int written = 0;
-        if (ok && count > 0)
-        {
-            written = UnpackWorldPathToLocalTiles(
-                path, count, winOx, winOy, winWidth,
-                worldOriginX, worldOriginY,
-                pool.WaypointX, pool.WaypointY, wpBase, AgentPathConfig.MaxWaypoints,
-                sx, sy);
         }
 
-        if (written > 0)
-        {
-            pool.WaypointCount[agentIndex] = (byte)written;
-            pool.WaypointIndex[agentIndex] = 0;
-            pool.StepTargetX[agentIndex] = pool.WaypointX[wpBase] * ctx.TileSize + 32f;
-            pool.StepTargetY[agentIndex] = pool.WaypointY[wpBase] * ctx.TileSize + 32f;
-            pool.PathRequestCooldown[agentIndex] = 2.0f;
-            return true;
-        }
-
-        // Мир ответил «пути нет» (изолированный регион/окно не построилось):
-        // честный бэкофф, чтобы не спамить построением окон каждый тик.
-        pool.PathRequestCooldown[agentIndex] = 2.5f + (float)ParallelRng.NextDouble() * 1.5f;
-        return false;
-    }
-
-    /// <summary>
-    /// Разложить путь МИРА в АБСОЛЮТНЫЕ локальные тайлы агента (short) — ровно в том
-    /// виде, в каком пул хранит островные вейпоинты. Точки, выходящие за short,
-    /// отбрасываются вместе с остатком пути: агент пройдёт ближний коридор и
-    /// запросит путь заново (это не ошибка, а работа с длинным маршрутом).
-    /// Возвращает число записанных точек.
-    /// </summary>
-    public static int UnpackWorldPathToLocalTiles(
-        int[] path, int count,
-        long windowOriginX, long windowOriginY, int windowWidth,
-        long worldOriginX, long worldOriginY,
-        short[] outLocalX, short[] outLocalY, int destinationOffset, int destinationCapacity,
-        int skipTileX, int skipTileY)
-    {
-        if (path == null || count <= 0 || count > path.Length || windowWidth <= 0)
-            return 0;
-        if (outLocalX == null || outLocalY == null || destinationCapacity <= 0)
-            return 0;
-        if (destinationOffset < 0
-            || destinationOffset + destinationCapacity > outLocalX.Length
-            || destinationOffset + destinationCapacity > outLocalY.Length)
-            return 0;
-
-        int written = 0;
-        for (int i = 0; i < count && written < destinationCapacity; i++)
-        {
-            int packed = path[i];
-            long wx = windowOriginX + packed % windowWidth;
-            long wy = windowOriginY + packed / windowWidth;
-            long lx = wx - worldOriginX;
-            long ly = wy - worldOriginY;
-
-            if (lx < short.MinValue || lx > short.MaxValue || ly < short.MinValue || ly > short.MaxValue)
-                break; // остаток пути дальше short-диапазона: доедем и запросим снова
-
-            // Первая точка — клетка, где агент уже стоит.
-            if (written == 0 && lx == skipTileX && ly == skipTileY)
-                continue;
-
-            outLocalX[destinationOffset + written] = (short)lx;
-            outLocalY[destinationOffset + written] = (short)ly;
-            written++;
-        }
-
-        return written;
+        // Если цель временно недостижима (тупик / заперт)
+        pool.PathRequestCooldown[agentIndex] = 0.5f + (float)ParallelRng.NextDouble() * 0.5f;
     }
 
     /// <summary>
@@ -371,7 +285,7 @@ public sealed class AgentMovementService
         // Быстрый путь прибытия: цель ближе полного шага — ставим ровно в цель без перепрыгивания
         if (totalStep >= dist)
         {
-            if (!IsTileBlocked(target.X, target.Y, ctx))
+            if (!IsStepBlocked(curX, curY, target.X, target.Y, ctx))
             {
                 pool.PositionX[agentIndex] = target.X;
                 pool.PositionY[agentIndex] = target.Y;
@@ -388,7 +302,7 @@ public sealed class AgentMovementService
         float fastDesiredX = curX + fastStepX;
         float fastDesiredY = curY + fastStepY;
 
-        if (!IsTileBlocked(fastDesiredX, fastDesiredY, ctx))
+        if (!IsStepBlocked(curX, curY, fastDesiredX, fastDesiredY, ctx))
         {
             pool.PositionX[agentIndex] = fastDesiredX;
             pool.PositionY[agentIndex] = fastDesiredY;
@@ -419,7 +333,7 @@ public sealed class AgentMovementService
             {
                 // Дошли бы до цели за этот суб-шаг: ставим точно в цель,
                 // дёрганья из-за перепрыгивания мимо нет.
-                if (!IsTileBlocked(target.X, target.Y, ctx))
+                if (!IsStepBlocked(sx, sy, target.X, target.Y, ctx))
                 {
                     pool.PositionX[agentIndex] = target.X;
                     pool.PositionY[agentIndex] = target.Y;
@@ -436,8 +350,8 @@ public sealed class AgentMovementService
             float desiredX = sx + stepX;
             float desiredY = sy + stepY;
 
-            // 1. Прямой шаг
-            if (!IsTileBlocked(desiredX, desiredY, ctx))
+            // 1. Прямой шаг (с проверкой углов через IsStepBlocked)
+            if (!IsStepBlocked(sx, sy, desiredX, desiredY, ctx))
             {
                 pool.PositionX[agentIndex] = desiredX;
                 pool.PositionY[agentIndex] = desiredY;
@@ -523,22 +437,68 @@ public sealed class AgentMovementService
             int targetTileX = (int)target.X >> TileShift;
             int targetTileY = (int)target.Y >> TileShift;
 
-            Vector2 detourDir = FlowFieldManager.Instance.GetDirection(curX, curY, targetTileX, targetTileY, ctx);
-            if (detourDir != Vector2.Zero)
+            long originX = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginX;
+            long originY = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginY;
+            long curWx = originX + curTx;
+            long curWy = originY + curTy;
+            long targetWx = originX + targetTileX;
+            long targetWy = originY + targetTileY;
+
+            Span<Game.Simulation.Pathfinding.Long2> steerSteps = stackalloc Game.Simulation.Pathfinding.Long2[16];
+            if (Game.Simulation.Pathfinding.UnifiedPathfinder.Instance.TryFindSteeringPath(curWx, curWy, targetWx, targetWy, steerSteps, out int steerCount) && steerCount > 1)
             {
-                float detourX = curX + detourDir.X * (speed * deltaTime);
-                float detourY = curY + detourDir.Y * (speed * deltaTime);
-                if (!IsTileBlocked(detourX, detourY, ctx))
+                long nextWx = steerSteps[1].X;
+                long nextWy = steerSteps[1].Y;
+                float dirX = (nextWx - curWx);
+                float dirY = (nextWy - curWy);
+                float len = MathF.Sqrt(dirX * dirX + dirY * dirY);
+                if (len > 0.01f)
                 {
-                    pool.PositionX[agentIndex] = detourX;
-                    pool.PositionY[agentIndex] = detourY;
-                    return false;
+                    dirX /= len;
+                    dirY /= len;
+                    float detourX = curX + dirX * (speed * deltaTime);
+                    float detourY = curY + dirY * (speed * deltaTime);
+                    if (!IsTileBlocked(detourX, detourY, ctx))
+                    {
+                        pool.PositionX[agentIndex] = detourX;
+                        pool.PositionY[agentIndex] = detourY;
+                        return false;
+                    }
                 }
             }
         }
 
         float reachWithMargin = reachDistance + 6.0f;
         if (distSq <= reachWithMargin * reachWithMargin)
+            return true;
+
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsCellBlocked(int tx, int ty, SimulationContext ctx)
+    {
+        if ((uint)tx >= (uint)ctx.MapWidth || (uint)ty >= (uint)ctx.MapHeight)
+        {
+            if (Game.Core.World.WorldModel.Seed != 0)
+            {
+                long wx = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginX + tx;
+                long wy = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginY + ty;
+                return !Game.Core.World.WorldCostCache.IsWalkable(wx, wy);
+            }
+            return true;
+        }
+
+        byte[] cost = HierarchicalPathfinder.Instance.Cost;
+        if (cost != null && HierarchicalPathfinder.Instance.MapWidth == ctx.MapWidth)
+        {
+            return cost[ty * ctx.MapWidth + tx] == HierarchicalPathfinder.CostBlocked;
+        }
+
+        if (ctx.SolidWalls != null && ctx.SolidWalls[tx, ty])
+            return true;
+
+        if (ctx.Ground != null && (ctx.Ground[tx, ty] == TileType.Mountain || ctx.Ground[tx, ty] == TileType.Water))
             return true;
 
         return false;
@@ -554,17 +514,11 @@ public sealed class AgentMovementService
         // за пределами — проверяем террейн стримингового мира
         if ((uint)tx >= (uint)ctx.MapWidth || (uint)ty >= (uint)ctx.MapHeight)
         {
-            // ДВЕРЬ (RENDER_SYNC_PLAN 1.1): вопрос миру — через WorldModel: сид, версия
-            // и форма мира (решётка 16×16) одни на всю игру. Прямой вызов генератора с
-            // DefaultGeneratorVersion здесь — путь к «двум вселенным»: агенты спрашивали
-            // иной мир, чем рендер/стриминг (арх-гард bypass_generator_sim).
             if (Game.Core.World.WorldModel.Seed != 0)
             {
                 long wx = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginX + tx;
                 long wy = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginY + ty;
-                var terrain = Game.Core.World.WorldModel.TerrainAt(wx, wy);
-                return terrain == Game.Core.WorldStreaming.BaseTerrainKind.Water ||
-                       terrain == Game.Core.WorldStreaming.BaseTerrainKind.Mountain;
+                return !Game.Core.World.WorldCostCache.IsWalkable(wx, wy);
             }
             return true;
         }
@@ -589,26 +543,56 @@ public sealed class AgentMovementService
         }
 
         // Fallback: прямое чтение 2D-массивов (если оверлей пути еще не построен)
-        if (ctx.SolidWalls[tx, ty])
+        if (ctx.SolidWalls != null && ctx.SolidWalls[tx, ty])
             return true;
 
         // Гора и вода блокируют движение агентов
-        if (ctx.Ground[tx, ty] == TileType.Mountain || ctx.Ground[tx, ty] == TileType.Water)
+        if (ctx.Ground != null && (ctx.Ground[tx, ty] == TileType.Mountain || ctx.Ground[tx, ty] == TileType.Water))
             return true;
 
         int fallbackSubX = (int)worldX & 63;
         int fallbackSubY = (int)worldY & 63;
 
-        if (fallbackSubX < AgentRadius && tx > 0 && (ctx.SolidWalls[tx - 1, ty] || ctx.Ground[tx - 1, ty] == TileType.Mountain || ctx.Ground[tx - 1, ty] == TileType.Water)) return true;
-        if (fallbackSubX > 64 - AgentRadius && tx < ctx.MapWidth - 1 && (ctx.SolidWalls[tx + 1, ty] || ctx.Ground[tx + 1, ty] == TileType.Mountain || ctx.Ground[tx + 1, ty] == TileType.Water)) return true;
-        if (fallbackSubY < AgentRadius && ty > 0 && (ctx.SolidWalls[tx, ty - 1] || ctx.Ground[tx, ty - 1] == TileType.Mountain || ctx.Ground[tx, ty - 1] == TileType.Water)) return true;
-        if (fallbackSubY > 64 - AgentRadius && ty < ctx.MapHeight - 1 && (ctx.SolidWalls[tx, ty + 1] || ctx.Ground[tx, ty + 1] == TileType.Mountain || ctx.Ground[tx, ty + 1] == TileType.Water)) return true;
+        if (fallbackSubX < AgentRadius && tx > 0 && ((ctx.SolidWalls != null && ctx.SolidWalls[tx - 1, ty]) || (ctx.Ground != null && (ctx.Ground[tx - 1, ty] == TileType.Mountain || ctx.Ground[tx - 1, ty] == TileType.Water)))) return true;
+        if (fallbackSubX > 64 - AgentRadius && tx < ctx.MapWidth - 1 && ((ctx.SolidWalls != null && ctx.SolidWalls[tx + 1, ty]) || (ctx.Ground != null && (ctx.Ground[tx + 1, ty] == TileType.Mountain || ctx.Ground[tx + 1, ty] == TileType.Water)))) return true;
+        if (fallbackSubY < AgentRadius && ty > 0 && ((ctx.SolidWalls != null && ctx.SolidWalls[tx, ty - 1]) || (ctx.Ground != null && (ctx.Ground[tx, ty - 1] == TileType.Mountain || ctx.Ground[tx, ty - 1] == TileType.Water)))) return true;
+        if (fallbackSubY > 64 - AgentRadius && ty < ctx.MapHeight - 1 && ((ctx.SolidWalls != null && ctx.SolidWalls[tx, ty + 1]) || (ctx.Ground != null && (ctx.Ground[tx, ty + 1] == TileType.Mountain || ctx.Ground[tx, ty + 1] == TileType.Water)))) return true;
+
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsStepBlocked(float startX, float startY, float endX, float endY, SimulationContext ctx)
+    {
+        if (IsTileBlocked(endX, endY, ctx))
+            return true;
+
+        int sx = (int)startX >> TileShift;
+        int sy = (int)startY >> TileShift;
+        int ex = (int)endX >> TileShift;
+        int ey = (int)endY >> TileShift;
+
+        if (sx != ex && sy != ey)
+        {
+            int dx = ex - sx;
+            int dy = ey - sy;
+            if (Math.Abs(dx) == 1 && Math.Abs(dy) == 1)
+            {
+                bool corner1Free = !IsCellBlocked(sx + dx, sy, ctx);
+                bool corner2Free = !IsCellBlocked(sx, sy + dy, ctx);
+                if (!HierarchicalPathfinder.IsDiagonalPassable(corner1Free, corner2Free))
+                    return true;
+            }
+        }
 
         return false;
     }
 
     public void EjectFromWall(int agentIndex, int wallX, int wallY, AgentDataPool pool, SimulationContext ctx)
     {
+        if ((uint)wallX >= (uint)ctx.MapWidth || (uint)wallY >= (uint)ctx.MapHeight)
+            return;
+
         if (GridHelper.TryFindNearestFreeTile(wallX, wallY, ctx.Ground, ctx.SolidWalls, ctx.TreeOnGrass, 4, out var freeTile))
         {
             float px = (freeTile.X << TileShift) + 32f;

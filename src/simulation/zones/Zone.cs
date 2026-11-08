@@ -5,34 +5,109 @@ using Game.Core;
 namespace Game.Simulation;
 
 /// <summary>
-/// Тип зоны в унифицированном ZoneManager.
-/// Farm — грядка (фермерство, AutoPlant); Work — универсальная рабочая зона-бригадир.
+/// Тип зоны = ОТРАСЛЬ (весь замысел владельца: «зона = условная отрасль, или её
+/// отдельная часть, если она требует акцентирования внимания»).
+///
+/// Две служебные семантики, на которых держится симуляция:
+///   * <see cref="ZoneKind.Farm"/> — грядки (тайлы + AutoPlant + культура);
+///   * ЛЮБОЙ другой тип — рабочая зона-бригадир (центр + радиус, JobMask).
+///
+/// ЛЕГАСИ: <see cref="ZoneKind.Work"/> (1) — старая безымянная рабочая зона.
+/// Оставлен числом/именем ради совместимости сборки и старых сейвов
+/// (.zones.json: "kind":"work" без поля industry). При загрузке он мигрирует
+/// в отрасль по своей JobMask (см. ZoneIndustryRegistry.FromLegacyJobMask),
+/// по умолчанию — Warehouse. Новый код НЕ создаёт зону с Kind == Work.
 /// </summary>
 public enum ZoneKind : byte
 {
+    /// <summary>Сельское хозяйство: зона-грядка (тайлы, культура, AutoPlant).</summary>
     Farm = 0,
-    Work = 1
+
+    /// <summary>ЛЕГАСИ-универсальная рабочая зона. Мигрирует в Warehouse/отрасль по маске.</summary>
+    Work = 1,
+
+    /// <summary>Лесозаготовка и деревообработка.</summary>
+    Forestry = 2,
+
+    /// <summary>Добыча: руда, камень, уголь.</summary>
+    Mining = 3,
+
+    /// <summary>Чёрная металлургия: чугун, сталь.</summary>
+    Metallurgy = 4,
+
+    /// <summary>Цветная металлургия: медь, свинец, цинк, алюминий.</summary>
+    NonFerrous = 5,
+
+    /// <summary>Нефтепереработка: керосин, мазут, смазки.</summary>
+    OilRefining = 6,
+
+    /// <summary>Химия: кислоты, щёлочи, красители.</summary>
+    Chemistry = 7,
+
+    /// <summary>Стройматериалы: доска, кирпич, известь, стекло.</summary>
+    BuildingMaterials = 8,
+
+    /// <summary>Текстиль: пряжа, ткань, одежда.</summary>
+    Textile = 9,
+
+    /// <summary>Станкостроение: станки, инструмент, оборудование.</summary>
+    MachineBuilding = 10,
+
+    /// <summary>Сборка: машины, двигатели, готовые изделия.</summary>
+    Assembly = 11,
+
+    /// <summary>Склад: приём, хранение и выдача грузов.</summary>
+    Warehouse = 12,
+
+    /// <summary>Жильё: кровати, скамьи, тумбочки.</summary>
+    Housing = 13
 }
 
 /// <summary>
-/// Единая зона: Farm — множество тайлов; Work — §119 P0: ЦЕНТР + РАДИУС
+/// Семейство зоны: Farm (грядки) либо Work (всё остальное — отрасль-бригадир).
+/// Сравнения старого кода «Kind == ZoneKind.Work» заменены на это семейство,
+/// чтобы отрасли вели себя как рабочие зоны (диспатч, покрытие, радиус).
+/// </summary>
+public static class ZoneKindExtensions
+{
+    /// <summary>Farm-зона — грядки; тайлы материализуются.</summary>
+    public static bool IsFarmZone(this ZoneKind kind) => kind == ZoneKind.Farm;
+
+    /// <summary>Рабочая зона-бригадир (любая отрасль): центр + радиус, без тайлов.</summary>
+    public static bool IsWorkZone(this ZoneKind kind) => kind != ZoneKind.Farm;
+
+    /// <summary>Легаси-значение Work приводится к отрасли (по умолчанию — Склад).</summary>
+    public static ZoneKind NormalizeLegacy(this ZoneKind kind) =>
+        kind == ZoneKind.Work ? ZoneKind.Warehouse : kind;
+}
+
+/// <summary>
+/// Единая зона: Farm — множество тайлов; любая отрасль — §119 P0: ЦЕНТР + РАДИУС
 /// (64..512), клетки НЕ материализуются (при r=512 диск = 823k клеток =
-/// гигабайты). Farm-специфика (AutoPlant/семена) и Work-специфика (маска/
-/// радиус/диспатч) живут в одной сущности, различаются по Kind.
-/// Пересечение зон РАЗНЫХ типов допустимо (§119: разные типы друг друга не
+/// гигабайты). Farm-специфика (AutoPlant/семена/культура) и Work-специфика
+/// (маска/радиус/диспатч) живут в одной сущности, различаются по Kind.
+/// Пересечение зон РАЗНЫХ отраслей допустимо (§119: разные типы друг друга не
 /// режут); партиция спорных клеток ОДНОГО типа — P1 (ScheduleRepartition).
 /// </summary>
 public sealed class Zone
 {
-    /// <summary>Общий пустой набор тайлов для Work-зон (тайлы не материализуются).</summary>
+    /// <summary>Общий пустой набор тайлов для рабочих зон (тайлы не материализуются).</summary>
     private static readonly HashSet<(int X, int Y)> EmptyTiles = new();
 
     public int Id { get; }
     public string Name { get; set; }
+
+    /// <summary>Отрасль зоны = тип зоны. Для рабочих зон содержит отрасль.</summary>
     public ZoneKind Kind { get; }
 
+    /// <summary>Зона-грядка (Farm): тайлы материализованы.</summary>
+    public bool IsFarmZone => Kind.IsFarmZone();
+
+    /// <summary>Рабочая зона-бригадир (любая отрасль): центр + радиус.</summary>
+    public bool IsWorkZone => Kind.IsWorkZone();
+
     // Геометрия Farm: _tiles — единственный источник, заменяется ссылкой под локом
-    // менеджера. Для Work-зон всегда EmptyTiles (см. ContainsTile/GetTilesSnapshot).
+    // менеджера. Для рабочих зон всегда EmptyTiles (см. ContainsTile/GetTilesSnapshot).
     private volatile HashSet<(int X, int Y)> _tiles;
     public HashSet<(int X, int Y)> Tiles
     {
@@ -42,6 +117,9 @@ public sealed class Zone
 
     // --- Farm-поля (актуальны при Kind == Farm) ---
     public ItemId RequiredSeedItem { get; set; } = ItemId.Grain;
+
+    /// <summary>Культура зоны-фермы: выбирается в окне фермы, одна на зону.</summary>
+    public Game.Core.CropType Crop { get; set; } = Game.Core.CropType.Wheat;
 
     private int _autoPlantEnabled;
     public bool AutoPlantEnabled
@@ -57,7 +135,7 @@ public sealed class Zone
         set => System.Threading.Volatile.Write(ref _plantedCount, value);
     }
 
-    // --- Work-поля (актуальны при Kind == Work) ---
+    // --- Work-поля (актуальны для любой отрасли) ---
     public int CenterX { get; }
     public int CenterY { get; }
 
@@ -145,12 +223,12 @@ public sealed class Zone
     public int TotalTiles => _tiles?.Count ?? 0;
 
     /// <summary>
-    /// Попадание клетки в зону: Farm — по набору тайлов; Work (§119 P0) — по
+    /// Попадание клетки в зону: Farm — по набору тайлов; отрасль (§119 P0) — по
     /// формуле радиуса dx²+dy² ≤ r², O(1), без материализации.
     /// </summary>
     public bool ContainsTile(int x, int y)
     {
-        if (Kind == ZoneKind.Work)
+        if (Kind.IsWorkZone())
         {
             long dx = x - CenterX;
             long dy = y - CenterY;
@@ -162,12 +240,12 @@ public sealed class Zone
     }
 
     /// <summary>
-    /// Снапшот тайлов: Farm — копия набора; Work — пустой набор (тайлов нет).
+    /// Снапшот тайлов: Farm — копия набора; отрасль — пустой набор (тайлов нет).
     /// </summary>
     public HashSet<(int X, int Y)> GetTilesSnapshot()
     {
         var snap = _tiles;
-        if (Kind == ZoneKind.Work || snap == null)
+        if (Kind.IsWorkZone() || snap == null)
             return new HashSet<(int X, int Y)>();
         return new HashSet<(int X, int Y)>(snap);
     }
@@ -176,15 +254,15 @@ public sealed class Zone
     {
         Id = id;
         Name = name;
-        Kind = kind;
-        // Work-зоны через этот ctor (тесты Phase5) — тайлы не материализуем.
-        _tiles = kind == ZoneKind.Work ? EmptyTiles : tiles;
+        Kind = kind.NormalizeLegacy();
+        // Рабочие зоны через этот ctor (тесты Phase5) — тайлы не материализуем.
+        _tiles = Kind.IsWorkZone() ? EmptyTiles : tiles;
     }
 
-    /// <summary>§119 P0: Work-зона = центр + радиус. Клетки НЕ материализуются.</summary>
-    internal Zone(int id, string name, int centerX, int centerY, int radiusTiles,
+    /// <summary>§119 P0 + отрасль: рабочая зона = центр + радиус. Клетки НЕ материализуются.</summary>
+    internal Zone(int id, string name, ZoneKind kind, int centerX, int centerY, int radiusTiles,
         int desiredWorkers, ulong jobMask, List<int> chunkIndices)
-        : this(id, name, ZoneKind.Work, EmptyTiles)
+        : this(id, name, kind, EmptyTiles)
     {
         CenterX = centerX;
         CenterY = centerY;
@@ -197,6 +275,14 @@ public sealed class Zone
         Enabled = true;
         AnchorBlockId = -1;
         ChunkIndices = chunkIndices;
+    }
+
+    /// <summary>ЛЕГАСИ-ctor: рабочая зона без отрасли (Work → Warehouse при создании).</summary>
+    internal Zone(int id, string name, int centerX, int centerY, int radiusTiles,
+        int desiredWorkers, ulong jobMask, List<int> chunkIndices)
+        : this(id, name, ZoneKind.Work, centerX, centerY, radiusTiles,
+            desiredWorkers, jobMask, chunkIndices)
+    {
     }
 
     public bool Matches(JobTypeId t) => (JobMask & (1UL << (int)t)) != 0;

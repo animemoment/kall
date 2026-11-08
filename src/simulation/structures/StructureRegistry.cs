@@ -16,6 +16,26 @@ public static class StructureRegistry
     public static StructureDefinition Nightstand { get; }
     public static StructureDefinition CentralBlock { get; }
 
+    // ---- Станки отраслей (task-12). Спрайты уже нарисованы:
+    // res://ui/assets/textures/workplaces/<id>.png; здесь — материалы и время.
+    public static StructureDefinition Sawmill { get; }
+    public static StructureDefinition Smelter { get; }
+    public static StructureDefinition Anvil { get; }
+    public static StructureDefinition Workbench { get; }
+    public static StructureDefinition SpinningWheel { get; }
+    public static StructureDefinition Loom { get; }
+    public static StructureDefinition Mill { get; }
+    public static StructureDefinition AssemblyLine { get; }
+
+    // ---- Полы и перекрытия (3 варианта) ----
+    public static StructureDefinition WoodFloor { get; }
+    public static StructureDefinition StoneFloor { get; }
+    public static StructureDefinition ConcreteFloor { get; }
+
+    // ---- Крыши ----
+    public static StructureDefinition RoofResidential { get; }
+    public static StructureDefinition RoofIndustrial { get; }
+
     static StructureRegistry()
     {
         WoodWall = Register(new StructureDefinition(
@@ -36,7 +56,7 @@ public static class StructureRegistry
             category: StructureCategory.Production,
             materials: new[] { (ItemId.Log, BuildConfig.LogsWorkTable) },
             buildDurationSec: BuildConfig.BuildDurationSec,
-            blocksMovement: false,
+            blocksMovement: true,
             castsShadow: true
         ));
 
@@ -84,6 +104,176 @@ public static class StructureRegistry
             category: StructureCategory.Furniture,
             materials: new[] { (ItemId.Log, BuildConfig.LogsCentralBlock) },
             buildDurationSec: BuildConfig.BuildDurationSec,
+            blocksMovement: false,
+            castsShadow: false
+        ));
+
+        // ---- Станки отраслей (task-12, task-16, task-19) ----
+        // Габариты — из арта (BuildingFootprint), цены — из BuildConfig.
+        // task-19: доставка ТИПИЗИРОВАНА (JobData.TargetItemId) — камень едет на
+        // площадку наравне с брёвнами. RequiredMaterials = бревно (если>0) + камень
+        // (если StonesFor>0); материалы возятся последовательно, сайт копит потипно,
+        // Supplying→Building только когда довезено ВСЁ.
+
+        Sawmill = Register(new StructureDefinition(
+            id: "sawmill",
+            displayName: "Пилорама",
+            type: BuildingType.Sawmill,
+            category: StructureCategory.Production,
+            materials: Game.Simulation.StructureMaterials.Build(BuildingType.Sawmill),
+            buildDurationSec: BuildConfig.BuildDurationSec * 3f,
+            blocksMovement: true,
+            castsShadow: true,
+            width: BuildingFootprint.WidthOf(BuildingType.Sawmill),
+            height: BuildingFootprint.HeightOf(BuildingType.Sawmill)
+        ));
+
+        Smelter = Register(new StructureDefinition(
+            id: "smelter",
+            displayName: "Плавильня",
+            type: BuildingType.Smelter,
+            category: StructureCategory.Production,
+            materials: Game.Simulation.StructureMaterials.Build(BuildingType.Smelter),
+            buildDurationSec: BuildConfig.BuildDurationSec * 4f,
+            blocksMovement: true,
+            castsShadow: true,
+            width: BuildingFootprint.WidthOf(BuildingType.Smelter),
+            height: BuildingFootprint.HeightOf(BuildingType.Smelter)
+        ));
+
+        Anvil = Register(new StructureDefinition(
+            id: "anvil",
+            displayName: "Наковальня",
+            type: BuildingType.Anvil,
+            category: StructureCategory.Production,
+            materials: Game.Simulation.StructureMaterials.Build(BuildingType.Anvil),
+            buildDurationSec: BuildConfig.BuildDurationSec * 2.5f,
+            blocksMovement: true,
+            castsShadow: true,
+            width: BuildingFootprint.WidthOf(BuildingType.Anvil),
+            height: BuildingFootprint.HeightOf(BuildingType.Anvil)
+        ));
+
+        Workbench = Register(new StructureDefinition(
+            id: "workbench",
+            displayName: "Столярный верстак",
+            type: BuildingType.Workbench,
+            category: StructureCategory.Production,
+            materials: Game.Simulation.StructureMaterials.Build(BuildingType.Workbench),
+            buildDurationSec: BuildConfig.BuildDurationSec * 2.5f,
+            blocksMovement: true,
+            castsShadow: true,
+            width: BuildingFootprint.WidthOf(BuildingType.Workbench),
+            height: BuildingFootprint.HeightOf(BuildingType.Workbench)
+        ));
+
+        SpinningWheel = Register(new StructureDefinition(
+            id: "spinning_wheel",
+            displayName: "Прялка",
+            type: BuildingType.SpinningWheel,
+            category: StructureCategory.Production,
+            materials: Game.Simulation.StructureMaterials.Build(BuildingType.SpinningWheel),
+            buildDurationSec: BuildConfig.BuildDurationSec * 2f,
+            blocksMovement: true,
+            castsShadow: true,
+            width: BuildingFootprint.WidthOf(BuildingType.SpinningWheel),
+            height: BuildingFootprint.HeightOf(BuildingType.SpinningWheel)
+        ));
+
+        Loom = Register(new StructureDefinition(
+            id: "loom",
+            displayName: "Ткацкий станок",
+            type: BuildingType.Loom,
+            category: StructureCategory.Production,
+            materials: Game.Simulation.StructureMaterials.Build(BuildingType.Loom),
+            buildDurationSec: BuildConfig.BuildDurationSec * 3f,
+            blocksMovement: true,
+            castsShadow: true,
+            width: BuildingFootprint.WidthOf(BuildingType.Loom),
+            height: BuildingFootprint.HeightOf(BuildingType.Loom)
+        ));
+
+        Mill = Register(new StructureDefinition(
+            id: "mill",
+            displayName: "Мельница",
+            type: BuildingType.Mill,
+            category: StructureCategory.Production,
+            materials: Game.Simulation.StructureMaterials.Build(BuildingType.Mill),
+            buildDurationSec: BuildConfig.BuildDurationSec * 3.5f,
+            blocksMovement: true,
+            castsShadow: true,
+            width: BuildingFootprint.WidthOf(BuildingType.Mill),
+            height: BuildingFootprint.HeightOf(BuildingType.Mill)
+        ));
+
+        AssemblyLine = Register(new StructureDefinition(
+            id: "assembly_line",
+            displayName: "Сборочная линия",
+            type: BuildingType.AssemblyLine,
+            category: StructureCategory.Production,
+            materials: Game.Simulation.StructureMaterials.Build(BuildingType.AssemblyLine),
+            buildDurationSec: BuildConfig.BuildDurationSec * 4f,
+            blocksMovement: true,
+            castsShadow: true,
+            width: BuildingFootprint.WidthOf(BuildingType.AssemblyLine),
+            height: BuildingFootprint.HeightOf(BuildingType.AssemblyLine)
+        ));
+
+        // ---- Полы (дерево, камень, бетон) ----
+        WoodFloor = Register(new StructureDefinition(
+            id: "floor_wood",
+            displayName: "Деревянный пол",
+            type: BuildingType.WoodFloor,
+            category: StructureCategory.Floor,
+            materials: new[] { (ItemId.Plank, 1) },
+            buildDurationSec: 4f,
+            blocksMovement: false,
+            castsShadow: false
+        ));
+
+        StoneFloor = Register(new StructureDefinition(
+            id: "floor_stone",
+            displayName: "Каменный пол",
+            type: BuildingType.StoneFloor,
+            category: StructureCategory.Floor,
+            materials: new[] { (ItemId.Stone, 1) },
+            buildDurationSec: 5f,
+            blocksMovement: false,
+            castsShadow: false
+        ));
+
+        ConcreteFloor = Register(new StructureDefinition(
+            id: "floor_concrete",
+            displayName: "Бетонный пол",
+            type: BuildingType.ConcreteFloor,
+            category: StructureCategory.Floor,
+            materials: new[] { (ItemId.Brick, 1) },
+            buildDurationSec: 6f,
+            blocksMovement: false,
+            castsShadow: false
+        ));
+
+        // ---- Крыши ----
+        // GD-33: жилые здания накрываются непрозрачной крышей — внутри жителей и кроватей не видно
+        RoofResidential = Register(new StructureDefinition(
+            id: "roof_residential",
+            displayName: "Крыша жилого дома",
+            type: BuildingType.RoofResidential,
+            category: StructureCategory.Roof,
+            materials: new[] { (ItemId.Plank, 2) },
+            buildDurationSec: 8f,
+            blocksMovement: false,
+            castsShadow: true
+        ));
+
+        // Крыша промышленного цеха — полупрозрачная затемняющая интерьер
+        RoofIndustrial = Register(new StructureDefinition(
+            id: "roof_industrial",
+            displayName: "Крыша промышленного цеха",
+            type: BuildingType.RoofIndustrial,
+            category: StructureCategory.Roof,
+            materials: new[] { (ItemId.Plank, 2) },
+            buildDurationSec: 6f,
             blocksMovement: false,
             castsShadow: false
         ));

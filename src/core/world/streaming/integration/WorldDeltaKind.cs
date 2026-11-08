@@ -33,6 +33,13 @@ public static class WorldDeltaKind
     /// </summary>
     public const byte GroundItems = 0x06;
 
+    /// <summary>
+    /// task-8: остаток запаса руды в клетке мира (добыто/выработано). Data:
+    /// [ver=1, reserveLo, reserveHi] — <c>Game.Core.OreWorldState.EncodePayload</c>;
+    /// 0 = клетка выработана. НЕ план и НЕ блокирует клетку.
+    /// </summary>
+    public const byte OreMined = 0x08;
+
     // ---------- §119 P7б: СХЕМА PAYLOAD'ОВ (task-17 п.5) ----------
     // Все payload'ы — little-endian BinaryWriter-поток, версия схемы первым байтом.
     // Читает/пишет IslandPayload (src/core/world/mutation/IslandPayload.cs).

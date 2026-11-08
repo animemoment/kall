@@ -13,12 +13,21 @@ public class GroundItemManager
 
     private const int ChunkShift = 4;
     private const int ChunkSize = 16;
-    private const int ChunkDim = 32;
+    // J-22: сетка бакетов предметов была 32×32 = 512×512 тайлов, а остров 1024×1024.
+    // GetChunkCoord клампил координаты, поэтому ВСЁ восточнее/южнее 511 попадало в
+    // один бакет (31,31): резервирование и сканы под глобальным локом перебирали
+    // огромный HashSet вместо маленького. 64×64 = 1024×1024 и кламп больше не нужен.
+    private const int ChunkDim = 64;
     private const float ChunkSizePx = ChunkSize * 64f;
     private const int MaxChunkRadius = 32;
 
-    private const int MaxItemTypes = 8;
+    // task-4: типов предметов стало 91 (3 legacy + 87 сырья T0 + руда 23..45).
+    // Размеры всех массивов-счётчиков берутся из ItemConfig — раньше здесь было
+    // жёсткое 8, и сырьё с id ≥ 8 молча не попадало в тоталы/снапшоты.
+    private const int MaxItemTypes = ItemConfig.MaxItemTypes;
     private const int MaxSnapshotItemsPerType = 16384;
+    /// <summary>SIM-12: Максимальный размер стака предметов на одной клетке земли.</summary>
+    public const int MaxItemsPerCell = ItemConfig.RawMaxStack;
 
     private readonly object _lock = new();
     // Finding 4 (вариант 2, безопасный компромисс): вес предметов кэшируется
@@ -31,7 +40,13 @@ public class GroundItemManager
     private readonly HashSet<(int X, int Y)>[,] _itemChunks = new HashSet<(int X, int Y)>[ChunkDim, ChunkDim];
 
     private readonly int[] _totalAvailableByType = new int[MaxItemTypes];
+    // task-4: суммарный «есть ли что переносить» по ВСЕМ типам — без скана 91
+    // счётчика на каждый CanAgentExecute haul-работы. Держится в тех же точках,
+    // что и _totalAvailableByType (Interlocked).
+    private int _totalAvailableAny;
     public bool HasAvailableLogs => Volatile.Read(ref _totalAvailableByType[(int)ItemId.Log]) > 0;
+    /// <summary>Есть ли на земле ЛЮБОЙ доступный предмет (Log/Grain/камень/руда/сырьё).</summary>
+    public bool HasAnyAvailableItems => Volatile.Read(ref _totalAvailableAny) > 0;
     public int TotalGroundPilesCount { get { lock (_lock) return _groundItems.Count; } }
     public bool HasAvailableItemsOfType(ItemId id)
     {
@@ -40,10 +55,15 @@ public class GroundItemManager
         return Volatile.Read(ref _totalAvailableByType[idx]) > 0;
     }
 
-    private int GetAvailableCount(ItemId id)
+    /// <summary>
+    /// Сколько единиц типа доступно на земле (без чужих резервов). task-20:
+    /// нужно производству, чтобы понять «хватит ли 2 руды на рецепт», не
+    /// обходя клетки.
+    /// </summary>
+    public int GetAvailableCount(ItemId id)
     {
         int idx = (int)id;
-        return idx >= 0 && idx < MaxItemTypes ? _totalAvailableByType[idx] : 0;
+        return idx >= 0 && idx < MaxItemTypes ? Volatile.Read(ref _totalAvailableByType[idx]) : 0;
     }
 
     private bool _isDirty = true;
@@ -111,9 +131,57 @@ public class GroundItemManager
 
     private static (int CX, int CY) GetChunkCoord(int x, int y)
     {
-        int cx = Math.Clamp(x >> ChunkShift, 0, ChunkDim - 1);
-        int cy = Math.Clamp(y >> ChunkShift, 0, ChunkDim - 1);
+        // J-22: без Clamp — координаты валидны (остров 1024×1024 → 0..63).
+        // Кламп схлопывал восточную/южную половину карты в один бакет.
+        int cx = x >> ChunkShift;
+        int cy = y >> ChunkShift;
+        if (cx < 0) cx = 0; else if (cx >= ChunkDim) cx = ChunkDim - 1;
+        if (cy < 0) cy = 0; else if (cy >= ChunkDim) cy = ChunkDim - 1;
         return (cx, cy);
+    }
+
+    /// <summary>
+    /// J-22: счётчик куч в бакете. Читается БЕЗ глобального лока (префильтр для
+    /// HasItemsAt и скана резервирования), пишется только под _lock и только так,
+    /// чтобы читатель не увидел «0» при живых предметах: инкремент идёт ДО вставки
+    /// в HashSet, декремент — ПОСЛЕ удаления. Тогда нулевой счётчик означает
+    /// «в бакете действительно пусто» (возможен лишь обратный, безопасный случай —
+    /// счётчик > 0 при пустом бакете, и его разберёт честная проверка под локом).
+    /// </summary>
+    private readonly int[] _chunkPileCounts = new int[ChunkDim * ChunkDim];
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static int ChunkSlot(int cx, int cy) => cy * ChunkDim + cx;
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private int ChunkPileCount(int x, int y)
+    {
+        var (cx, cy) = GetChunkCoord(x, y);
+        return Volatile.Read(ref _chunkPileCounts[ChunkSlot(cx, cy)]);
+    }
+
+    /// <summary>Добавить клетку в бакет (под _lock). Счётчик публикуется ДО вставки.</summary>
+    private void ChunkAdd(int cx, int cy, (int X, int Y) key)
+    {
+        Interlocked.Increment(ref _chunkPileCounts[ChunkSlot(cx, cy)]);
+        if (!_itemChunks[cx, cy].Add(key))
+            Interlocked.Decrement(ref _chunkPileCounts[ChunkSlot(cx, cy)]); // уже был — откат
+    }
+
+    /// <summary>Убрать клетку из бакета (под _lock). Счётчик уменьшается ПОСЛЕ удаления.</summary>
+    private void ChunkRemove(int cx, int cy, (int X, int Y) key)
+    {
+        if (_itemChunks[cx, cy].Remove(key))
+            Interlocked.Decrement(ref _chunkPileCounts[ChunkSlot(cx, cy)]);
+    }
+
+    /// <summary>Очистить бакет (под _lock): и содержимое, и счётчик.</summary>
+    private void ChunkClear(int cx, int cy)
+    {
+        // P0 (bughunt 08-1/12-1): здесь была самовызывающаяся рекурсия —
+        // ClearAll() убивал процесс StackOverflowException'ом на «Играть».
+        _itemChunks[cx, cy].Clear();
+        Volatile.Write(ref _chunkPileCounts[ChunkSlot(cx, cy)], 0);
     }
 
     public void SpawnItems(int x, int y, ItemId id, int count)
@@ -122,100 +190,145 @@ public class GroundItemManager
         // инвариант _groundItems — Count > 0 всегда (см. проверки ниже).
         if (count <= 0 || id == ItemId.None)
             return;
-        bool isOutsideStockpile;
+        int totalSpawned = count;
         int placedX = x, placedY = y;
 
         lock (_lock)
         {
+            // SIM-12: Если в целевой клетке уже лежит стак того же типа и размер меньше MaxItemsPerCell,
+            // объединяем количество в существующий стак вместо создания новой записи на земле.
             if (_groundItems.TryGetValue((x, y), out var entry) && entry.Item == id)
             {
                 if (entry.Count <= 0)
                 {
                     // Битый нулевой стак (не должен существовать) — чиним на месте.
-                    _groundItems[(x, y)] = (id, count, 0);
+                    int toAdd = Math.Min(count, MaxItemsPerCell);
+                    _groundItems[(x, y)] = (id, toAdd, 0);
                     var (rcx, rcy) = GetChunkCoord(x, y);
-                    _itemChunks[rcx, rcy].Add((x, y));
+                    ChunkAdd(rcx, rcy, (x, y));
+                    count -= toAdd;
                 }
-                else
+                else if (entry.Count < MaxItemsPerCell)
                 {
-                    _groundItems[(x, y)] = (id, entry.Count + count, entry.Reserved);
+                    int space = MaxItemsPerCell - entry.Count;
+                    int toAdd = Math.Min(count, space);
+                    _groundItems[(x, y)] = (id, entry.Count + toAdd, entry.Reserved);
+                    count -= toAdd;
+                }
+
+                if (count <= 0)
+                {
+                    placedX = x;
+                    placedY = y;
                 }
             }
-            else if (_groundItems.TryGetValue((x, y), out var other) && other.Count > 0)
+            else if (!_groundItems.ContainsKey((x, y)))
             {
-                // В клетке лежит другой тип — не перезаписываем чужой стак
-                // (там могут висеть чужие резервы: перезапись ломала бы им
-                // ReleaseReservation и тоталы). Кладём рядом на свободную/
-                // однотипную соседнюю клетку. В крайнем случае дропаем спавн,
-                // чтобы счётчики _totalAvailableByType остались консистентны.
+                int toAdd = Math.Min(count, MaxItemsPerCell);
+                _groundItems[(x, y)] = (id, toAdd, 0);
+                var (cx, cy) = GetChunkCoord(x, y);
+                ChunkAdd(cx, cy, (x, y));
+                count -= toAdd;
+                placedX = x;
+                placedY = y;
+            }
+
+            // Если остался излишек (переполнение целевой клетки) или в (x, y) лежит чужой предмет —
+            // распределяем по соседям, объединяя с однотипными стаками до MaxItemsPerCell.
+            if (count > 0)
+            {
                 bool placed = false;
                 for (int oy = -2; oy <= 2 && !placed; oy++)
+                {
                     for (int ox = -2; ox <= 2 && !placed; ox++)
                     {
                         if (ox == 0 && oy == 0) continue;
                         var key = (x + ox, y + oy);
-                        // Сосед годен только если пуст или однотипный ненулевой стак.
-                        // Нулевые стаки (Count <= 0) — битое состояние, их не
-                        // переиспользуем, а чистим при встрече (см. инвариант выше).
                         if (_groundItems.TryGetValue(key, out var n))
                         {
-                            if (n.Item != id)
+                            if (n.Item != id || n.Count >= MaxItemsPerCell)
                                 continue;
                             if (n.Count <= 0)
                             {
-                                // Битый нулевой стак — чистим и кладём сюда же.
-                                _groundItems[key] = (id, count, 0);
+                                int toAdd = Math.Min(count, MaxItemsPerCell);
+                                _groundItems[key] = (id, toAdd, 0);
                                 var (ccx0, ccy0) = GetChunkCoord(key.Item1, key.Item2);
-                                _itemChunks[ccx0, ccy0].Add(key);
+                                ChunkAdd(ccx0, ccy0, key);
+                                count -= toAdd;
                                 placedX = key.Item1;
                                 placedY = key.Item2;
-                                placed = true;
+                                if (count <= 0) placed = true;
                                 continue;
                             }
-                            _groundItems[key] = (id, n.Count + count, n.Reserved);
+                            int space = MaxItemsPerCell - n.Count;
+                            int toAddNeighbor = Math.Min(count, space);
+                            _groundItems[key] = (id, n.Count + toAddNeighbor, n.Reserved);
+                            count -= toAddNeighbor;
+                            placedX = key.Item1;
+                            placedY = key.Item2;
+                            if (count <= 0) placed = true;
                         }
                         else
                         {
-                            _groundItems[key] = (id, count, 0);
+                            int toAdd = Math.Min(count, MaxItemsPerCell);
+                            _groundItems[key] = (id, toAdd, 0);
                             var (ccx, ccy) = GetChunkCoord(key.Item1, key.Item2);
-                            _itemChunks[ccx, ccy].Add(key);
+                            ChunkAdd(ccx, ccy, key);
+                            count -= toAdd;
+                            placedX = key.Item1;
+                            placedY = key.Item2;
+                            if (count <= 0) placed = true;
                         }
-                        placedX = key.Item1;
-                        placedY = key.Item2;
-                        placed = true;
                     }
-                if (!placed)
-                {
-                    // 24 соседа заняты чужими стаками — дропаем без изменения тоталов.
-                    return;
                 }
-            }
-            else
-            {
-                _groundItems[(x, y)] = (id, count, 0);
-                var (cx, cy) = GetChunkCoord(x, y);
-                _itemChunks[cx, cy].Add((x, y));
+
+                if (count > 0)
+                {
+                    // ST-08 / GD-05: защита от уничтожения лута — если 24 соседа заняты,
+                    // объединяем остаток со стаком на (x, y), гарантируя 100% сохранность ресурсов.
+                    if (_groundItems.TryGetValue((x, y), out var current))
+                    {
+                        _groundItems[(x, y)] = (current.Item, current.Count + count, current.Reserved);
+                    }
+                    else
+                    {
+                        _groundItems[(x, y)] = (id, count, 0);
+                        var (cx, cy) = GetChunkCoord(x, y);
+                        ChunkAdd(cx, cy, (x, y));
+                    }
+                    placedX = x;
+                    placedY = y;
+                }
             }
 
             int itemIdx = (int)id;
             if (itemIdx > 0 && itemIdx < MaxItemTypes)
             {
-                Interlocked.Add(ref _totalAvailableByType[itemIdx], count);
+                Interlocked.Add(ref _totalAvailableByType[itemIdx], totalSpawned);
+                Interlocked.Add(ref _totalAvailableAny, totalSpawned);
             }
 
             _isDirty = true;
         }
 
-        // IsZoneTile/HasFreeSpace читаем ВНЕ Ground-lock: порядок G->S больше не держится
-        // из параллельных потоков, конвоя вложенных lock нет.
-        // Sweep регистрируем по ФАКТИЧЕСКОЙ клетке размещения (placedX/Y).
-        isOutsideStockpile = !StockpileManager.Instance.IsZoneTile(placedX, placedY);
+        // HasFreeSpace читаем ВНЕ Ground-lock: он и сам лока не берёт (два Volatile.Read
+        // по счётчикам склада), поэтому порядок G->S нигде не удерживается.
+        // Работу регистрируем по ФАКТИЧЕСКОЙ клетке размещения (placedX/Y).
+        bool hasFreeStockpileSpace = StockpileManager.Instance.HasFreeSpace;
 
         // 1. Реактивное Push-уведомление через ResourceBroker: если ресурса ждут чертежи/потребители
-        bool matchedDemand = ResourceBroker.Instance.NotifyResourceAvailable(id, placedX, placedY, count);
+        bool matchedDemand = ResourceBroker.Instance.NotifyResourceAvailable(id, placedX, placedY, totalSpawned);
 
-        // 2. Если заказ не забрал этот ресурс, и он вне склада — регистрируем на склад
-        if (!matchedDemand && isOutsideStockpile && StockpileManager.Instance.HasFreeSpace)
+        // 2. Если заказ не забрал этот ресурс — регистрируем переноску на склад.
+        // FIX (bughunt 12-7): складская клетка больше НЕ считается «уже учтённой складом».
+        // Куча лежит в _groundItems, а не в _storage: в тоталах/HUD склада её нет,
+        // TryReserveStockpileItem/TryTakeStockpileFood её не видят, а sweep такие клетки
+        // раньше пропускал — брёвна под нарисованным складом оставались на полу навсегда.
+        // Регистрируем haul и на складской клетке: путь StockpileHaulingJobHandler при
+        // цели-складской клетке кладёт груз ТОЛЬКО в _storage (DepositItems) и не спавнит
+        // второй стак на полу, поэтому инвариант «предмет в одном месте» держится —
+        // куча либо в _groundItems, либо в _storage, но не в обоих.
+        if (!matchedDemand && hasFreeStockpileSpace)
         {
             JobBroker.Instance.RegisterStockpileHaul(placedX, placedY);
         }
@@ -223,6 +336,14 @@ public class GroundItemManager
 
     public bool HasItemsAt(int x, int y)
     {
+        // J-22: этот метод зовётся на горячем пути выдачи работ (валидатор, хендлеры,
+        // разметка фермы) и раньше КАЖДЫЙ вызов брал глобальный лок всех предметов
+        // земли — конкуренция с тиком симуляции. Теперь пустой бакет отвечает без
+        // лока (в подавляющем большинстве запросов), а лок берётся только там, где
+        // в бакете действительно что-то есть.
+        if (ChunkPileCount(x, y) == 0)
+            return false;
+
         lock (_lock)
         {
             return _groundItems.TryGetValue((x, y), out var entry) && entry.Count > 0;
@@ -259,7 +380,7 @@ public class GroundItemManager
                         {
                             _groundItems.Remove((x, y));
                             var (ocx, ocy) = GetChunkCoord(x, y);
-                            _itemChunks[ocx, ocy].Remove((x, y));
+                            ChunkRemove(ocx, ocy, (x, y));
 
                             if (_groundItems.TryGetValue(nkey, out var nentry))
                             {
@@ -269,7 +390,7 @@ public class GroundItemManager
                             {
                                 _groundItems[nkey] = (entry.Item, entry.Count, entry.Reserved);
                                 var (ncx, ncy) = GetChunkCoord(nx, ny);
-                                _itemChunks[ncx, ncy].Add(nkey);
+                                ChunkAdd(ncx, ncy, nkey);
                             }
                             _isDirty = true;
                             spilled = true;
@@ -324,7 +445,7 @@ public class GroundItemManager
             {
                 _groundItems.Remove((x, y));
                 var (cx, cy) = GetChunkCoord(x, y);
-                _itemChunks[cx, cy].Remove((x, y));
+                ChunkRemove(cx, cy, (x, y));
             }
             else
             {
@@ -370,43 +491,44 @@ public class GroundItemManager
             _groundItems.Clear();
             for (int cy = 0; cy < ChunkDim; cy++)
                 for (int cx = 0; cx < ChunkDim; cx++)
-                    _itemChunks[cx, cy]?.Clear();
+                    ChunkClear(cx, cy);
             Array.Clear(_totalAvailableByType, 0, _totalAvailableByType.Length);
+            Volatile.Write(ref _totalAvailableAny, 0);
             _isDirty = true;
         }
     }
 
     /// <summary>
-    /// Собирает до <paramref name="maxItems"/> ячеек с предметами, лежащими
-    /// ВНЕ складских зон (для sweep-регистрации haul-работ). Вызывается из
-    /// JobBroker; порядок блокировок тот же, что в SpawnItems: G -> S.
+    /// Собирает до <paramref name="maxItems"/> клеток с кучами на земле, которых ЕЩЁ НЕТ
+    /// в складском хранилище (_storage), — для sweep-регистрации haul-работ. Вызывается
+    /// из JobBroker.
+    ///
+    /// FIX (bughunt 12-7): клетки складской зоны больше не отбрасываются. Куча на
+    /// складской клетке — это НЕ складской запас: она в _groundItems, а не в _storage,
+    /// поэтому и её надо переносить. Прежний фильтр `IsZoneTile → continue` держал такой
+    /// инвариант на ложном допущении «раз клетка склад, то предметы уже учтены» — из-за
+    /// него куча под нарисованным складом (и остаток после частичной переноски) лежала
+    /// на полу навсегда. Имя метода сохранено ради публичного API и существующего вызова
+    /// из JobBroker; смысл теперь точный — «кучи, которые надо перенести в _storage».
     /// </summary>
     public void CollectItemTilesOutsideStockpiles(List<(int X, int Y)> destination, int maxItems)
     {
         destination.Clear();
-        // Копируем ключи-кандидаты под коротким lock, фильтр IsZoneTile — уже БЕЗ Ground-lock,
-        // чтобы не держать критическую секцию во время второго lock (Stockpile) из параллельных потоков.
-        List<(int X, int Y)> candidates;
+        if (maxItems <= 0)
+            return;
+        // Пишем в буфер вызывающего под коротким Ground-lock: фильтра по складской зоне
+        // больше нет, значит второго (складского) лока внутри секции не будет вообще —
+        // прежний порядок G->S и промежуточная копия кандидатов тут больше не нужны.
         lock (_lock)
         {
-            int cap = Math.Min(maxItems * 2, Math.Max(64, _groundItems.Count));
-            candidates = new List<(int X, int Y)>(cap);
             foreach (var kvp in _groundItems)
             {
                 if (kvp.Value.Count <= 0)
-                    continue;
-                candidates.Add(kvp.Key);
-                if (candidates.Count >= cap)
+                    continue; // битый нулевой стак — работу под него не создаём
+                destination.Add(kvp.Key);
+                if (destination.Count >= maxItems)
                     break;
             }
-        }
-        foreach (var key in candidates)
-        {
-            if (StockpileManager.Instance.IsZoneTile(key.X, key.Y))
-                continue;
-            destination.Add(key);
-            if (destination.Count >= maxItems)
-                break;
         }
     }
 
@@ -545,7 +667,10 @@ public class GroundItemManager
 
             int resIdx = (int)e2.Item;
             if (resIdx > 0 && resIdx < MaxItemTypes)
+            {
                 Interlocked.Add(ref _totalAvailableByType[resIdx], -take);
+                Interlocked.Add(ref _totalAvailableAny, -take);
+            }
 
             return true;
         }
@@ -574,6 +699,7 @@ public class GroundItemManager
                 if (resIdx > 0 && resIdx < MaxItemTypes)
                 {
                     Interlocked.Add(ref _totalAvailableByType[resIdx], -reservedCount);
+                    Interlocked.Add(ref _totalAvailableAny, -reservedCount);
                 }
                 return true;
             }
@@ -589,21 +715,32 @@ public class GroundItemManager
 
     public void ReleaseReservation(int x, int y, int count)
     {
+        if (count <= 0)
+            return;
         // P0-1: без счётчика (горячий путь откатов резерва).
         ItemId relItem = ItemId.None;
+        int released = 0;
         lock (_lock)
         {
             if (_groundItems.TryGetValue((x, y), out var entry))
             {
-                int newReserved = Math.Max(0, entry.Reserved - count);
-                _groundItems[(x, y)] = (entry.Item, entry.Count, newReserved);
-                relItem = entry.Item;
+                // FIX (bughunt 12-3): начисляем только ФАКТИЧЕСКИ снятый резерв, а не
+                // запрошенный count. Раньше при расхождении (куча частично разобрана
+                // чужим TakeItems, резерв уже снят/пересоздан) в _totalAvailableByType
+                // возвращался весь count — вечный фантом «есть бревно/зерно».
+                released = Math.Min(count, entry.Reserved);
+                if (released > 0)
+                {
+                    _groundItems[(x, y)] = (entry.Item, entry.Count, entry.Reserved - released);
+                    relItem = entry.Item;
+                }
             }
         }
         int relIdx = (int)relItem;
         if (relIdx > 0 && relIdx < MaxItemTypes)
         {
-            Interlocked.Add(ref _totalAvailableByType[relIdx], count);
+            Interlocked.Add(ref _totalAvailableByType[relIdx], released);
+            Interlocked.Add(ref _totalAvailableAny, released);
         }
     }
 
@@ -633,9 +770,10 @@ public class GroundItemManager
         var currentCounts = _snapCountsRing[slot];
         if (currentSnap == null)
         {
+            // task-4: позиционные буферы типов аллоцируются ЛЕНИВО (по первому
+            // предмету типа) — при 91 типе жадная матрица 91×16384×8 байт ×3 слота
+            // = ~36 МБ пустой памяти. Реальные типы на карте — единицы.
             currentSnap = new Vector2[MaxItemTypes][];
-            for (int t = 0; t < MaxItemTypes; t++)
-                currentSnap[t] = new Vector2[MaxSnapshotItemsPerType];
             currentCounts = new int[MaxItemTypes];
             _snapRing[slot] = currentSnap;
             _snapCountsRing[slot] = currentCounts;
@@ -657,6 +795,7 @@ public class GroundItemManager
                     int count = currentCounts[itemIdx];
                     if (count < MaxSnapshotItemsPerType)
                     {
+                        currentSnap[itemIdx] ??= new Vector2[MaxSnapshotItemsPerType];
                         currentSnap[itemIdx][count] = new Vector2(pos.X * 64f + 32f, pos.Y * 64f + 32f);
                         currentCounts[itemIdx]++;
                     }
@@ -674,7 +813,9 @@ public class GroundItemManager
         if (nowResTicks - _resSeriesWallTicks >= 10000000L)
         {
             _resSeriesWallTicks = nowResTicks;
-            for (int t = 1; t < MaxItemTypes; t++)
+            // task-4: ряды — только для legacy-типов (Log/Grain/Stone + резерв):
+            // 91 ряд в SimEvents раз в секунду — лишний шум и аллокации строк.
+            for (int t = 1; t < 8 && t < MaxItemTypes; t++)
                 SimEvents.Series("res.available." + ((ItemId)t).ToString(), Volatile.Read(ref _totalAvailableByType[t]));
             SimEvents.Series("res.ground_piles", _groundItems.Count);
         }

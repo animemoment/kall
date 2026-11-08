@@ -21,9 +21,11 @@ public sealed class MiningJobHandler : IJobHandler
 
     public bool CanAgentExecute(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
-        if (ctx?.StoneOnGrass == null)
+        if (ctx == null)
             return false;
         if ((uint)job.TargetX >= (uint)ctx.MapWidth || (uint)job.TargetY >= (uint)ctx.MapHeight)
+            return StoneJobManager.Instance.IsStoneMarked(job.TargetX, job.TargetY);
+        if (ctx.StoneOnGrass == null)
             return false;
         // ЖЁСТКИЙ ЭТАП 1: добыча на стройке — только стадия Clearing.
         if (!ConstructionManager.Instance.IsStageAllowed(job.TargetX, job.TargetY, JobTypeId.Mining))
@@ -135,7 +137,7 @@ public sealed class MiningJobHandler : IJobHandler
             pool.CurrentJobId[agentIndex] = -1;
             pool.CurrentJobType[agentIndex] = JobTypeId.None;
             pool.States[agentIndex] = AgentState.Idle;
-            JobDispatcher.Instance.IdleWorkers.AddIdleWorker(agentIndex, pool);
+            JobDispatcher.ReturnAgentAfterJob(agentIndex, pool); // J-10: Worker зоны не уходит в общий пул
         }
     }
 

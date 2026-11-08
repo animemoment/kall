@@ -38,7 +38,7 @@ public sealed class WorkerAssignmentSystem
     {
         if (zoneId <= 0 || pool == null || ctx == null)
             return (0, 0, 0);
-        if (!ZoneManager.Instance.TryGetZoneById(zoneId, out var zone) || zone == null || zone.Kind != ZoneKind.Work)
+        if (!ZoneManager.Instance.TryGetZoneById(zoneId, out var zone) || zone == null || !zone.IsWorkZone)
             return (0, 0, 0);
 
         int desired = Math.Clamp(zone.DesiredWorkers, 0, WorkZone.MaxDesiredWorkers);
@@ -142,7 +142,7 @@ public sealed class WorkerAssignmentSystem
             int zid = pool.AssignedZoneId[i];
             bool keep = zid > 0
                 && ZoneManager.Instance.TryGetZoneById(zid, out var z)
-                && z != null && z.Kind == ZoneKind.Work
+                && z != null && z.IsWorkZone
                 && z.Enabled && z.DesiredWorkers > 0;
             if (!keep)
             {

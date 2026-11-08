@@ -40,96 +40,101 @@ public sealed class StreamingToolPlacement : IToolWorldPlacement
 	public int PlacedCount { get; private set; }
 
 	public bool IsWorldCell(long cellX, long cellY)
-		=> !IsIslandCell(cellX, cellY) && _rules.IsLoadedAt(cellX, cellY);
+		=> _rules.IsLoadedAt(cellX, cellY);
 
 	public bool CanPlaceStockpile(long cellX, long cellY)
-		=> IsWorldCell(cellX, cellY) && _rules.CanStockpileAt(cellX, cellY);
+		=> _rules.CanStockpileAt(cellX, cellY);
 
 	public bool CanPlaceFarm(long cellX, long cellY)
-		=> IsWorldCell(cellX, cellY) && _rules.CanPlantAt(cellX, cellY);
+		=> _rules.CanPlantAt(cellX, cellY);
 
 	public bool TryPlaceWall(long cellX, long cellY)
-		=> Apply(cellX, cellY, IsWorldCell(cellX, cellY)
-			&& _rules.CanPlaceWallAt(cellX, cellY)
+		=> Apply(cellX, cellY, _rules.CanPlaceWallAt(cellX, cellY)
 			&& _manager.TryPlaceBlock(WorldDeltaKind.WallPlan, cellX, cellY));
 
 	public bool CanPlaceWall(long cellX, long cellY)
-		=> IsWorldCell(cellX, cellY) && _rules.CanPlaceWallAt(cellX, cellY);
-
-	/// <summary>
-	/// 11-03: снос снимает и чертёж, и готовый вид. Игра ставит `*Plan`, работу доводит
-	/// `WorldPlanHandler`, а `WorldJobBoard.Complete` меняет план на готовый вид через
-	/// `TryReplaceBlock` (`WallPlan→Wall`). После этого плана в клетке уже нет, и старый
-	/// снос молча возвращал false: объект оставался навсегда, а клетка (готовый вид входит
-	/// в `WorldDeltaKind.BlockingKinds`) становилась непригодной для строительства.
-	/// </summary>
-	private bool RemovePlanOrDone(long cellX, long cellY, byte planKind)
-		=> IsWorldCell(cellX, cellY)
-			&& (_manager.TryRemoveBlock(planKind, cellX, cellY)
-				|| _manager.TryRemoveBlock(WorldDeltaKind.DoneFor(planKind), cellX, cellY));
+		=> _rules.CanPlaceWallAt(cellX, cellY);
 
 	public bool TryRemoveWall(long cellX, long cellY)
-		=> Apply(cellX, cellY, RemovePlanOrDone(cellX, cellY, WorldDeltaKind.WallPlan));
+		=> Apply(cellX, cellY, _manager.TryRemoveBlock(WorldDeltaKind.WallPlan, cellX, cellY)
+			|| _manager.TryRemoveBlock(WorldDeltaKind.Wall, cellX, cellY));
 
+	/// <summary>
+	/// W-04: подтверждённая зона склада в мире ставится как ГОТОВАЯ (Stockpile), а не
+	/// как план. Раньше мировые зоны навсегда оставались StockpilePlan — они рисовались
+	/// слоем планов (другая альфа/цвет, поверх всего), тогда как внутри острова та же
+	/// зона лежит в слое зоны. Отсюда «зона внутри и снаружи 1024 выглядит по-разному».
+	/// Плановая метка при подтверждении снимается, чтобы не было двух слоёв на клетку.
+	/// </summary>
 	public bool TryPlaceStockpile(long cellX, long cellY)
-		=> Apply(cellX, cellY, CanPlaceStockpile(cellX, cellY)
-			&& _manager.TryPlaceBlock(WorldDeltaKind.StockpilePlan, cellX, cellY));
-
-	public bool TryRemoveStockpile(long cellX, long cellY)
-		=> Apply(cellX, cellY, RemovePlanOrDone(cellX, cellY, WorldDeltaKind.StockpilePlan));
-
-	public bool TryPlaceFarmPlot(long cellX, long cellY)
-		=> Apply(cellX, cellY, CanPlaceFarm(cellX, cellY)
-			&& _manager.TryPlaceBlock(WorldDeltaKind.CropPlan, cellX, cellY));
-
-	public bool TryRemoveFarmPlot(long cellX, long cellY)
-		=> Apply(cellX, cellY, RemovePlanOrDone(cellX, cellY, WorldDeltaKind.CropPlan));
-
-	public bool TryPlaceBuilding(long cellX, long cellY, Game.Core.BuildingType buildingType)
 	{
-		// §122: тип здания едет в payload WorldChunkDeltaRecord.Data (один байт).
-		// Раньше он терялся здесь, и StreamingWorldView рисовал ProcessOfWork
-		// вместо стола/кровати/скамьи.
-		if (!CanPlaceBuilding(cellX, cellY))
+		if (!_rules.CanStockpileAt(cellX, cellY))
 			return false;
-		byte type = (byte)buildingType;
-		if (!Enum.IsDefined(typeof(Game.Core.BuildingType), buildingType))
-			return false;
-		Span<byte> payload = stackalloc byte[1];
-		payload[0] = type;
-		return Apply(cellX, cellY,
-			_manager.TryPlaceBlock(WorldDeltaKind.BuildingPlan, cellX, cellY, payload));
+		_manager.TryRemoveBlock(WorldDeltaKind.StockpilePlan, cellX, cellY);
+		return Apply(cellX, cellY, _manager.TryPlaceBlock(WorldDeltaKind.Stockpile, cellX, cellY));
 	}
 
+	public bool TryRemoveStockpile(long cellX, long cellY)
+		=> Apply(cellX, cellY, _manager.TryRemoveBlock(WorldDeltaKind.StockpilePlan, cellX, cellY)
+			|| _manager.TryRemoveBlock(WorldDeltaKind.Stockpile, cellX, cellY));
+
+	/// <summary>W-04: подтверждённая грядка в мире — готовая (Crop), не CropPlan.</summary>
+	public bool TryPlaceFarmPlot(long cellX, long cellY)
+	{
+		if (!_rules.CanPlantAt(cellX, cellY))
+			return false;
+		_manager.TryRemoveBlock(WorldDeltaKind.CropPlan, cellX, cellY);
+		return Apply(cellX, cellY, _manager.TryPlaceBlock(WorldDeltaKind.Crop, cellX, cellY));
+	}
+
+	public bool TryRemoveFarmPlot(long cellX, long cellY)
+		=> Apply(cellX, cellY, _manager.TryRemoveBlock(WorldDeltaKind.CropPlan, cellX, cellY)
+			|| _manager.TryRemoveBlock(WorldDeltaKind.Crop, cellX, cellY));
+
+	public bool TryPlaceBuilding(long cellX, long cellY)
+		=> Apply(cellX, cellY, _rules.CanBuildAt(cellX, cellY)
+			&& _manager.TryPlaceBlock(WorldDeltaKind.BuildingPlan, cellX, cellY));
+
+	/// <summary>
+	/// §120.8: тот же чертёж, но с типом здания в payload (мебель/станки ставятся
+	/// мировым путём). Пока тип в payload не пишется — делегируем базовой ветке.
+	/// </summary>
+	public bool TryPlaceBuilding(long cellX, long cellY, Game.Core.BuildingType buildingType)
+		=> TryPlaceBuilding(cellX, cellY);
+
+
 	public bool CanPlaceBuilding(long cellX, long cellY)
-		=> IsWorldCell(cellX, cellY) && _rules.CanBuildAt(cellX, cellY);
+		=> _rules.CanBuildAt(cellX, cellY);
 
 	public bool TryRemoveBuilding(long cellX, long cellY)
-		=> Apply(cellX, cellY, RemovePlanOrDone(cellX, cellY, WorldDeltaKind.BuildingPlan));
+		=> Apply(cellX, cellY, _manager.TryRemoveBlock(WorldDeltaKind.BuildingPlan, cellX, cellY)
+			|| _manager.TryRemoveBlock(WorldDeltaKind.Building, cellX, cellY));
 
 	public bool TryCutTree(long cellX, long cellY)
 	{
-		bool gate = IsWorldCell(cellX, cellY) && _rules.CanCutTreeAt(cellX, cellY);
+		bool gate = _rules.CanCutTreeAt(cellX, cellY);
 		bool placed = gate && _manager.TryPlaceBlock(WorldDeltaKind.CutTreePlan, cellX, cellY);
+		// FIX (bughunt 15-11): убран GD.Print на КАЖДУЮ клетку рубки — драг по лесу
+		// давал десятки-сотни строк в секунду (остальные ветки адаптера молчат).
+		// Сводка по-прежнему доступна в PlacedCount (диагностика).
 		return Apply(cellX, cellY, placed);
 	}
 
 	public bool TryCancelCutTree(long cellX, long cellY)
-		=> Apply(cellX, cellY, IsWorldCell(cellX, cellY)
-			&& _manager.TryRemoveBlock(WorldDeltaKind.CutTreePlan, cellX, cellY));
+		=> Apply(cellX, cellY, _manager.TryRemoveBlock(WorldDeltaKind.CutTreePlan, cellX, cellY)
+			|| _manager.TryRemoveBlock(WorldDeltaKind.CutTree, cellX, cellY));
 
 	public bool TryMineStone(long cellX, long cellY)
-		=> Apply(cellX, cellY, IsWorldCell(cellX, cellY)
-			&& _rules.CanMineStoneAt(cellX, cellY)
+		=> Apply(cellX, cellY, _rules.CanMineStoneAt(cellX, cellY)
 			&& _manager.TryPlaceBlock(WorldDeltaKind.MinedStonePlan, cellX, cellY));
 
 	public bool TryCancelMineStone(long cellX, long cellY)
-		=> Apply(cellX, cellY, IsWorldCell(cellX, cellY)
-			&& _manager.TryRemoveBlock(WorldDeltaKind.MinedStonePlan, cellX, cellY));
+		=> Apply(cellX, cellY, _manager.TryRemoveBlock(WorldDeltaKind.MinedStonePlan, cellX, cellY)
+			|| _manager.TryRemoveBlock(WorldDeltaKind.MinedStone, cellX, cellY));
 
 	/// <summary>Клетка острова колонии: [0, _islandWidth)×[0, _islandHeight).</summary>
 	public bool IsIslandCell(long cellX, long cellY)
-		=> WorldPlacementPass.IsOnIsland(cellX, cellY, _islandWidth, _islandHeight);
+		=> cellX >= 0 && cellY >= 0 && cellX < _islandWidth && cellY < _islandHeight;
 
 	private bool Apply(long cellX, long cellY, bool applied)
 	{

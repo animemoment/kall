@@ -1,4 +1,4 @@
-﻿using Godot;
+using Godot;
 using Game.Simulation;
 using System;
 using System.Collections.Generic;
@@ -37,8 +37,8 @@ public partial class DesignationRenderer : Node2D
             Size = new Vector2(MarkerSize, MarkerSize)
         };
 
-        float mapSizePx = MapRenderer.MapWidth * MapRenderer.TileSizePx;
-        var mapAabb = new Aabb(Godot.Vector3.Zero, new Godot.Vector3(mapSizePx, mapSizePx, 1000f));
+        // R2-02: AABB охватывает мир с запасом (-262144..+262144 px = ±4096 тайлов), чтобы метки за кромкой 1024 не отсекались.
+        var mapAabb = new Aabb(new Godot.Vector3(-262144f, -262144f, -1000f), new Godot.Vector3(524288f, 524288f, 2000f));
 
         _multiMesh = new MultiMesh
         {
@@ -71,6 +71,12 @@ public partial class DesignationRenderer : Node2D
         StoneJobManager.Instance.OnStoneUnmarked += OnTreeUnmarked;
         StoneJobManager.Instance.OnStonesBatchUnmarked += OnTreesBatchUnmarked;
         StoneJobManager.Instance.OnStoneMined += OnTreeUnmarked;
+        // task-4: метки руды — тем же красным маркером; выработка жилы снимает маркер.
+        OreJobManager.Instance.OnOreMarked += OnTreeMarked;
+        OreJobManager.Instance.OnOreBatchMarked += OnTreesBatchMarked;
+        OreJobManager.Instance.OnOreUnmarked += OnTreeUnmarked;
+        OreJobManager.Instance.OnOreBatchUnmarked += OnTreesBatchUnmarked;
+        OreJobManager.Instance.OnOreDepleted += OnTreeUnmarked;
     }
 
     private void OnTreeMarked((int X, int Y) pos)
@@ -195,6 +201,11 @@ public partial class DesignationRenderer : Node2D
         StoneJobManager.Instance.OnStoneUnmarked -= OnTreeUnmarked;
         StoneJobManager.Instance.OnStonesBatchUnmarked -= OnTreesBatchUnmarked;
         StoneJobManager.Instance.OnStoneMined -= OnTreeUnmarked;
+        OreJobManager.Instance.OnOreMarked -= OnTreeMarked;
+        OreJobManager.Instance.OnOreBatchMarked -= OnTreesBatchMarked;
+        OreJobManager.Instance.OnOreUnmarked -= OnTreeUnmarked;
+        OreJobManager.Instance.OnOreBatchUnmarked -= OnTreesBatchUnmarked;
+        OreJobManager.Instance.OnOreDepleted -= OnTreeUnmarked;
         base._ExitTree();
     }
 }

@@ -13,6 +13,19 @@ public sealed class SimulationContext
     public bool[,] TreeOnGrass { get; }
     /// <summary>Каменные россыпи (добыча, Mining). Может быть null в старых тестах.</summary>
     public bool[,] StoneOnGrass { get; }
+    /// <summary>
+    /// Руда в клетке (task-3): плоские row-major массивы (индекс = y*MapWidth+x),
+    /// ССЫЛКИ на массивы MapData — копий нет. Могут быть null (старые тесты/сейвы).
+    /// </summary>
+    public byte[] OreType { get; }
+    /// <summary>Состояние руды (<see cref="Game.Core.OreState"/>), производное от запаса.</summary>
+    public byte[] OreState { get; }
+    /// <summary>Текущий запас руды клетки, единицы.</summary>
+    public ushort[] OreReserve { get; }
+    /// <summary>Запас при генерации — база порогов rich/normal/poor.</summary>
+    public ushort[] OreReserveInitial { get; }
+    /// <summary>Есть ли слой руды вообще (false = карта без руды).</summary>
+    public bool HasOreLayer => OreType != null;
     public bool[,] SolidWalls { get; }
     public List<(int X, int Y)> WalkableTiles { get; }
     public AgentSpatialGrid SpatialGrid { get; }
@@ -33,7 +46,11 @@ public sealed class SimulationContext
         Random random,
         int tileSize = 64,
         bool[,] stoneOnGrass = null,
-        FertilityMap fertility = null)
+        FertilityMap fertility = null,
+        byte[] oreType = null,
+        byte[] oreState = null,
+        ushort[] oreReserve = null,
+        ushort[] oreReserveInitial = null)
     {
         Ground = ground ?? throw new ArgumentNullException(nameof(ground));
         Humidity = humidity; // может быть null (старые вызовы) — рост тогда без множителя
@@ -48,5 +65,27 @@ public sealed class SimulationContext
         TileSize = tileSize;
         MapWidth = ground.GetLength(0);
         MapHeight = ground.GetLength(1);
+
+        // Руда: слой опционален (старые тесты/сейвы), но если хоть один массив
+        // передан — размер должен совпадать с картой (иначе добыча читала бы мусор).
+        int oreCells = MapWidth * MapHeight;
+        OreType = ValidateOreArray(oreType, oreCells, nameof(oreType));
+        OreState = ValidateOreArray(oreState, oreCells, nameof(oreState));
+        OreReserve = ValidateOreArray(oreReserve, oreCells, nameof(oreReserve));
+        OreReserveInitial = ValidateOreArray(oreReserveInitial, oreCells, nameof(oreReserveInitial));
+    }
+
+    /// <summary>Плоский индекс руды клетки (x,y): y*MapWidth+x. Границы НЕ проверяет.</summary>
+    public int OreIndex(int x, int y) => y * MapWidth + x;
+
+    private static T[] ValidateOreArray<T>(T[] array, int expectedLength, string name)
+    {
+        if (array == null)
+            return null;
+        if (array.Length != expectedLength)
+            throw new ArgumentException(
+                $"{name}: длина {array.Length} не совпадает с картой {expectedLength} клеток",
+                name);
+        return array;
     }
 }

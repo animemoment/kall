@@ -95,6 +95,33 @@ public sealed class ZoneJobRouter
     private const int RepushAfterMs = 30_000;
 
     /// <summary>
+    /// J-04: потолок работы за ОДИН вызов Sweep. Раньше Sweep дренировал очереди
+    /// целиком на каждый диспатч (вызов идёт из тика диспетчера, без троттла:
+    /// комментарий у вызова обещал 1р/2с, а внутри никакого throttle не было).
+    /// На ферме 70k это 140k dequeues + 140k TryGetJob + два списка по ~560 КБ
+    /// на вызов, 2.6–5.8 раз/с ⇒ сотни тысяч операций и мегабайты мусора в секунду —
+    /// самый вероятный механизм фризов. Теперь за вызов обрабатывается не больше
+    /// N записей, остаток добирается следующими вызовами (репуш и так с шагом 30с).
+    /// Значение с запасом покрывает обычные сцены (сотни работ) целиком.
+    /// </summary>
+    private const int MaxSweepEntriesPerCall = 1024;
+
+    /// <summary>J-04: потолок записей, разбираемых за вызов в ОДНОЙ очереди зоны.</summary>
+    private const int MaxSweepQueueEntriesPerCall = 512;
+
+    /// <summary>
+    /// J-16: потолок записей, просматриваемых за один DequeueNearest. Вызов идёт на
+    /// каждого Worker'а зоны раз в 2с; полный дренаж очереди на 70k-ферме давал
+    /// десятки тысяч словарных вставок и свежий Dictionary на каждый вызов.
+    /// Непросмотренные записи остаются в очереди и попадут в следующее окно.
+    /// </summary>
+    private const int MaxDequeueScanPerCall = 512;
+
+    /// <summary>J-04: троттл дорогой чистки (мёртвые записи) — не чаще 1 раза в 2с.</summary>
+    private const long SweepCleanupIntervalMs = 2_000;
+    private long _lastCleanupMs = long.MinValue / 4;
+
+    /// <summary>
     /// §119 P2: квалифицированная работа в очереди зоны доступна разнорабочему
     /// (Laborer) после 60с простоя. До этого Laborer'у она НЕ отдаётся
     /// (JobDispatcher сверяет IsHeldForWorkerFresh) — её ждёт Worker зоны.
@@ -111,6 +138,13 @@ public sealed class ZoneJobRouter
     private sealed class ZoneGate
     {
         public readonly ConcurrentQueue<QueuedJob> Q = new();
+
+        /// <summary>
+        /// J-16: переиспользуемый буфер скана для DequeueNearest. Обращение только
+        /// под lock(gate) — тот же замок, что у дренажа, поэтому буфер не нуждается
+        /// в собственной синхронизации.
+        /// </summary>
+        public readonly Dictionary<int, (QueuedJob Job, int Order)> Scan = new();
     }
 
     private readonly ConcurrentDictionary<int, ZoneGate> _zoneQueues = new();
@@ -120,8 +154,9 @@ public sealed class ZoneJobRouter
     /// Плотный массив по id пирамиды (id плотные) +1 (0 = нет записи) — дешевле
     /// ConcurrentDictionary на горячем пуш-пути (P1-регресс 6.8мс/10k → цель <5мс).</summary>
     private long[] _queuedAt = new long[1024];
+    private int[] _jobZoneId = new int[1024];
 
-    private void SetQueuedAt(int jobId, long now)
+    private void SetQueuedAt(int jobId, long now, int zoneId = 0)
     {
         long[] arr = _queuedAt;
         if (jobId >= arr.Length)
@@ -129,16 +164,25 @@ public sealed class ZoneJobRouter
             lock (_zoneQueues) // редкий рост; _zoneQueues уже ConcurrentDictionary — просто общий замок
             {
                 if (jobId >= _queuedAt.Length)
-                    Array.Resize(ref _queuedAt, Math.Max(_queuedAt.Length * 2, jobId + 1024));
+                {
+                    int newLen = Math.Max(_queuedAt.Length * 2, jobId + 1024);
+                    Array.Resize(ref _queuedAt, newLen);
+                    Array.Resize(ref _jobZoneId, newLen);
+                }
                 arr = _queuedAt;
             }
         }
+        _jobZoneId[jobId] = zoneId;
         Volatile.Write(ref arr[jobId], now + 1); // +1: 0 = «нет записи»
     }
 
-    private bool TryGetQueuedAt(int jobId, out long queuedAt)
+    private bool TryGetQueuedAt(int jobId, out long queuedAt) =>
+        TryGetQueuedAt(jobId, out queuedAt, out _);
+
+    private bool TryGetQueuedAt(int jobId, out long queuedAt, out int zoneId)
     {
         queuedAt = 0;
+        zoneId = 0;
         long[] arr = _queuedAt;
         if ((uint)jobId >= (uint)arr.Length)
             return false;
@@ -146,6 +190,7 @@ public sealed class ZoneJobRouter
         if (v == 0)
             return false;
         queuedAt = v - 1;
+        zoneId = _jobZoneId[jobId];
         return true;
     }
 
@@ -153,7 +198,10 @@ public sealed class ZoneJobRouter
     {
         long[] arr = _queuedAt;
         if ((uint)jobId < (uint)arr.Length)
+        {
             Volatile.Write(ref arr[jobId], 0);
+            _jobZoneId[jobId] = 0;
+        }
     }
 
     /// <summary>Выданные (взятые Рабочим) работы: jobId → (зона, маршрут) — для Unassign.</summary>
@@ -183,7 +231,7 @@ public sealed class ZoneJobRouter
         if (Coverage.TryGetOwner(x, y, type, out int zoneId) && zoneId > 0)
         {
             GateOrNew(zoneId).Q.Enqueue(new QueuedJob(jobId, type, x, y, Interlocked.Increment(ref _seq)));
-            SetQueuedAt(jobId, now); // §119 P2: отсчёт 60с-холда Worker'а
+            SetQueuedAt(jobId, now, zoneId); // §119 P2: отсчёт 60с-холда Worker'а
         }
         else
             _uncovered.Enqueue(new UncoveredEntry(jobId, type, x, y, now));
@@ -209,13 +257,22 @@ public sealed class ZoneJobRouter
             if (gate.Q.IsEmpty)
                 return false;
 
-            // Дренаж: dedup по jobId (дубли-пуши), выброс мёртвых, поиск лучшей.
-            var seen = new Dictionary<int, (QueuedJob Job, int Order)>();
+            // J-16: скан ОГРАНИЧЕН окном и переиспользует буфер зоны. Раньше на
+            // каждый вызов (Worker зовёт каждые 2с) дренировалась ВСЯ очередь и
+            // каждый раз аллоцировался новый Dictionary: на ферме 70k это десятки
+            // тысяч словарных вставок и мегабайты мусора в секунду. Теперь за вызов
+            // просматривается не больше MaxDequeueScanPerCall записей; непросмотренные
+            // остаются в очереди, а возвращённые в хвост записи естественно
+            // прокручивают окно — за несколько вызовов очередь покрывается целиком.
+            int take = Math.Min(gate.Q.Count, MaxDequeueScanPerCall);
+            var seen = gate.Scan;
+            seen.Clear();
+
             int order = 0;
             int bestId = -1;
             int bestDist = int.MaxValue;
             QueuedJob best = default;
-            while (gate.Q.TryDequeue(out var j))
+            for (int n = 0; n < take && gate.Q.TryDequeue(out var j); n++)
             {
                 if (!seen.TryAdd(j.JobId, (j, order++)))
                     continue; // дубль — храним первое пришествие
@@ -251,15 +308,35 @@ public sealed class ZoneJobRouter
         _zoneQueues.TryGetValue(zoneId, out var gate) ? gate.Q.Count : 0;
 
     /// <summary>
-    /// §119 P2: работа стоит в очереди зоны МЕНЬШЕ 60с — она «держится» для
+    /// §119 P2 / J-25: работа стоит в очереди зоны МЕНЬШЕ 60с — она «держится» для
     /// Worker'а своей зоны и разнорабочему (Laborer через пирамиду) НЕ отдаётся.
-    /// false также для работ не из очередей зон (обычный пирамидный путь).
+    /// Если в зоне отсутствуют назначенные специализированные работники (AssignedCount == 0),
+    /// разнорабочие (дворники/помощники) подхватывают задачи немедленно, без 60-секундной задержки.
+    /// false также для работ не из очередей зон (обычный пирамидный путь) или если холд истек (>= 60с).
     /// Вызывается JobDispatcher'ом ПЕРЕД отдачей Laborer'у.
     /// </summary>
     public bool IsHeldForWorkerFresh(int jobId)
     {
-        return TryGetQueuedAt(jobId, out long queuedAt)
-            && NowMs - queuedAt < WorkerHoldMs;
+        if (!TryGetQueuedAt(jobId, out long queuedAt, out int zoneId))
+            return false;
+
+        // Если зона не существует или выключена — холд не действует
+        if (zoneId <= 0 || !ZoneManager.Instance.TryGetZoneById(zoneId, out var zone) || zone == null || !zone.Enabled)
+            return false;
+
+        // J-25: Эксклюзивность зон специалистов (Вариант Б):
+        // Если в зоне назначено 0 специалистов (Worker) или DesiredWorkers <= 0,
+        // разнорабочие (Laborer) туда НЕ лезут. Зона ждет, пока игрок явно не выделит людей через слайдер.
+        if (zone.AssignedCount <= 0 || zone.DesiredWorkers <= 0)
+            return true;
+
+        // Если в зоне есть назначенные специалисты — держим задачу в течение WorkerHoldMs (60с).
+        // По истечении 60с разнорабочие могут подхватить задачу.
+        long now = NowMs;
+        if (now - queuedAt >= WorkerHoldMs)
+            return false;
+
+        return true;
     }
 
     /// <summary>Таймштамп постановки работы в очередь зоны (0 = нет записи; для тестов/диагностики).</summary>
@@ -282,7 +359,7 @@ public sealed class ZoneJobRouter
             return false;
         GateOrNew(rec.ZoneId).Q.Enqueue(new QueuedJob(jobId, rec.Job.Type, rec.Job.X, rec.Job.Y,
             Interlocked.Increment(ref _seq)));
-        SetQueuedAt(jobId, now); // §119 P2: холд 60с стартует заново после возврата
+        SetQueuedAt(jobId, now, rec.ZoneId); // §119 P2: холд 60с стартует заново после возврата
         return true;
     }
 
@@ -300,12 +377,14 @@ public sealed class ZoneJobRouter
         int moved = 0;
         Coverage.RebuildIfNeeded(nowMs);
 
-        // 1. Раскладка непокрытых: дренаж всей очереди; пуш-потоки продолжают
-        //    класть новые записи (их разберёт следующий Sweep).
+        // 1. Раскладка непокрытых: дренаж ОГРАНИЧЕННОГО числа записей; пуш-потоки
+        //    продолжают класть новые, остаток очереди разберут следующие вызовы.
+        //    J-04: раньше здесь дренировалась вся очередь на каждый диспатч.
         if (!_uncovered.IsEmpty)
         {
-            var drained = new List<UncoveredEntry>(_uncovered.Count + 16);
-            while (_uncovered.TryDequeue(out var e))
+            int drainedCount = Math.Min(_uncovered.Count, MaxSweepEntriesPerCall);
+            var drained = new List<UncoveredEntry>(drainedCount + 16);
+            for (int i = 0; i < drainedCount && _uncovered.TryDequeue(out var e); i++)
                 drained.Add(e);
 
             foreach (var e in drained)
@@ -321,6 +400,7 @@ public sealed class ZoneJobRouter
                 {
                     GateOrNew(zoneId).Q.Enqueue(new QueuedJob(e.JobId, e.Type, e.X, e.Y,
                         Interlocked.Increment(ref _seq)));
+                    SetQueuedAt(e.JobId, nowMs, zoneId);
                     moved++;
                 }
                 else
@@ -333,41 +413,43 @@ public sealed class ZoneJobRouter
         // 2. Чистка мёртвых работ (реестр — истина) в очередях зон: дренаж + фильтр.
         //    §119 P2: мёртвый id снимается и с 60с-холда (TryRemove — только
         //    выжившие перезаписывают timestamp при следующем пушe/Unassign).
-        foreach (var kv in _zoneQueues)
+        //    J-04: (а) сама чистка не чаще SweepCleanupIntervalMs; (б) из одной
+        //    очереди за вызов разбирается не больше MaxSweepQueueEntriesPerCall
+        //    записей — остальное останется в очереди до следующего прохода.
+        if (nowMs - _lastCleanupMs >= SweepCleanupIntervalMs)
         {
-            var gate = kv.Value;
-            if (gate.Q.IsEmpty)
-                continue;
-            lock (gate)
+            _lastCleanupMs = nowMs;
+
+            foreach (var kv in _zoneQueues)
             {
+                var gate = kv.Value;
                 if (gate.Q.IsEmpty)
                     continue;
-                var kept = new List<QueuedJob>(gate.Q.Count);
-                while (gate.Q.TryDequeue(out var j))
-                    if (JobDispatcher.Instance.JobIndex.TryGetJob(j.JobId, out _))
-                        kept.Add(j);
-                    else
-                        ClearQueuedAt(j.JobId);
-                foreach (var j in kept)
-                    gate.Q.Enqueue(j);
+                lock (gate)
+                {
+                    if (gate.Q.IsEmpty)
+                        continue;
+                    int take = Math.Min(gate.Q.Count, MaxSweepQueueEntriesPerCall);
+                    var kept = new List<QueuedJob>(take);
+                    for (int i = 0; i < take && gate.Q.TryDequeue(out var j); i++)
+                        if (JobDispatcher.Instance.JobIndex.TryGetJob(j.JobId, out _))
+                            kept.Add(j);
+                        else
+                            ClearQueuedAt(j.JobId);
+                    foreach (var j in kept)
+                        gate.Q.Enqueue(j);
+                }
             }
+
+            // 3. Чистка выданных. Непокрытые здесь НЕ дренируются повторно: шаг 1 уже
+            //    проверил живость всего, что снял с очереди, а записи, добавленные
+            //    пуш-потоками во время шага, свежие по построению (J-04: раньше
+            //    очередь непокрытых дренировалась дважды за вызов).
+            foreach (var kv in _assigned)
+                if (!JobDispatcher.Instance.JobIndex.TryGetJob(kv.Key, out _))
+                    _assigned.TryRemove(kv.Key, out _);
         }
 
-        // 3. Чистка выданных и непокрытых.
-        foreach (var kv in _assigned)
-            if (!JobDispatcher.Instance.JobIndex.TryGetJob(kv.Key, out _))
-                _assigned.TryRemove(kv.Key, out _);
-        if (!_uncovered.IsEmpty)
-        {
-            var kept = new List<UncoveredEntry>(_uncovered.Count);
-            while (_uncovered.TryDequeue(out var e))
-                if (JobDispatcher.Instance.JobIndex.TryGetJob(e.JobId, out _))
-                    kept.Add(e);
-                else
-                    ClearQueuedAt(e.JobId);
-            foreach (var e in kept)
-                _uncovered.Enqueue(e);
-        }
         return moved;
     }
 
@@ -396,6 +478,7 @@ public sealed class ZoneJobRouter
         _uncovered.Clear();
         _assigned.Clear();
         Array.Clear(_queuedAt, 0, _queuedAt.Length);
+        Array.Clear(_jobZoneId, 0, _jobZoneId.Length);
         Coverage.Reset();
     }
 

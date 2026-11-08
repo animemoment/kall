@@ -29,10 +29,45 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
     public const int MaxBufferedChunks = 256;
     public const int MaxWorkerCount = 16;
     private readonly object _gate = new();
+    // FIX (bughunt 05-2): чанки, по которым уже предупредили о битой/несовместимой
+    // delta. Нужен, чтобы не спамить лог на каждый вход в окно и не перечитывать
+    // один и тот же файл молча каждый раз.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(long X, long Y), byte> _deltaLoadWarned = new();
+    private const int DeltaWarnCap = 4096;
+
+    private bool WarnDeltaOnce(long cx, long cy)
+    {
+        if (_deltaLoadWarned.Count > DeltaWarnCap)
+            _deltaLoadWarned.Clear(); // защита от неограниченного роста на длинной сессии
+        return _deltaLoadWarned.TryAdd((cx, cy), 1);
+    }
+
+    /// <summary>
+    /// FIX (bughunt 05-2): сообщить о битой/несовместимой delta ЧЕРЕЗ существующий канал
+    /// диагностики (DrainFailures). Этот файл намеренно не зависит от Godot API, поэтому
+    /// GD.PushWarning здесь недоступен. В _failureKeys НЕ добавляем: файл не станет
+    /// читаемым от ретрая, а бесконечные повторы только жгут IO.
+    /// </summary>
+    private void ReportDeltaIssue(ChunkKey key, string message)
+    {
+        lock (_gate)
+            _failures.Enqueue(new ChunkStreamFailure(key, "[delta] " + message));
+    }
     private readonly ChunkWindowPlanner _planner;
     private readonly WorldChunkStore _store;
     private readonly ulong _worldSeed;
     private readonly uint _generatorVersion;
+
+    /// <summary>
+    /// S-05 (бывший W-05 AUDIT-A): origin МИРА фиксируется при создании стримера и
+    /// больше не читается из статики генератора. Раньше стример считал свою
+    /// идентичность неизменяемой (_worldSeed/_generatorVersion readonly), но результат
+    /// GenerateChunk зависел ещё и от глобального мутабельного WorldOriginX/Y:
+    /// смена origin при живом окне давала чанки, посчитанные от разных origin'ов —
+    /// скачок рельефа и «остров внутри мира» на стыке.
+    /// </summary>
+    private readonly long _worldOriginX;
+    private readonly long _worldOriginY;
     private readonly int _maxConcurrency;
     private readonly Task[] _workers;
 
@@ -80,7 +115,9 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
         ulong worldSeed,
         uint generatorVersion,
         WorldChunkStore store,
-        int maxConcurrency = 4)
+        int maxConcurrency = 4,
+        long? originX = null,
+        long? originY = null)
     {
         _planner = planner ?? throw new ArgumentNullException(nameof(planner));
         _store = store ?? throw new ArgumentNullException(nameof(store));
@@ -90,6 +127,10 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
 
         _worldSeed = worldSeed;
         _generatorVersion = generatorVersion;
+        // S-05: снимок origin на момент старта окна (значения по умолчанию — текущая
+        // статика, чтобы не менять все точки создания стримера).
+        _worldOriginX = originX ?? UnifiedWorldGenerator.WorldOriginX;
+        _worldOriginY = originY ?? UnifiedWorldGenerator.WorldOriginY;
         _maxConcurrency = maxConcurrency;
         _workers = new Task[maxConcurrency];
         for (int i = 0; i < _workers.Length; i++)
@@ -460,12 +501,28 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
                 // дыру — иначе ретрай упирается в тот же файл, а после смены
                 // FeatureSchemaVersion дырявым становится весь сохранённый мир.
                 // Чанк в этом случае генерируется так, как если бы delta отсутствовала.
-                if (_store.TryLoadChunk(key.X, key.Y, out ChunkSnapshot loadedSnapshot, out _)
-                    && loadedSnapshot.Metadata.Seed == _worldSeed
-                    && loadedSnapshot.Metadata.GeneratorVersion == _generatorVersion
-                    && loadedSnapshot.Metadata.FeatureSchemaVersion == UnifiedWorldGenerator.FeatureSchemaVersion)
+                if (_store.TryLoadChunk(key.X, key.Y, out ChunkSnapshot loadedSnapshot, out string loadError))
                 {
-                    snapshot = loadedSnapshot;
+                    if (loadedSnapshot.Metadata.Seed == _worldSeed
+                        && loadedSnapshot.Metadata.GeneratorVersion == _generatorVersion
+                        && loadedSnapshot.Metadata.FeatureSchemaVersion == UnifiedWorldGenerator.FeatureSchemaVersion)
+                    {
+                        snapshot = loadedSnapshot;
+                    }
+                    // FIX (bughunt 05-2): раньше причина отказа выбрасывалась (`out _`), и
+                    // несовместимая/битая delta молча подменялась чистым чанком — постройки
+                    // «испарялись» без единой строки в лог. Теперь причина логируется ОДИН раз
+                    // на чанк (не на каждый вход в окно), файл на диске НЕ перезаписывается.
+                    else if (WarnDeltaOnce(key.X, key.Y))
+                    {
+                        ReportDeltaIssue(key, $"delta несовместима (seed/gen/schema) — чанк " +
+                            $"сгенерирован заново, файл оставлен как есть");
+                    }
+                }
+                else if (WarnDeltaOnce(key.X, key.Y))
+                {
+                    ReportDeltaIssue(key, $"delta повреждена и проигнорирована: " +
+                        $"{loadError ?? "неизвестная причина"}. Файл НЕ перезаписывается.");
                 }
             }
 
@@ -477,7 +534,7 @@ public sealed class WorldChunkStreamer : IAsyncDisposable
             }
 
             // Единый генератор чанков (UnifiedWorldGenerator)
-            var chunk = UnifiedWorldGenerator.GenerateChunk(_worldSeed, _generatorVersion, key);
+            var chunk = UnifiedWorldGenerator.GenerateChunk(_worldSeed, _generatorVersion, key, _worldOriginX, _worldOriginY);
             requestToken.ThrowIfCancellationRequested();
             CompleteChunk(key, chunk, snapshot);
         }

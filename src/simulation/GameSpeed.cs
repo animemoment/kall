@@ -1,9 +1,10 @@
-﻿namespace Game.Simulation;
+namespace Game.Simulation;
 
 public enum GameSpeed
 {
     Paused = 0,
     Normal = 1,
+    Fast2 = 2,
     Fast5 = 5,
     Fast25 = 25,
     Fast100 = 100

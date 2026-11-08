@@ -16,9 +16,11 @@ public sealed class TreeChoppingJobHandler : IJobHandler
 
     public bool CanAgentExecute(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
-        if (ctx?.TreeOnGrass == null)
+        if (ctx == null)
             return false;
         if ((uint)job.TargetX >= (uint)ctx.MapWidth || (uint)job.TargetY >= (uint)ctx.MapHeight)
+            return TreeJobManager.Instance.IsTreeMarked(job.TargetX, job.TargetY);
+        if (ctx.TreeOnGrass == null)
             return false;
         if (!ConstructionManager.Instance.IsStageAllowed(job.TargetX, job.TargetY, JobTypeId.TreeChopping))
             return false;
@@ -78,7 +80,8 @@ public sealed class TreeChoppingJobHandler : IJobHandler
         }
         else if (state == AgentState.Working && pool.WorkProgress[agentIndex] >= ChopDuration)
         {
-            ctx.TreeOnGrass[tx, ty] = false;
+            if ((uint)tx < (uint)ctx.MapWidth && (uint)ty < (uint)ctx.MapHeight && ctx.TreeOnGrass != null)
+                ctx.TreeOnGrass[tx, ty] = false;
             TreeJobManager.Instance.CompleteTree(tx, ty);
             WorkProgressTracker.Instance.Clear(tx, ty);
 
@@ -91,8 +94,11 @@ public sealed class TreeChoppingJobHandler : IJobHandler
             // Если на клетке находится стройплощадка, требующая брёвен — сразу направляем дерево в стройку
             if (ConstructionManager.Instance.TryGetSite(tx, ty, out var site) && site.Stage == ConstructionStage.Supplying)
             {
-                int needed = site.Definition.TotalRequiredItems - site.TotalDelivered;
-                int deliver = Math.Min(needed, dropCount);
+                // task-19: сайт может требовать и камень — дрова закрывают только
+                // СВОЮ строку материалов (Log), иначе лишние брёвна уходили бы в
+                // «переполнение» и падали на землю впустую.
+                int logNeeded = site.GetRequired(ItemId.Log) - site.GetDelivered(ItemId.Log);
+                int deliver = Math.Clamp(Math.Min(logNeeded, dropCount), 0, dropCount);
                 if (deliver > 0)
                 {
                     JobBroker.Instance.DeliverLogsToBlueprint(tx, ty, deliver);
@@ -113,6 +119,8 @@ public sealed class TreeChoppingJobHandler : IJobHandler
                         if (nx >= 0 && ny >= 0 && nx < ctx.MapWidth && ny < ctx.MapHeight &&
                             ctx.Ground[nx, ny] == TileType.Grass &&
                             !ctx.SolidWalls[nx, ny] &&
+                            (ctx.TreeOnGrass == null || !ctx.TreeOnGrass[nx, ny]) &&
+                            (ctx.StoneOnGrass == null || !ctx.StoneOnGrass[nx, ny]) &&
                             !ConstructionManager.Instance.IsSiteAt(nx, ny) &&
                             !FarmJobManager.Instance.IsPlotMarked(nx, ny))
                         {
@@ -138,7 +146,7 @@ public sealed class TreeChoppingJobHandler : IJobHandler
             pool.CurrentJobId[agentIndex] = -1;
             pool.CurrentJobType[agentIndex] = JobTypeId.None;
             pool.States[agentIndex] = AgentState.Idle;
-            JobDispatcher.Instance.IdleWorkers.AddIdleWorker(agentIndex, pool);
+            JobDispatcher.ReturnAgentAfterJob(agentIndex, pool); // J-10: Worker зоны не уходит в общий пул
         }
     }
 

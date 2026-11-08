@@ -13,6 +13,16 @@ public static class WorldCellQuery
     /// <summary>
     /// Полная клетка одним семплом генератора. Нужна гейтам, которым требуются
     /// и террейн, и влажность/лес: два отдельных запроса — это два полных семпла.
+    ///
+    /// S-04 (бывший W-04 AUDIT-A): раньше здесь был ТОЧЕЧНЫЙ семпл
+    /// UnifiedWorldGenerator.SampleCell без климата, который внутри берёт климат в
+    /// domain-warp-искажённой точке (meso ±36 + micro ±6 клеток). Чанк/рендер/дверь
+    /// (WorldModel) интерполируют климат по неискажённой решётке 16×16, поэтому для
+    /// одной клетки существовали две функции террейна: f_chunk и f_point. Гейты
+    /// (StreamingWorldManager.CanPlace/TryPlaceBlock), пасфайндинг и оверлеи шли по
+    /// f_point и могли сказать «можно строить», когда рендер рисовал воду (и наоборот).
+    /// Теперь точечный путь идёт по ТОЙ ЖЕ решётке 16×16, что и чанк, — один источник
+    /// истины. Инвариант выравнивания держит UnifiedWorldGenerator.SetWorldOrigin.
     /// </summary>
     public static GeneratedCell CellAt(ulong seed, uint ver, long x, long y)
         => Sample(seed, ver, x, y);
@@ -42,8 +52,12 @@ public static class WorldCellQuery
     public static bool IsMountainAt(ulong seed, uint ver, long x, long y)
         => TerrainAt(seed, ver, x, y) == BaseTerrainKind.Mountain;
 
+    // S-04: единственный путь точечного семпла. Раньше здесь стоял
+    // UnifiedWorldGenerator.SampleCell(..., climate: null) — полный семпл, берущий климат
+    // в domain-warp-искажённой точке и потому расходившийся с чанком/рендером.
+    // Теперь — решётка 16×16 (те же узлы, что у GenerateChunk) + SampleCell(override).
     private static GeneratedCell Sample(ulong seed, uint ver, long x, long y)
-        => UnifiedWorldGenerator.SampleCell(seed, ver, UnifiedWorldGenerator.WorldOriginX + x, UnifiedWorldGenerator.WorldOriginY + y);
+        => SampleLatticeAbsolute(seed, ver, UnifiedWorldGenerator.WorldOriginX + x, UnifiedWorldGenerator.WorldOriginY + y);
 
     // ------------------------------------------------------------------------------------
     // Массовый быстрый путь (PLAN §117, задача 3): BeginBulkSample.
@@ -88,53 +102,12 @@ public static class WorldCellQuery
     // Решётка 16×16 по АБСОЛЮТНЫМ координатам (форма мира — WorldModel.SampleLatticeAbsolute)
     // ------------------------------------------------------------------------------------
 
-    /// <summary>Кэш последнего 16×16-блока решётки для одного потока (4 узла).</summary>
-    private sealed class LatticeBlock
-    {
-        public ulong Seed;
-        public uint Ver;
-        public long BX;
-        public long BY;
-        public WorldClimateParams NW;
-        public WorldClimateParams NE;
-        public WorldClimateParams SW;
-        public WorldClimateParams SE;
-    }
-
-    [ThreadStatic] private static LatticeBlock _latticeBlock;
-
     /// <summary>
-    /// Клетка в ФОРМЕ МИРА: решётка 16×16 по АБСОЛЮТНЫМ координатам (узлы кратно 16 —
-    /// та же решётка, что у GenerateChunk/GenerateColonyWindow/BulkCellSampler), билинейный
-    /// климат, затем SampleCell(override). Одиночная клетка обязана отвечать ТОЧНО так же,
-    /// как регион, — иначе дверь (WorldModel) расходится с рендером регионом у берегов
-    /// (наблюдалось: 1049/7622 клеток). ThreadStatic-кэш последнего блока: последовательные
-    /// запросы из одного блока 16×16 не пересемплируют 4 узла.
+    /// Клетка в ФОРМЕ МИРА: единый PureWorldGenerator по АБСОЛЮТНЫМ координатам.
     /// </summary>
     public static GeneratedCell SampleLatticeAbsolute(ulong seed, uint ver, long wx, long wy)
     {
-        long bx = wx & ~15L;
-        long by = wy & ~15L;
-        uint u = (uint)((wx - bx) * 65535 / 16);
-        uint v = (uint)((wy - by) * 65535 / 16);
-
-        LatticeBlock block = _latticeBlock ??= new LatticeBlock();
-        if (block.Seed != seed || block.Ver != ver || block.BX != bx || block.BY != by)
-        {
-            block.NW = WorldClimateGenerator.SampleBlendedCell(seed, ver, bx, by);
-            block.NE = WorldClimateGenerator.SampleBlendedCell(seed, ver, bx + 16, by);
-            block.SW = WorldClimateGenerator.SampleBlendedCell(seed, ver, bx, by + 16);
-            block.SE = WorldClimateGenerator.SampleBlendedCell(seed, ver, bx + 16, by + 16);
-            block.Seed = seed;
-            block.Ver = ver;
-            block.BX = bx;
-            block.BY = by;
-        }
-
-        WorldClimateParams top = UnifiedWorldGenerator.LerpClimate1D(in block.NW, in block.NE, u);
-        WorldClimateParams bot = UnifiedWorldGenerator.LerpClimate1D(in block.SW, in block.SE, u);
-        WorldClimateParams climate = UnifiedWorldGenerator.LerpClimate1D(in top, in bot, v);
-        return UnifiedWorldGenerator.SampleCell(seed, ver, wx, wy, climate);
+        return PureWorldGenerator.SampleCell(seed, ver, wx, wy);
     }
 }
 
@@ -263,7 +236,13 @@ public readonly struct BulkCellSampler
         long lx = x - _originX;
         long ly = y - _originY;
         if ((ulong)lx >= (ulong)_width || (ulong)ly >= (ulong)_height)
-            return UnifiedWorldGenerator.SampleCell(_seed, _ver, _worldOriginX + x, _worldOriginY + y);
+        {
+            // S-04: «за окном» — НЕ полный точечный семпл (domain warp ≠ решётка чанка),
+            // а та же решётка 16×16, что у окна/чанка/гейтов: иначе клетки у самой
+            // границы окна получали террейн из второго источника истины.
+            return WorldCellQuery.SampleLatticeAbsolute(_seed, _ver, _worldOriginX + x, _worldOriginY + y);
+        }
+
         return CellAtLocal((int)lx, (int)ly);
     }
 

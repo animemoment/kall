@@ -17,21 +17,14 @@ namespace Game.Simulation;
 /// </summary>
 public sealed class JobSpatialPyramid
 {
-    public const int ChunkShift = 4; // 16x16 тайлов на чанк/сектор
-    // J-05 FIX: ChunkDim 64 (1024 тайла) покрывает весь остров 1024×1024.
-    // Раньше 32 чанка = 512 тайлов: 75% площади острова (восток+юг) клампилось
-    // в крайние чанки и пространственная локальность терялась.
-    // Не менять под старую карту: WorldModel.IslandTiles = 1024.
-    public const int ChunkDim = 64;   // 64x64 чанка = 1024x1024 тайла
-    public const int ChunkCount = ChunkDim * ChunkDim;
+    public const int ChunkShift = 4;    // 16x16 тайлов на чанк/сектор
+    public const int ChunkDim = 64;     // 64x64 чанка = 1024x1024 тайлов (остров)
+    public const int ChunkCount = ChunkDim * ChunkDim; // 4096 чанков
     public const int ChunkGridDim = ChunkDim;
 
-    // Макро-сектор = 8x8 чанков = 128x128 тайлов (иначе MacroCount не влезает
-    // в один ulong). Инвариант «макро-маска = один ulong» СОХРАНЯЕТСЯ.
-    public const int MacroShift = 7;  // 128x128 тайлов на макро-сектор (8x8 чанка)
-    public const int MacroDim = 8;    // 8x8 макро-секторов = 1024x1024 тайлов
+    public const int MacroShift = 7;    // 128x128 тайлов на макро-сектор (8x8 чанков)
+    public const int MacroDim = 8;      // 8x8 макро-секторов = 1024 тайла
     public const int MacroCount = MacroDim * MacroDim; // 64 макро-сектора = ровно 1 ulong
-    public const int ChunksPerMacroSide = ChunkDim >> 3; // 8 чанков на сторону макро
 
     private const int InitialCapacity = 32768;
     private const int GrowFactor = 2;
@@ -46,6 +39,18 @@ public sealed class JobSpatialPyramid
     /// При count &lt;= 64 поведение прежнее (полный скан чанка).
     /// </summary>
     private const int MaxClaimScanPerChunk = 64;
+
+    /// <summary>
+    /// Потолок ЧАНКОВ, которые один клейм может прощупать за вызов. Замеры 100×
+    /// (src/tools/Perf100xBench.cs, _reports/perf_100x.md) показали: когда работы есть,
+    /// но ни одна не подходит (чужой тип/этап/инструмент), TryClaimJobForAgent обходил
+    /// ВСЕ 64 макро-сектора × 64 чанка = до 4096 проб на ОДНОГО агента — суб-степ
+    /// раздувался до 58–89 мс (p95 46 мс) при бюджете кадра 16.7 мс.
+    /// Теперь пробы ограничены; старт обхода макро-секторов смещается на эпоху
+    /// диспатча, поэтому за несколько диспатчей агент осматривает всю карту —
+    /// «слепых зон» не появляется, но один вызов ограничен по времени.
+    /// </summary>
+    private const int MaxChunkProbesPerClaim = 384;
 
     private readonly object _registerLock = new();
 
@@ -69,6 +74,43 @@ public sealed class JobSpatialPyramid
     private ItemId[] _targetItemId;
     private float[] _workDuration;
     private bool[] _active;
+
+    // FIX (bughunt 08-2/08-3/08-7): ПОКОЛЕНИЕ СЛОТА.
+    // Слоты переиспользуются через free-list (LIFO), поэтому «сырой» jobId ничего
+    // не говорит о том, ЧТО сейчас в слоте: снятая работа и следующая за ней имеют
+    // один и тот же id. Поколение инкрементится при КАЖДОЙ выдаче слота (регистрации),
+    // т.е. является штампом «какая именно работа занимает слот». Клейм/удаление/
+    // релиз сверяют поколение (см. TryClaimInChunk/TryClaimJobById/RemoveJob), а
+    // слот с живыми клеймами вообще не попадает в free-list (см. _pendingFree) —
+    // так протухший id не может указывать на чужую живую работу.
+    private uint[] _slotGen;
+
+    // FIX (bughunt 08-6): «единица учёта unclaimed». 1 = работа посчитана в
+    // _unclaimedCount/_chunkUnclaimedCount/_macroJobCounts. Переходы 1→0 (клейм
+    // насытил работу / удаление) и 0→1 (release вернул слот) делает ТОЛЬКО победитель
+    // CAS. Раньше RemoveJob считал признак обычным чтением _assignedWorkers и мог
+    // декрементировать ПАРАЛЛЕЛЬНО с клеймом (двойное списание → минус в чанке,
+    // который прячет все работы чанка). Теперь декремент строго парен своему
+    // инкременту: проигравший гонку CAS ничего не списывает.
+    private int[] _slotUnclaimed;
+
+    // FIX (bughunt 08-2/08-3): 1 = работа удалена, но на слоте ещё висят клеймы
+    // (агенты, которые держат этот id и придут с ним позже: Commit/OnCancel/stuck).
+    // Пока флаг стоит, слот НЕ возвращается в free-list и не может быть выдан под
+    // другую работу → «поздний» RemoveJob/ReleaseWorkerClaim по протухшему id
+    // гарантированно попадает в МЁРТВЫЙ слот (no-op), а не в чужую живую работу.
+    // Слот освобождает тот, кто отпустил последний клейм (DrainPendingClaim).
+    private int[] _pendingFree;
+    private int _pendingFreeCount;
+
+    // FIX (bughunt 08-6): диагностика клампа — сколько раз декремент счётчика был
+    // предотвращён клампом на 0 (в норме 0; рост означает потерянную пару
+    // инкремент/декремент и всегда виден снаружи через PendingFreeCount/агрегаты).
+    private int _unclaimedClampHits;
+    private int _chunkUnclaimedClampHits;
+    private int _macroClampHits;
+    // Клампы отката самого клейма (_assignedWorkers): в норме 0 — откат идёт 1→0.
+    private int _claimClampHits;
 
     // Индекс позиции внутри чанка (для O(1) удаления из чанка)
     private int[] _chunkJobIndex;
@@ -98,6 +140,12 @@ public sealed class JobSpatialPyramid
     private int _claimEpoch;
     private int[] _canExecEpoch;
     private bool[] _canExecResult;
+    // J-12: memo обязан быть привязан к агенту. Ответ CanAgentExecute зависит от
+    // инвентаря/инструментов/состояния конкретного агента, поэтому один и тот же
+    // jobId в пределах эпохи давал разные корректные ответы для разных агентов —
+    // мемо первого агента применялось ко всем остальным (работа «не подходит»
+    // или наоборот выдавалась тому, кто её выполнить не может).
+    private int[] _canExecAgent;
 
     // P8в (task-18): иерархический отрицательный ответ — агрегированные флаги кулдаунов.
     // Проблема: промах TryClaimJobForAgent при массовом MarkJobUnreachable обходил все
@@ -127,6 +175,22 @@ public sealed class JobSpatialPyramid
 
     public int UnclaimedCount => Volatile.Read(ref _unclaimedCount);
     public int TotalCount => Volatile.Read(ref _totalCount);
+
+    /// <summary>
+    /// FIX (bughunt 08-6): диагностика счётчиков. В норме все три нули; ненулевое
+    /// значение означает, что декремент был остановлен клампом на 0 (защита от
+    /// ухода в минус, который прячет работы чанка/останавливает диспетчеризацию).
+    /// </summary>
+    internal int UnclaimedClampHits => Volatile.Read(ref _unclaimedClampHits);
+    internal int ChunkUnclaimedClampHits => Volatile.Read(ref _chunkUnclaimedClampHits);
+    internal int MacroClampHits => Volatile.Read(ref _macroClampHits);
+
+    /// <summary>
+    /// FIX (bughunt 08-2): сколько слотов удалено, но ещё ждёт дренажа клеймов
+    /// (в free-list не входят). Растёт только на время «позднего» держателя id;
+    /// постоянный рост означал бы утекший клейм (агент не вернул работу).
+    /// </summary>
+    internal int PendingFreeCount => Volatile.Read(ref _pendingFreeCount);
 
     public JobSpatialPyramid()
     {
@@ -175,10 +239,15 @@ public sealed class JobSpatialPyramid
         _targetItemId = new ItemId[capacity];
         _workDuration = new float[capacity];
         _active = new bool[capacity];
+        _slotGen = new uint[capacity];
+        _slotUnclaimed = new int[capacity];
+        _pendingFree = new int[capacity];
         _nextFree = new int[capacity];
         _chunkJobIndex = new int[capacity];
         _canExecEpoch = new int[capacity];
         _canExecResult = new bool[capacity];
+        _canExecAgent = new int[capacity];
+        Array.Fill(_canExecAgent, -1);
     }
 
     private void InitFreeList(int capacity)
@@ -192,19 +261,21 @@ public sealed class JobSpatialPyramid
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int GetChunkIndexStatic(int tileX, int tileY)
     {
-        // J-05 FIX: кламп только по краям (был кламп по 512 — схлопывал восток+юг
-        // в крайние чанки). Координаты <0 и >=1024 падают в крайние чанки —
-        // это защищает индекс от переполнения при мировых координатах.
-        int cx = Math.Clamp(tileX >> ChunkShift, 0, ChunkDim - 1);
-        int cy = Math.Clamp(tileY >> ChunkShift, 0, ChunkDim - 1);
+        // Индексы валидны (0..1023): JobValidator.IsTargetWalkable отбрасывает
+        // работы c TargetX/TargetY >= MapWidth. Кламп больше не нужен — он
+        // схлопывал всё, что >= 512, в последний чанк (баг J-05).
+        int cx = tileX >> ChunkShift;
+        int cy = tileY >> ChunkShift;
         return cy * ChunkDim + cx;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int GetMacroIndex(int tileX, int tileY)
     {
-        int mx = Math.Clamp(tileX >> MacroShift, 0, MacroDim - 1);
-        int my = Math.Clamp(tileY >> MacroShift, 0, MacroDim - 1);
+        // MacroShift=7 → macroIndex ∈ [0..63] для клетки в пределах острова,
+        // поэтому `1UL << macroIndex` по-прежнему укладывается в один ulong.
+        int mx = tileX >> MacroShift;
+        int my = tileY >> MacroShift;
         return my * MacroDim + mx;
     }
 
@@ -233,10 +304,20 @@ public sealed class JobSpatialPyramid
         Array.Resize(ref _targetItemId, newCap);
         Array.Resize(ref _workDuration, newCap);
         Array.Resize(ref _active, newCap);
+        // FIX (bughunt 08-2/08-6/08-7): новые массивы слот-состояния растут вместе
+        // с остальными; Array.Resize добивает новые элементы нулями: поколение 0 =
+        // «слот ещё не выдавался», флаг unclaimed 0, pending 0.
+        Array.Resize(ref _slotGen, newCap);
+        Array.Resize(ref _slotUnclaimed, newCap);
+        Array.Resize(ref _pendingFree, newCap);
         Array.Resize(ref _nextFree, newCap);
         Array.Resize(ref _chunkJobIndex, newCap);
         Array.Resize(ref _canExecEpoch, newCap);
         Array.Resize(ref _canExecResult, newCap);
+        int oldCanExecAgentLen = _canExecAgent.Length;
+        Array.Resize(ref _canExecAgent, newCap);
+        for (int i = oldCanExecAgentLen; i < newCap; i++)
+            _canExecAgent[i] = -1;
 
         for (int i = _capacity; i < newCap - 1; i++)
             _nextFree[i] = i + 1;
@@ -284,11 +365,12 @@ public sealed class JobSpatialPyramid
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool TryGetMemoCanExecute(int jobId, out bool result)
+    public bool TryGetMemoCanExecute(int jobId, int agentIndex, out bool result)
     {
         int epoch = Volatile.Read(ref _claimEpoch);
         if (epoch != 0 && jobId >= 0 && jobId < _capacity &&
-            Volatile.Read(ref _canExecEpoch[jobId]) == epoch)
+            Volatile.Read(ref _canExecEpoch[jobId]) == epoch &&
+            _canExecAgent[jobId] == agentIndex)
         {
             result = _canExecResult[jobId];
             return true;
@@ -298,12 +380,13 @@ public sealed class JobSpatialPyramid
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void SetMemoCanExecute(int jobId, bool result)
+    public void SetMemoCanExecute(int jobId, int agentIndex, bool result)
     {
         int epoch = Volatile.Read(ref _claimEpoch);
         if (epoch != 0 && jobId >= 0 && jobId < _capacity)
         {
             _canExecResult[jobId] = result;
+            _canExecAgent[jobId] = agentIndex;
             Volatile.Write(ref _canExecEpoch[jobId], epoch);
         }
     }
@@ -366,10 +449,31 @@ public sealed class JobSpatialPyramid
             _assignedWorkers[id] = 0;
             _jobFailCd[id] = 0;
             _targetItemCount[id] = job.TargetItemCount;
-            _currentDeliveredCount[id] = 0;
+            // FIX (bughunt 08-5): прогресс доставки НЕ обнуляем слепо. Раньше здесь
+            // стоял `_currentDeliveredCount[id] = 0`, и пересоздание blueprint-работы
+            // (ReconcileTick/JobValidator после снятия) начинало счёт с нуля при полном
+            // TargetItemCount → носильщики тащили лишние брёвна, сайт их клампил
+            // (ConstructionSite.AddDelivered), а излишек исчезал. Теперь вызывающий
+            // передаёт уже доставленное в JobData.CurrentDeliveredCount (JobBroker берёт
+            // его из сайта — «по ключу цели»), а мы клампим в [0, TargetItemCount].
+            int targetItems = job.TargetItemCount;
+            int carried = job.CurrentDeliveredCount;
+            if (carried < 0) carried = 0;
+            if (targetItems > 0 && carried > targetItems) carried = targetItems;
+            if (targetItems <= 0) carried = 0;
+            _currentDeliveredCount[id] = carried;
             _targetItemId[id] = job.TargetItemId;
             _workDuration[id] = job.WorkDuration;
-            _active[id] = true;
+            // FIX (bughunt 08-2/08-7): публикуем живость волатильно — её читают claim/release
+            // с других потоков без лока.
+            Volatile.Write(ref _active[id], true);
+
+            // FIX (bughunt 08-2/08-3/08-6): слот выдан заново — новое поколение,
+            // свежая единица unclaimed-учёта, флаг дренажа снят (слот пришёл из
+            // free-list, т.е. предыдущая работа уже была освобождена полностью).
+            unchecked { _slotGen[id]++; }
+            Volatile.Write(ref _slotUnclaimed[id], 1);
+            Volatile.Write(ref _pendingFree[id], 0);
 
             _posMap[key] = id;
             _totalCount++;
@@ -455,10 +559,22 @@ public sealed class JobSpatialPyramid
         _assignedWorkers[id] = 0;
         _jobFailCd[id] = 0;
         _targetItemCount[id] = job.TargetItemCount;
-        _currentDeliveredCount[id] = 0;
+        // FIX (bughunt 08-5): то же, что в RegisterJob — прогресс доставки берём из
+        // JobData (клампим в [0, TargetItemCount]), а не обнуляем.
+        int targetItems = job.TargetItemCount;
+        int carried = job.CurrentDeliveredCount;
+        if (carried < 0) carried = 0;
+        if (targetItems > 0 && carried > targetItems) carried = targetItems;
+        if (targetItems <= 0) carried = 0;
+        _currentDeliveredCount[id] = carried;
         _targetItemId[id] = job.TargetItemId;
         _workDuration[id] = job.WorkDuration;
-        _active[id] = true;
+        Volatile.Write(ref _active[id], true);
+
+        // FIX (bughunt 08-2/08-3/08-6): новое поколение слота + свежий unclaimed-учёт.
+        unchecked { _slotGen[id]++; }
+        Volatile.Write(ref _slotUnclaimed[id], 1);
+        Volatile.Write(ref _pendingFree[id], 0);
 
         _posMap[key] = id;
         _totalCount++;
@@ -481,7 +597,51 @@ public sealed class JobSpatialPyramid
         _macroActiveMask |= (1UL << macroIndex);
     }
 
-    public bool RemoveJob(int jobId, out JobData removedJob)
+    /// <summary>
+    /// Удаление работы по id. FIX (bughunt 08-2): это путь ЗАВЕРШЕНИЯ — так работу
+    /// снимает хендлер, который её же и выполнял (TryUnregisterJob в
+    /// TreeChopping/Mining/Harvest/Farming/Planting/Construction и т.п.), либо аудит
+    /// бесхозных работ (JobValidator снимает только AssignedWorkers == 0). Поэтому
+    /// удаление «съедает» ровно один клейм вызывающего (retireClaim) и не оставляет
+    /// слот в дренаже. Внешнее удаление (снятие метки/зоны/чертежа) идёт по ПОЗИЦИИ —
+    /// там клейм работающего агента не трогаем (см. RemoveJobByPos).
+    /// ВАЖНО: вызывающий по id обязан быть держателем клейма этой работы (или работа
+    /// должна быть unclaimed). Иначе (например, UnregisterJob(job.Id) из чужого
+    /// хендлера) будет снят ЧУЖОЙ клейм — для внешних снятий используйте
+    /// RemoveJobByPos/RemoveBatchByPositions.
+    /// Сверка поколения доступна в строгой перегрузке RemoveJob(jobId, generation, ...).
+    /// </summary>
+    public bool RemoveJob(int jobId, out JobData removedJob) => RemoveJobCore(jobId, true, out removedJob);
+
+    /// <summary>
+    /// FIX (bughunt 08-2): строгий вариант удаления — вызывающий предъявляет поколение
+    /// слота, которое он видел при клейме (JobSpatialPyramid.GetSlotGeneration).
+    /// Если слот уже переиспользован под другую работу (поколение не совпало), удаления
+    /// НЕ происходит. Публичную сигнатуру RemoveJob(jobId, out) не меняем: старые
+    /// вызывающие защищены инвариантом «слот с клеймами не переиспользуется».
+    /// </summary>
+    public bool RemoveJob(int jobId, uint expectedGeneration, out JobData removedJob)
+    {
+        lock (_registerLock)
+        {
+            if (jobId < 0 || jobId >= _capacity || !_active[jobId] ||
+                _slotGen[jobId] != expectedGeneration)
+            {
+                removedJob = default;
+                return false;
+            }
+            return RemoveJobCore(jobId, true, out removedJob);
+        }
+    }
+
+    /// <summary>FIX (bughunt 08-2): поколение слота (0 — слот ещё не выдавался).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public uint GetSlotGeneration(int jobId)
+    {
+        return (uint)jobId < (uint)_capacity ? Volatile.Read(ref _slotGen[jobId]) : 0u;
+    }
+
+    private bool RemoveJobCore(int jobId, bool retireClaim, out JobData removedJob)
     {
         lock (_registerLock)
         {
@@ -492,13 +652,21 @@ public sealed class JobSpatialPyramid
             }
 
             removedJob = GetJobData(jobId);
-            _active[jobId] = false;
+            // FIX (bughunt 08-2/08-7): снятие живости обязано быть видно другим потокам
+            // ДО любых проверок протухшего id (см. ReleaseWorkerClaim/RemoveJobCore).
+            Volatile.Write(ref _active[jobId], false);
 
             var key = (_targetX[jobId], _targetY[jobId], _typeId[jobId]);
             _posMap.Remove(key);
             _totalCount--;
 
-            bool wasUnclaimed = Volatile.Read(ref _assignedWorkers[jobId]) < _maxWorkers[jobId];
+            // FIX (bughunt 08-6): «unclaimed» забираем CAS-переходом 1→0. Только один
+            // из двух участников (клейм насытил работу / удаление) списывает единицу.
+            // Раньше признак читался обычным сравнением assigned < max и декремент мог
+            // пройти ДВАЖДЫ (удаление успевало прочитать assigned==0 до CAS клейма) —
+            // у чанка счётчик уходил в минус, и ChunkMayHaveClaimable навсегда прятал
+            // все его работы; у глобального счётчика диспетчер вообще переставал раздавать.
+            bool wasUnclaimed = UnclaimedTake(jobId);
 
             // P8-г (drift fix): снятие Cd-учёта БЕЗУСЛОВНО (не только под wasUnclaimed) и
             // циклом. Раньше единица, прилетевшая через Release-add/Mark-add в окне гонки
@@ -512,7 +680,7 @@ public sealed class JobSpatialPyramid
 
             if (wasUnclaimed)
             {
-                Interlocked.Decrement(ref _unclaimedCount);
+                DecClamp0(ref _unclaimedCount, ref _unclaimedClampHits);
             }
 
             // Удаление из L1 чанка за O(1) swap-and-pop
@@ -533,43 +701,58 @@ public sealed class JobSpatialPyramid
                 _chunkCount[chunkIndex] = lastIdx;
                 if (wasUnclaimed)
                 {
-                    Interlocked.Decrement(ref _chunkUnclaimedCount[chunkIndex]);
+                    // FIX (bughunt 08-6): кламп на 0 — минус в чанке прячет ВСЕ его
+                    // работы (ChunkMayHaveClaimable при <= 0 всегда false).
+                    DecClamp0(ref _chunkUnclaimedCount[chunkIndex], ref _chunkUnclaimedClampHits);
                 }
+            }
+            else if (wasUnclaimed)
+            {
+                // Индекс чанка разошёлся (не должно случаться) — единицу всё равно
+                // списываем, иначе чанк навсегда останется «с работой».
+                DecClamp0(ref _chunkUnclaimedCount[chunkIndex], ref _chunkUnclaimedClampHits);
             }
 
             // Обновление L2 макро-маски: декрементируем только если задача была unclaimed.
             // Атомарный декремент с клампом на 0 (семантика Math.Max(0, x-1) без гонки):
             // обычный RMW под _registerLock НЕ сериализуется против Interlocked-мутаций
-            // из ReleaseWorkerClaim (539) и TryClaimJobForAgent (771) → lost update.
+            // из ReleaseWorkerClaim и TryClaimJobForAgent → lost update.
             if (wasUnclaimed)
             {
-                int macroIndex = GetMacroIndex(removedJob.TargetX, removedJob.TargetY);
-
-                int macroCount;
-                do
-                {
-                    macroCount = Volatile.Read(ref _macroJobCounts[macroIndex]);
-                    if (macroCount <= 0)
-                        break;
-                }
-                while (Interlocked.CompareExchange(
-                           ref _macroJobCounts[macroIndex], macroCount - 1, macroCount) != macroCount);
-
-                // Бит гасим только если счётчик реально дошёл до нуля, и перепроверяем под
-                // локом (как в TryClaimJobForAgent), иначе погасим сектор с живыми задачами.
-                if (macroCount <= 1)
-                {
-                    lock (_registerLock)
-                    {
-                        if (Volatile.Read(ref _macroJobCounts[macroIndex]) <= 0)
-                            _macroActiveMask &= ~(1UL << macroIndex);
-                    }
-                }
+                MacroRemove(GetMacroIndex(removedJob.TargetX, removedJob.TargetY));
             }
 
-            // Возврат в free-list
-            _nextFree[jobId] = _freeHead;
-            _freeHead = jobId;
+            // FIX (bughunt 08-2/08-3): слот возвращается в free-list ТОЛЬКО когда на нём
+            // не осталось клеймов. Раньше он уходил туда всегда, даже если агент ещё
+            // работал по этому id (работа снята извне — метку/зону/чертёж убрали).
+            // Слот тут же выдавался под другую работу, и «поздний» Commit агента вызы-
+            // вал RemoveJob/ReleaseWorkerClaim по тому же id — убивал/размыкал уже ЧУЖУЮ
+            // живую работу. Теперь такой слот помечается pending и освобождается тем,
+            // кто отпустит последний клейм (DrainPendingClaim в ReleaseWorkerClaim).
+            if (retireClaim && Volatile.Read(ref _assignedWorkers[jobId]) > 0)
+            {
+                // Удаление по id = вызывающий закончил с этой работой: снимаем ЕГО клейм.
+                // Остаточный риск: если хендлер после успешного unregister ещё и вызовет
+                // ReleaseWorkerClaim по тому же id (двойной релиз, см. StockpileHauling),
+                // второй вызов в микроскопическом окне может попасть уже в переисполь-
+                // зованный слот. Полностью закрывается только строгой перегрузкой с
+                // поколением (GetSlotGeneration + RemoveJob/ReleaseWorkerClaim(gen)).
+                DecClamp0(ref _assignedWorkers[jobId], ref _claimClampHits);
+            }
+
+            if (Volatile.Read(ref _assignedWorkers[jobId]) <= 0)
+            {
+                // Счётчик уже 0 (DecClamp0 не уходит в минус) — слот свободен.
+                PushFreeSlotLocked(jobId);
+            }
+            else
+            {
+                if (_pendingFree[jobId] == 0)
+                {
+                    _pendingFree[jobId] = 1;
+                    Interlocked.Increment(ref _pendingFreeCount);
+                }
+            }
 
             return true;
         }
@@ -581,7 +764,9 @@ public sealed class JobSpatialPyramid
         {
             if (_posMap.TryGetValue((x, y, type), out int id))
             {
-                return RemoveJob(id, out removedJob);
+                // FIX (bughunt 08-2): внешнее удаление (снятие метки/зоны/чертежа) —
+                // клейм работающего агента не трогаем, слот уйдёт в дренаж.
+                return RemoveJobCore(id, false, out removedJob);
             }
             removedJob = default;
             return false;
@@ -598,7 +783,8 @@ public sealed class JobSpatialPyramid
                 var pos = positions[i];
                 if (_posMap.TryGetValue((pos.X, pos.Y, type), out int id))
                 {
-                    RemoveJob(id, out _);
+                    // FIX (bughunt 08-2): внешнее удаление — без снятия чужого клейма.
+                    RemoveJobCore(id, false, out _);
                 }
             }
         }
@@ -664,16 +850,35 @@ public sealed class JobSpatialPyramid
 
     /// <summary>
     /// Освобождение слота задачи (агент освободился или был отменен).
+    /// FIX (bughunt 08-3): по протухшему id НЕЛЬЗЯ снимать клейм с чужой работы.
+    /// Инвариант слота: пока на нём висят клеймы, он не возвращается в free-list
+    /// (см. _pendingFree/RemoveJobCore), поэтому «поздний» release по снятому id
+    /// попадает в МЁРТВЫЙ слот и лишь дренирует его клеймы — новую работу он не
+    /// увидит. Для полностью живого слота дополнительно сверяется поколение
+    /// (строгая перегрузка ReleaseWorkerClaim(jobId, generation)).
     /// </summary>
     public void ReleaseWorkerClaim(int jobId)
     {
-        if (jobId < 0 || jobId >= _capacity || !_active[jobId])
+        if (jobId < 0 || jobId >= _capacity)
             return;
 
-        // Кламп на 0 через CAS: ReleaseWorkerClaim может прийти «по stale-id» — слот уже
-        // освобождён в RemoveJob и переиспользован под ДРУГУЮ задачу (free-list LIFO).
-        // Слепой Decrement уводил счётчик в минус, и следующая CAS-атака
-        // (while cur < _maxWorkers) выдавала ВТОРОЙ claim на задачу с MaxWorkers=1.
+        // FIX (bughunt 08-3): поколение слота на входе. Если за время вызова слот
+        // успели переиспользовать, наш id уже относится к другой работе — учёт
+        // unclaimed трогать нельзя (иначе спишем единицу чужой работы).
+        uint gen = Volatile.Read(ref _slotGen[jobId]);
+
+        // FIX (bughunt 08-2/08-3): слот уже мёртв — это поздний release по stale-id
+        // (работу сняли извне, пока агент её выполнял). Учёт unclaimed уже снят
+        // RemoveJob-ом, поэтому здесь только дренаж: снимаем клейм и, если он был
+        // последним, возвращаем слот в free-list.
+        if (!Volatile.Read(ref _active[jobId]))
+        {
+            DrainPendingClaim(jobId);
+            return;
+        }
+
+        // Кламп на 0 через CAS: слепой Decrement уводил счётчик в минус, и следующая
+        // CAS-атака (while cur < _maxWorkers) выдавала ВТОРОЙ claim на задачу с MaxWorkers=1.
         int cur;
         do
         {
@@ -684,11 +889,28 @@ public sealed class JobSpatialPyramid
         while (Interlocked.CompareExchange(ref _assignedWorkers[jobId], cur - 1, cur) != cur);
 
         int newAssigned = cur - 1;
-        if (!_active[jobId])
+
+        // FIX (bughunt 08-2): работа умерла в окне между чтением _active и декрементом —
+        // единицу unclaimed уже забрал RemoveJob, поэтому только дренаж мёртвого слота.
+        if (!Volatile.Read(ref _active[jobId]))
+        {
+            CompleteClaimRelease(jobId, newAssigned);
             return;
+        }
 
         if (newAssigned == _maxWorkers[jobId] - 1)
         {
+            // FIX (bughunt 08-3): слот переиспользован, пока мы считали клейм —
+            // возвращать «unclaimed» уже другой работе нельзя.
+            if (Volatile.Read(ref _slotGen[jobId]) != gen)
+                return;
+
+            // FIX (bughunt 08-6): переход 0→1 «работа снова учтена как unclaimed»
+            // делает ровно один победитель CAS. Без владения release мог добавить
+            // единицу ПАРАЛЛЕЛЬНО с RemoveJob-ом (тот уже списал) → фантомный +1.
+            if (!UnclaimedGive(jobId))
+                return;
+
             Interlocked.Increment(ref _unclaimedCount);
             int ci = GetChunkIndexStatic(_targetX[jobId], _targetY[jobId]);
             Interlocked.Increment(ref _chunkUnclaimedCount[ci]);
@@ -716,11 +938,147 @@ public sealed class JobSpatialPyramid
                 CdCountingTryRemove(jobId);
             }
 
-            int mi = GetMacroIndex(_targetX[jobId], _targetY[jobId]);
-            Interlocked.Increment(ref _macroJobCounts[mi]);
+            MacroAdd(GetMacroIndex(_targetX[jobId], _targetY[jobId]));
+
+            // FIX (bughunt 08-6): повторная проверка после add. Работа могла быть
+            // удалена/заклеймлена между проверкой _active и переходом 0→1 — тогда наша
+            // единица «поздняя»: забираем её обратно CAS-ом 1→0 и снимаем счётчики.
+            // Порядок «сначала добавили, потом проверили» гарантирует, что чужая
+            // RemoveTake (1→0) уже случилась и проиграет нам только один из двух.
+            if (!Volatile.Read(ref _active[jobId]))
+            {
+                if (Volatile.Read(ref _slotGen[jobId]) == gen && UnclaimedTake(jobId))
+                {
+                    DecClamp0(ref _unclaimedCount, ref _unclaimedClampHits);
+                    DecClamp0(ref _chunkUnclaimedCount[ci], ref _chunkUnclaimedClampHits);
+                    MacroRemove(GetMacroIndex(_targetX[jobId], _targetY[jobId]));
+                }
+
+                // FIX (bughunt 08-2): работа умерла уже после нашего декремента, и
+                // RemoveJob мог увидеть assigned > 0 и оставить слот в дренаже. Наш
+                // декремент сделал его нулевым — добиваем дренаж, иначе слот останется
+                // pending навсегда (утечка ёмкости).
+                CompleteClaimRelease(jobId, Volatile.Read(ref _assignedWorkers[jobId]));
+            }
+        }
+    }
+
+    /// <summary>
+    /// FIX (bughunt 08-3): строгий вариант release — вызывающий предъявляет поколение
+    /// слота, которое видел при клейме. Если слот уже переиспользован под другую работу,
+    /// release становится no-op (чужой клейм не снимается).
+    /// </summary>
+    public void ReleaseWorkerClaim(int jobId, uint expectedGeneration)
+    {
+        if (jobId < 0 || jobId >= _capacity)
+            return;
+        if (Volatile.Read(ref _active[jobId]) && Volatile.Read(ref _slotGen[jobId]) != expectedGeneration)
+            return;
+        ReleaseWorkerClaim(jobId);
+    }
+
+    /// <summary>
+    /// FIX (bughunt 08-2): дренаж мёртвого слота. Вызывается ТОЛЬКО когда _active[jobId]
+    /// уже false: снимает клейм «позднего» держателя id и, когда держателей не осталось,
+    /// возвращает слот в free-list. До этого момента слот не переиспользуется, поэтому
+    /// stale-id не может указывать на чужую живую работу.
+    /// </summary>
+    private void DrainPendingClaim(int jobId)
+    {
+        lock (_registerLock)
+        {
+            if (_pendingFree[jobId] == 0)
+                return; // слот уже освобождён (или никогда не ждал дренажа) — no-op
+            // FIX (bughunt 08-3): декремент атомарный (CAS-кламп) — параллельный клейм
+            // того же слота не должен теряться из-за read+write под локом.
+            if (DecClamp0(ref _assignedWorkers[jobId], ref _claimClampHits) > 0)
+                return;
+            PushFreeSlotLocked(jobId);
+        }
+    }
+
+    /// <summary>FIX (bughunt 08-2): тот же дренаж, но клейм уже снят вызывающим (newAssigned).</summary>
+    private void CompleteClaimRelease(int jobId, int remainingClaims)
+    {
+        if (remainingClaims > 0)
+            return;
+        lock (_registerLock)
+        {
+            if (_pendingFree[jobId] == 0)
+                return;
+            if (Volatile.Read(ref _assignedWorkers[jobId]) > 0)
+                return;
+            PushFreeSlotLocked(jobId);
+        }
+    }
+
+    /// <summary>
+    /// FIX (bughunt 08-2): единственная точка возврата слота в free-list. Слот попадает
+    /// туда только без живых клеймов; флаг дренажа снимается, счётчик pending падает.
+    /// Вызывать под _registerLock.
+    /// </summary>
+    private void PushFreeSlotLocked(int jobId)
+    {
+        if (_pendingFree[jobId] != 0)
+        {
+            _pendingFree[jobId] = 0;
+            Interlocked.Decrement(ref _pendingFreeCount);
+        }
+        _nextFree[jobId] = _freeHead;
+        _freeHead = jobId;
+    }
+
+    // ---------------- FIX (bughunt 08-6): владение переходами unclaimed ---------------- //
+
+    /// <summary>Взять переход «unclaimed → посчитано-как-занятое». true — мы владелец единицы.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool UnclaimedTake(int jobId) =>
+        Interlocked.CompareExchange(ref _slotUnclaimed[jobId], 0, 1) == 1;
+
+    /// <summary>Взять переход «занято → unclaimed». true — мы владелец новой единицы.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool UnclaimedGive(int jobId) =>
+        Interlocked.CompareExchange(ref _slotUnclaimed[jobId], 1, 0) == 0;
+
+    /// <summary>FIX (bughunt 08-6): декремент с клампом на 0 и диагностикой.</summary>
+    private static int DecClamp0(ref int location, ref int clampHits)
+    {
+        int cur = Volatile.Read(ref location);
+        while (cur > 0)
+        {
+            int prev = Interlocked.CompareExchange(ref location, cur - 1, cur);
+            if (prev == cur)
+                return cur - 1;
+            cur = prev;
+        }
+        Interlocked.Increment(ref clampHits);
+        return 0;
+    }
+
+    /// <summary>FIX (bughunt 08-6): +1 unclaimed-работы в макро-сектор и зажжение бита L2.</summary>
+    private void MacroAdd(int macroIndex)
+    {
+        Interlocked.Increment(ref _macroJobCounts[macroIndex]);
+        lock (_registerLock)
+        {
+            _macroActiveMask |= (1UL << macroIndex);
+        }
+    }
+
+    /// <summary>
+    /// FIX (bughunt 08-6): −1 unclaimed-работы из макро-сектора с клампом на 0. Бит
+    /// гасим только если счётчик реально дошёл до нуля, и перепроверяем под локом
+    /// (как в TryClaimJobForAgent), иначе погасим сектор с живыми задачами.
+    /// </summary>
+    private void MacroRemove(int macroIndex)
+    {
+        int left = DecClamp0(ref _macroJobCounts[macroIndex], ref _macroClampHits);
+        if (left <= 0)
+        {
             lock (_registerLock)
             {
-                _macroActiveMask |= (1UL << mi);
+                if (Volatile.Read(ref _macroJobCounts[macroIndex]) <= 0)
+                    _macroActiveMask &= ~(1UL << macroIndex);
             }
         }
     }
@@ -985,11 +1343,16 @@ public sealed class JobSpatialPyramid
             }
         }
 
+        // Бюджет проб на один клейм (см. MaxChunkProbesPerClaim).
+        int probeBudget = MaxChunkProbesPerClaim;
+        int epoch = Volatile.Read(ref _claimEpoch);
+
         int agentChunk = GetChunkIndexStatic(agentX, agentY);
 
         // 1. Быстрый проход по своему чанку
         if (ChunkMayHaveClaimable(agentChunk, now))
         {
+            probeBudget--;
             if (TryClaimInChunk(agentChunk, agentX, agentY, tools, pool, agentIndex, ctx, hasStockpileSpace, hasAvailableLogs, out claimedJob))
                 return true;
         }
@@ -1012,9 +1375,12 @@ public sealed class JobSpatialPyramid
                     if (cx > minX && cx < maxX && cy > minY && cy < maxY)
                         continue; // кольцо
 
+                    if (probeBudget <= 0)
+                        break;
                     int ci = cy * ChunkDim + cx;
                     if (ChunkMayHaveClaimable(ci, now))
                     {
+                        probeBudget--;
                         if (TryClaimInChunk(ci, agentX, agentY, tools, pool, agentIndex, ctx, hasStockpileSpace, hasAvailableLogs, out claimedJob))
                             return true;
                     }
@@ -1028,22 +1394,33 @@ public sealed class JobSpatialPyramid
             return false;
 
         int agentMacro = GetMacroIndex(agentX, agentY);
-        // Сначала макро-секторы с тем же битовым сдвигом
+        // Макро-сектор = (8x8 чанков) при MacroShift = ChunkShift + 3 (128x128 тайлов).
+        // Декодируем macroIndex обратно в диапазон чанков: 8 чанков на сторону макро-сектора.
+        // Ротация старта по эпохе: при ограниченном бюджете агент за диспатч осмотрит
+        // часть секторов, а за следующие диспатчи — остальные (иначе дальние всегда
+        // отрезались бы бюджетом и оставались невидимыми этому агенту).
+        int macroRot = epoch > 0 ? (int)((uint)epoch % (uint)MacroCount) : 0;
         for (int mi = 0; mi < MacroCount; mi++)
         {
-            int macroIdx = (agentMacro + mi) & 63;
+            if (probeBudget <= 0)
+                return false;
+            int macroIdx = (agentMacro + macroRot + mi) & 63;
             if ((mask & (1UL << macroIdx)) != 0 && Volatile.Read(ref _macroJobCounts[macroIdx]) > 0)
             {
-                int baseChunkX = (macroIdx % MacroDim) * ChunksPerMacroSide;
-                int baseChunkY = (macroIdx / MacroDim) * ChunksPerMacroSide;
+                int baseChunkX = (macroIdx % MacroDim) * 8;
+                int baseChunkY = (macroIdx / MacroDim) * 8;
 
-                for (int cy = 0; cy < ChunksPerMacroSide; cy++)
+                // 8x8 чанков покрывают макро-сектор 128x128 тайлов (MacroShift = ChunkShift + 3).
+                for (int cy = 0; cy < 8; cy++)
                 {
-                    for (int cx = 0; cx < ChunksPerMacroSide; cx++)
+                    for (int cx = 0; cx < 8; cx++)
                     {
                         int ci = (baseChunkY + cy) * ChunkDim + (baseChunkX + cx);
                         if (ci >= 0 && ci < ChunkCount && ChunkMayHaveClaimable(ci, now))
                         {
+                            if (probeBudget <= 0)
+                                return false;
+                            probeBudget--;
                             if (TryClaimInChunk(ci, agentX, agentY, tools, pool, agentIndex, ctx, hasStockpileSpace, hasAvailableLogs, out claimedJob))
                                 return true;
                         }
@@ -1072,7 +1449,8 @@ public sealed class JobSpatialPyramid
         SimulationContext ctx,
         bool hasStockpileSpace,
         bool hasAvailableLogs,
-        out JobData claimedJob)
+        out JobData claimedJob,
+        ulong typeMask = 0)
     {
         claimedJob = default;
         int count = Volatile.Read(ref _chunkCount[chunkIndex]);
@@ -1092,18 +1470,27 @@ public sealed class JobSpatialPyramid
         if (scanLimit > scanCount)
         {
             int epoch = Volatile.Read(ref _claimEpoch);
-            // epoch >= 0 по инварианту BeginClaimEpoch (1..int.MaxValue; 0 = «ещё не было»).
-            scanOffset = (epoch <= 0 ? 0 : epoch) % (scanLimit - scanCount + 1);
+            if (epoch <= 0) epoch = 1;
+            // J-03: окно сдвигается на СВОЮ длину, а не на 1. Раньше сдвиг на 1 за
+            // диспатч означал, что работа на позиции k ждала до (count - 63)
+            // диспатчей: для фермы 70k (~242 работы на чанк) это ~179 диспатчей
+            // (~45 игросекунд на 1×). Шаг на scanCount даёт полный обход чанка за
+            // ceil(count / scanCount) диспатчей (для 242 — 4 диспатча), а
+            // закольцовка ниже гарантирует, что окно не обрывается на краю массива.
+            scanOffset = (int)(((long)epoch * scanCount) % scanLimit);
         }
 
         int bestJobId = -1;
         int bestPriority = -1;
         float bestDistSq = float.MaxValue;
+        // FIX (bughunt 08-7): поколение лучшего кандидата, зафиксированное ПРИ СКАНЕ.
+        // После CAS сверяем его: если слот переиспользован — кандидат уже не тот.
+        uint bestGen = 0;
 
         for (int n = 0; n < scanCount; n++)
         {
             int i = scanOffset + n;
-            if (i >= scanLimit) break;
+            if (i >= scanLimit) i -= scanLimit; // закольцовка окна (J-03)
             int jobId = cJobs[i];
             if (jobId < 0 || jobId >= _capacity || !_active[jobId])
                 continue;
@@ -1112,6 +1499,13 @@ public sealed class JobSpatialPyramid
                 continue;
 
             if (_requiredTool[jobId] != ToolRequirement.None && (tools & _requiredTool[jobId]) == 0)
+                continue;
+
+            // J-18: зона отдаёт только СВОИ типы работ. Раньше клейм шёл по чанку без
+            // учёта маски зоны, и работа чужого типа выдавалась Worker'у, немедленно
+            // отменялась (OnStart → OnCancel) и возвращалась в очередь — churn, из-за
+            // которого работа зоны «дёргалась», а агент терял время.
+            if (typeMask != 0 && (typeMask & (1UL << (byte)_typeId[jobId])) == 0)
                 continue;
 
             if (_typeId[jobId] == JobTypeId.StockpileHauling && !hasStockpileSpace)
@@ -1134,14 +1528,14 @@ public sealed class JobSpatialPyramid
             if (JobRegistry.TryGetHandler(_typeId[jobId], out var handler))
             {
                 bool canExec;
-                if (TryGetMemoCanExecute(jobId, out bool memo))
+                if (TryGetMemoCanExecute(jobId, agentIndex, out bool memo))
                 {
                     canExec = memo;
                 }
                 else
                 {
                     canExec = handler.CanAgentExecute(agentIndex, GetJobData(jobId), pool, ctx);
-                    SetMemoCanExecute(jobId, canExec);
+                    SetMemoCanExecute(jobId, agentIndex, canExec);
                 }
 
                 if (!canExec)
@@ -1150,7 +1544,11 @@ public sealed class JobSpatialPyramid
 
             int userPrio = JobPriorityManager.Instance.GetPriority(
                 JobPriorityManager.Instance.GetCategory(_typeId[jobId]));
-            if (userPrio <= 0)
+            // J-13: 0 — это «низший приоритет», а НЕ «выключено». Раньше `<= 0`
+            // тихо выбрасывал ВСЕ работы категории: игрок/код выставлял слайдер в 0
+            // (UI это разрешает — Math.Max(0, value)) и работы категории
+            // переставали выдаваться без единого сообщения и без видимой причины.
+            if (userPrio < 0)
                 continue;
 
             int score = (userPrio << 8) | (255 - (byte)_priorityTier[jobId]);
@@ -1163,6 +1561,7 @@ public sealed class JobSpatialPyramid
                 bestPriority = score;
                 bestDistSq = distSq;
                 bestJobId = jobId;
+                bestGen = Volatile.Read(ref _slotGen[jobId]); // FIX (08-7): штамп слота при скане
             }
         }
 
@@ -1176,23 +1575,41 @@ public sealed class JobSpatialPyramid
             int prev = Interlocked.CompareExchange(ref _assignedWorkers[bestJobId], cur + 1, cur);
             if (prev == cur)
             {
+                // FIX (bughunt 08-7): между сканом кандидата и CAS работу могли удалить
+                // (снятие метки/зоны на main-потоке), а слот — отдать ДРУГОЙ работе
+                // (free-list LIFO). CAS при этом инкрементит _assignedWorkers уже чужого
+                // слота, а GetJobData ниже вернул бы агенту JobData новой работы,
+                // которой он не выбирал (тип/клетка не те). Поэтому после успешного CAS
+                // сверяем живость и ПОКОЛЕНИЕ слота с тем, что видели при скане.
+                if (!Volatile.Read(ref _active[bestJobId]) ||
+                    Volatile.Read(ref _slotGen[bestJobId]) != bestGen)
+                {
+                    // Откат: если поколение не сменилось — работа просто удалена, наш
+                    // инкремент висит на мёртвом слоте, снимаем его. Если поколение
+                    // сменилось, регистрация уже обнулила счётчик — ничего не трогаем.
+                    if (Volatile.Read(ref _slotGen[bestJobId]) == bestGen)
+                        DecClamp0(ref _assignedWorkers[bestJobId], ref _claimClampHits);
+                    // FIX (bughunt 08-2): если слот в дренаже и наш откат сделал счётчик
+                    // нулевым — добиваем дренаж (иначе слот останется pending навсегда).
+                    CompleteClaimRelease(bestJobId, Volatile.Read(ref _assignedWorkers[bestJobId]));
+                    claimedJob = default;
+                    return false;
+                }
+
                 if (cur + 1 >= _maxWorkers[bestJobId])
                 {
-                    Interlocked.Decrement(ref _unclaimedCount);
-                    Interlocked.Decrement(ref _chunkUnclaimedCount[chunkIndex]);
-
-                    // P8в/P8-г: клейм уводит работу из unclaimed — CAS 1→0 снимает учёт
-                    // ровно один раз (параллельный Clear может уже забрать единицу).
-                    CdCountingTryRemove(bestJobId);
-
-                    int mi = GetMacroIndex(_targetX[bestJobId], _targetY[bestJobId]);
-                    if (Interlocked.Decrement(ref _macroJobCounts[mi]) <= 0)
+                    // FIX (bughunt 08-6): единицу unclaimed списывает только победитель
+                    // CAS-перехода 1→0 — двойного списания с RemoveJob-ом быть не может.
+                    if (UnclaimedTake(bestJobId))
                     {
-                        lock (_registerLock)
-                        {
-                            if (_macroJobCounts[mi] <= 0)
-                                _macroActiveMask &= ~(1UL << mi);
-                        }
+                        DecClamp0(ref _unclaimedCount, ref _unclaimedClampHits);
+                        DecClamp0(ref _chunkUnclaimedCount[chunkIndex], ref _chunkUnclaimedClampHits);
+
+                        // P8в/P8-г: клейм уводит работу из unclaimed — CAS 1→0 снимает учёт
+                        // ровно один раз (параллельный Clear может уже забрать единицу).
+                        CdCountingTryRemove(bestJobId);
+
+                        MacroRemove(GetMacroIndex(_targetX[bestJobId], _targetY[bestJobId]));
                     }
                 }
                 claimedJob = GetJobData(bestJobId);
@@ -1283,7 +1700,8 @@ public sealed class JobSpatialPyramid
         AgentDataPool pool,
         int agentIndex,
         SimulationContext ctx,
-        out JobData claimedJob)
+        out JobData claimedJob,
+        ulong typeMask = 0)
     {
         bool hasStockpileSpace = StockpileManager.Instance.HasFreeSpace;
         bool hasAvailableLogs = GroundItemManager.Instance.HasAvailableLogs;
@@ -1291,7 +1709,7 @@ public sealed class JobSpatialPyramid
             chunkIndex, workerTileX, workerTileY,
             workerTools, pool, agentIndex, ctx,
             hasStockpileSpace, hasAvailableLogs,
-            out claimedJob);
+            out claimedJob, typeMask);
     }
 
     /// <summary>
@@ -1304,10 +1722,26 @@ public sealed class JobSpatialPyramid
     public bool TryClaimJobById(int jobId, out JobData claimedJob)
     {
         claimedJob = default;
-        if (jobId < 0 || jobId >= _capacity || !_active[jobId])
+        if (jobId < 0 || jobId >= _capacity || !Volatile.Read(ref _active[jobId]))
             return false;
+        // FIX (bughunt 08-4): не выдавать работу, которая на кулдауне недостижимости.
+        // Раньше проверки не было, а Worker'у кулдаун не ставится (JobDispatcher) —
+        // бригада бесконечно дёргалась к одной клетке за стеной, остальные стояли.
+        if (IsJobOnCooldown(jobId))
+        {
+            // Работа пришла из очереди зоны (DequeueNearest уже снял её с очереди и
+            // положил в _assigned). Возвращаем её в очередь зоны, иначе живая работа
+            // «зависла» бы вне очереди до Sweep, а он чистит только МЁРТВЫЕ id.
+            ZoneJobRouter.Instance.Unassign(jobId);
+            return false;
+        }
         if (Volatile.Read(ref _assignedWorkers[jobId]) >= _maxWorkers[jobId])
             return false;
+
+        // FIX (bughunt 08-7): поколение слота, зафиксированное ДО CAS. После успешного
+        // CAS слот мог быть освобождён и переиспользован под другую задачу — тогда
+        // агенту уйдёт JobData чужой задачи, а счётчики спишутся с чужого чанка.
+        uint gen = Volatile.Read(ref _slotGen[jobId]);
 
         int cur = Volatile.Read(ref _assignedWorkers[jobId]);
         while (cur < _maxWorkers[jobId])
@@ -1318,23 +1752,32 @@ public sealed class JobSpatialPyramid
                 cur = Volatile.Read(ref _assignedWorkers[jobId]);
                 continue;
             }
+            // FIX (bughunt 08-7): перепроверка живости И поколения после CAS.
+            // Если поколение сменилось — регистрация уже обнулила счётчик, откатывать
+            // нечего; если не сменилось — работа удалена, снимаем свой инкремент с клампом.
+            if (!Volatile.Read(ref _active[jobId]) || Volatile.Read(ref _slotGen[jobId]) != gen)
+            {
+                if (Volatile.Read(ref _slotGen[jobId]) == gen)
+                    DecClamp0(ref _assignedWorkers[jobId], ref _claimClampHits);
+                // FIX (bughunt 08-2): слот мог быть в дренаже — если откат обнулил счётчик,
+                // добиваем дренаж, иначе слот останется pending навсегда.
+                CompleteClaimRelease(jobId, Volatile.Read(ref _assignedWorkers[jobId]));
+                return false;
+            }
             if (cur + 1 >= _maxWorkers[jobId])
             {
-                Interlocked.Decrement(ref _unclaimedCount);
-                int chunkIndex = GetChunkIndexStatic(_targetX[jobId], _targetY[jobId]);
-                Interlocked.Decrement(ref _chunkUnclaimedCount[chunkIndex]);
-
-                // P8в/P8-г: клейм уводит работу из unclaimed — CAS 1→0 снимает учёт.
-                CdCountingTryRemove(jobId);
-
-                int mi = GetMacroIndex(_targetX[jobId], _targetY[jobId]);
-                if (Interlocked.Decrement(ref _macroJobCounts[mi]) <= 0)
+                // FIX (bughunt 08-6): единицу unclaimed списывает только победитель
+                // CAS-перехода 1→0 (без владения удаление могло списать её параллельно).
+                if (UnclaimedTake(jobId))
                 {
-                    lock (_registerLock)
-                    {
-                        if (_macroJobCounts[mi] <= 0)
-                            _macroActiveMask &= ~(1UL << mi);
-                    }
+                    DecClamp0(ref _unclaimedCount, ref _unclaimedClampHits);
+                    int chunkIndex = GetChunkIndexStatic(_targetX[jobId], _targetY[jobId]);
+                    DecClamp0(ref _chunkUnclaimedCount[chunkIndex], ref _chunkUnclaimedClampHits);
+
+                    // P8в/P8-г: клейм уводит работу из unclaimed — CAS 1→0 снимает учёт.
+                    CdCountingTryRemove(jobId);
+
+                    MacroRemove(GetMacroIndex(_targetX[jobId], _targetY[jobId]));
                 }
             }
             claimedJob = GetJobData(jobId);
@@ -1366,6 +1809,17 @@ public sealed class JobSpatialPyramid
             _posMap.Clear();
             _totalCount = 0;
             _unclaimedCount = 0;
+
+            // FIX (bughunt 08-2/08-6/08-7): сброс слот-состояния вместе с остальным.
+            // InitFreeList ниже возвращает ВСЕ слоты в free-list, поэтому «дренажные»
+            // флаги и поколения обязаны быть обнулены — иначе слот, помеченный pending,
+            // остался бы недоступным при живом free-list.
+            Array.Clear(_slotUnclaimed, 0, _capacity);
+            Array.Clear(_pendingFree, 0, _capacity);
+            for (int i = 0; i < _capacity; i++)
+                _slotGen[i] = 0u;
+            _pendingFreeCount = 0;
+
             InitFreeList(_capacity);
         }
     }

@@ -34,6 +34,13 @@ uniform vec4 glint_color : source_color = vec4(0.88, 0.96, 1.0, 1.0);
 // Сила извилистости и сглаживания углов (0.0 = тайловые углы, 0.45 = естественные изгибы)
 uniform float shore_curvature : hint_range(0.1, 0.8, 0.05) = 0.45;
 
+// W-01: предельная глубина захода воды в клетку СУШИ (в долях клетки, 0.12 = 7.7 px
+// при клетке 64 px). Спрайт декора (tree.png/stone.png) непрозрачен в строках 2..60
+// из 64 и стоит по центру клетки: без этого предела FBM-джиттер кромки тянет воду
+// на 24..70 % клетки суши — «дерево по колено в воде». Значение — та самая полоса
+// |t| < 0.12 из _plan/BUGS_REGISTRY.md, согласованная с маской декора.
+uniform float shore_inset : hint_range(0.0, 0.2, 0.01) = 0.05;
+
 varying vec2 world_pos;
 
 void vertex() {
@@ -69,6 +76,14 @@ float get_shore_fbm(vec2 p) {
 	float n2 = noise(p * 0.013 + vec2(27.4, 61.8)) * 0.28;
 	float n3 = noise(p * 0.035 + vec2(83.1, 19.5)) * 0.10;
 	return (n1 + n2 + n3 - 0.5);
+}
+
+// W-01: допустимая глубина захода воды в клетку суши (в долях клетки).
+// Джиттер кромки «дышит» по знаку FBM: у самой суши полоса чуть уже, в открытой
+// воде — полная shore_inset. Так вода не доходит до центра клетки, где стоит декор.
+float shore_wet_band(float shore) {
+	float k = clamp(0.5 + shore * 1.6, 0.0, 1.0);
+	return shore_inset * mix(0.55, 1.0, k);
 }
 
 // Непрерывное билинейное поле весов биомов со ступенчатым пиксельным квантованием
@@ -115,10 +130,30 @@ int evaluate_biome(vec2 p) {
 
 	// Вода против СУШИ (любой сухопутный код): прежнее поведение берега сохранено,
 	// степь/ледник/гора больше не проваливаются в воду (баг «за кромкой океан»).
-	float water_pot = w_water + fbm - teeth;
-	float land_pot = (w_grass + w_sand + w_steppe + w_glacier + w_mountain) - fbm + teeth;
+	float shore = fbm - teeth;          // W-01: единый джиттер кромки для воды и маски
+	float water_pot = w_water + shore;
+	float land_pot = (w_grass + w_sand + w_steppe + w_glacier + w_mountain) - shore;
 
-	if (water_pot > land_pot && w_water > 0.05) {
+	// W-01: вода не затапливает клетку суши глубже полосы shore_inset.
+	// Hermite-веса у кромки «плоские», поэтому один и тот же джиттер сдвигает
+	// ватерлинию на 24..70 % клетки суши — прямо под спрайт дерева/куста.
+	// Гасим только ЛИШНЮЮ воду (никогда не добавляем): у воды остаётся её
+	// собственная извилистая кромка, а декор у берега стоит на суше.
+	bool is_water = water_pot > land_pot && w_water > 0.05;
+	if (is_water) {
+		// Центр ближайшей клетки: tile_uv = p/64 - 0.5 даёт 0 в центре клетки.
+		ivec2 near_cell = ivec2(round(tile_uv));
+		if (sample_cell(near_cell) != 2) {
+			// de = 0 в центре клетки, 0.5 на кромке; глубина от кромки — Chebyshev.
+			vec2 de = abs(tile_uv - vec2(near_cell));
+			float edge_depth = 0.5 - max(de.x, de.y);
+			if (edge_depth > shore_wet_band(shore)) {
+				is_water = false; // мелководная полоса срезана — дальше обычная суша
+			}
+		}
+	}
+
+	if (is_water) {
 		return 2; // Water
 	}
 
@@ -131,9 +166,10 @@ int evaluate_biome(vec2 p) {
 		return 4; // Glacier
 	}
 
-	// Разделение между травой и песком (как прежде: песчаные пятна сидят в траве)
+	// Разделение между травой и песком (R-21: усиливаем видимость пляжа у воды)
 	float sand_shift = (noise(p * 0.008 + vec2(42.1, 87.3)) - 0.5) * 0.25;
-	if (w_sand + sand_shift > w_grass + w_steppe) {
+	float sand_boost = w_water > 0.05 ? 1.35 : 1.0;
+	if ((w_sand * sand_boost) + sand_shift > w_grass + w_steppe) {
 		return 1; // Sand
 	}
 

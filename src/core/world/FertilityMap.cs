@@ -52,16 +52,26 @@ public sealed class FertilityMap
     {
         if ((uint)x >= (uint)Width || (uint)y >= (uint)Height)
             return;
-        _cur[y * Width + x] = Math.Clamp(value, 0, MaxFertility);
+        int i = y * Width + x;
+        int v = Math.Clamp(value, 0, MaxFertility);
+        // S-09 (бывший W-09 AUDIT-A): пишем в ОБА буфера. Tick работает по схеме
+        // двойной буферизации (cur → nxt, затем swap), и точечная запись только в
+        // _cur могла попасть в массив, который сразу после swap становится _nxt и
+        // целиком перезаписывается следующим тиком — правка терялась молча.
+        _cur[i] = v;
+        _nxt[i] = v;
     }
 
     /// <summary>
     /// Истощение после сбора урожая (§20.4): значение × 0.8
     /// (100 → 80 → 64 → 51...). Кламп 0..200. _base НЕ трогаем —
     /// восстановление под паром идёт к начальному значению.
-    /// RACE: тик раз в час игрового может съесть одно истощение
-    /// (swap буферов) — приемлемо, следующий урожай доберёт. Без lock.
+    /// S-09 (бывший W-09 AUDIT-A): истощение применяется к ОБОИМ буферам, поэтому
+    /// swap в Tick его больше не «съедает». Раньше запись шла только в _cur, и если
+    /// сбор урожая совпадал с тиком, правка попадала в массив, который после swap
+    /// становился целевым буфером следующего тика и перезаписывался целиком.
     /// Зовётся из CropGrowthManager.HarvestCrop (параллельный Commit).
+    /// L-03: нарушение слоёв (core → simulation/ui) — правило и список см. docs/ARCHITECTURE.md §7.1
     /// </summary>
     public void DrainAfterHarvest(int x, int y)
     {
@@ -72,6 +82,7 @@ public sealed class FertilityMap
         if (v < 0) v = 0;
         else if (v > MaxFertility) v = MaxFertility;
         _cur[i] = v;
+        _nxt[i] = v;
     }
 
     // Базовое значение для восстановления под паром (п.19.6-П3): клетка без
@@ -84,6 +95,26 @@ public sealed class FertilityMap
         if ((uint)x >= (uint)Width || (uint)y >= (uint)Height || _base == null)
             return 0;
         return _base[y * Width + x];
+    }
+
+    /// <summary>
+    /// FIX (bughunt 02-2): перенести ЯКОРЬ «пара» из другой карты.
+    ///
+    /// Мост ActiveArea→MapData копировал только текущее значение через Set(), а
+    /// _base не писал (и публичного API не было), поэтому после Initialize карты
+    /// якорь оставался нулевым: восстановление под паром не работало НИКОГДА —
+    /// после сбора урожая плодородие только падало (×0.8) вплоть до 0.
+    /// </summary>
+    public void CopyBaseFrom(FertilityMap source)
+    {
+        if (source == null || source._base == null)
+            return;
+        int expected = Width * Height;
+        if (expected <= 0 || source._base.Length < expected)
+            return;
+        if (_base == null || _base.Length < expected)
+            _base = new byte[expected];
+        Array.Copy(source._base, _base, expected);
     }
 
     /// <summary>
@@ -151,28 +182,10 @@ public sealed class FertilityMap
             }
 
         // Якорь восстановления под паром (п.19.6-П3).
-        SeedBaseFromCurrent();
-        Array.Copy(_cur, _nxt, _cur.Length);
-    }
-
-    /// <summary>
-    /// Заново поставить якорь восстановления под паром по ТЕКУЩИМ значениям.
-    ///
-    /// Зачем публично: мост ActiveArea → MapData (MapDataShim) переносил только
-    /// _cur, а _base у нового MapData оставался null — BaseAt возвращал 0, и
-    /// восстановление под паром после сбора урожая не срабатывало НИКОГДА
-    /// (14-03). У зоны _base == значениям Initialize, поэтому якорь цели новой
-    /// карты = текущее состояние источника.
-    ///
-    /// Звать только когда _cur — стартовое (нетронутое) состояние: иначе якорь
-    /// зафиксирует уже истощённую почву и восстановления не будет.
-    /// </summary>
-    public void SeedBaseFromCurrent()
-    {
-        var anchor = new byte[_cur.Length];
+        _base = new byte[_cur.Length];
         for (int i = 0; i < _cur.Length; i++)
-            anchor[i] = (byte)Math.Clamp(_cur[i], 0, MaxFertility);
-        _base = anchor;
+            _base[i] = (byte)Math.Clamp(_cur[i], 0, 255);
+        Array.Copy(_cur, _nxt, _cur.Length);
     }
 
     /// <summary>
@@ -229,8 +242,9 @@ public sealed class FertilityMap
                     v -= 1;
                 // Пар (п.19.6-П3): без огорода — медленное восстановление
                 // к базовому (+1 раз в 8 тиков, только вверх, не выше базы).
+                // ST-31: 32-битный хеш без деления idiv на 1 млн клеток
                 else if (_base != null && me < _base[i]
-                    && (((x * 83492791) ^ (y * 2971215073 % 100000)) & 7) == 0)
+                    && (((x * 83492791) ^ (int)((uint)(y * 83492791) >>> 16)) & 7) == 0)
                     v = Math.Min(v + 1, _base[i]);
 
                 if (v < 0) v = 0;

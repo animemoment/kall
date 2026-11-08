@@ -3,10 +3,58 @@
 [ext_resource type="Texture2D" uid="uid://buw3nohde55eb" path="res://ui/assets/textures/icons/no.png" id="1_jaqik"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_4pfqy"]
-bg_color = Color(0, 0, 0, 1)
+bg_color = Color(0.08, 0.08, 0.1, 0.95)
+border_width_right = 2
+border_color = Color(0.25, 0.25, 0.3, 1)
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_56dwd"]
-bg_color = Color(0.54471636, 0.10887573, 1.4439226e-07, 0.4)
+bg_color = Color(0.54, 0.11, 0.11, 0.6)
+corner_radius_top_left = 4
+corner_radius_top_right = 4
+corner_radius_bottom_right = 4
+corner_radius_bottom_left = 4
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_bar_bg"]
+bg_color = Color(0.15, 0.15, 0.18, 1)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_health_fg"]
+bg_color = Color(0.2, 0.75, 0.3, 1)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_hunger_fg"]
+bg_color = Color(0.9, 0.55, 0.2, 1)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_sleep_fg"]
+bg_color = Color(0.3, 0.6, 0.95, 1)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_fatigue_fg"]
+bg_color = Color(0.7, 0.4, 0.85, 1)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_sat_fg"]
+bg_color = Color(0.95, 0.85, 0.3, 1)
+corner_radius_top_left = 3
+corner_radius_top_right = 3
+corner_radius_bottom_right = 3
+corner_radius_bottom_left = 3
 
 [node name="Control" type="Control" unique_id=1788500281]
 layout_mode = 3
@@ -15,6 +63,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+mouse_filter = 1
 
 [node name="Panel" type="Panel" parent="." unique_id=2029482941]
 layout_mode = 0
@@ -32,22 +81,177 @@ alignment = 1
 [node name="Label" type="Label" parent="Panel/VBoxContainer" unique_id=1521040626]
 layout_mode = 2
 theme_override_font_sizes/font_size = 32
-text = "Это-"
+text = "Колонист"
 horizontal_alignment = 1
 vertical_alignment = 1
 
 [node name="VBoxContainer2" type="VBoxContainer" parent="Panel" unique_id=1990336983]
 layout_mode = 0
-offset_top = 100.0
-offset_right = 714.0
-offset_bottom = 1080.0
+offset_left = 32.0
+offset_top = 110.0
+offset_right = 682.0
+offset_bottom = 1040.0
+theme_override_constants/separation = 16
+
+[node name="ClassLabel" type="Label" parent="Panel/VBoxContainer2"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 22
+text = "Класс: Разнорабочий"
+
+[node name="StateLabel" type="Label" parent="Panel/VBoxContainer2"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 20
+text = "Действие: Отдыхает"
+
+[node name="CarriedItemLabel" type="Label" parent="Panel/VBoxContainer2"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 20
+text = "Груз: (нет)"
+
+[node name="HSeparator" type="HSeparator" parent="Panel/VBoxContainer2"]
+layout_mode = 2
+
+[node name="NeedsTitle" type="Label" parent="Panel/VBoxContainer2"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 24
+text = "Потребности и здоровье"
+
+[node name="HealthBox" type="HBoxContainer" parent="Panel/VBoxContainer2"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="Title" type="Label" parent="Panel/VBoxContainer2/HealthBox"]
+custom_minimum_size = Vector2(160, 0)
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "Здоровье"
+
+[node name="HealthBar" type="ProgressBar" parent="Panel/VBoxContainer2/HealthBox"]
+custom_minimum_size = Vector2(380, 24)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/background = SubResource("StyleBoxFlat_bar_bg")
+theme_override_styles/fill = SubResource("StyleBoxFlat_health_fg")
+value = 100.0
+show_percentage = false
+
+[node name="HealthValue" type="Label" parent="Panel/VBoxContainer2/HealthBox"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "100%"
+horizontal_alignment = 2
+
+[node name="HungerBox" type="HBoxContainer" parent="Panel/VBoxContainer2"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="Title" type="Label" parent="Panel/VBoxContainer2/HungerBox"]
+custom_minimum_size = Vector2(160, 0)
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "Голод"
+
+[node name="HungerBar" type="ProgressBar" parent="Panel/VBoxContainer2/HungerBox"]
+custom_minimum_size = Vector2(380, 24)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/background = SubResource("StyleBoxFlat_bar_bg")
+theme_override_styles/fill = SubResource("StyleBoxFlat_hunger_fg")
+value = 25.0
+show_percentage = false
+
+[node name="HungerValue" type="Label" parent="Panel/VBoxContainer2/HungerBox"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "25%"
+horizontal_alignment = 2
+
+[node name="SleepBox" type="HBoxContainer" parent="Panel/VBoxContainer2"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="Title" type="Label" parent="Panel/VBoxContainer2/SleepBox"]
+custom_minimum_size = Vector2(160, 0)
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "Сонливость"
+
+[node name="SleepBar" type="ProgressBar" parent="Panel/VBoxContainer2/SleepBox"]
+custom_minimum_size = Vector2(380, 24)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/background = SubResource("StyleBoxFlat_bar_bg")
+theme_override_styles/fill = SubResource("StyleBoxFlat_sleep_fg")
+value = 15.0
+show_percentage = false
+
+[node name="SleepValue" type="Label" parent="Panel/VBoxContainer2/SleepBox"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "15%"
+horizontal_alignment = 2
+
+[node name="FatigueBox" type="HBoxContainer" parent="Panel/VBoxContainer2"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="Title" type="Label" parent="Panel/VBoxContainer2/FatigueBox"]
+custom_minimum_size = Vector2(160, 0)
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "Усталость"
+
+[node name="FatigueBar" type="ProgressBar" parent="Panel/VBoxContainer2/FatigueBox"]
+custom_minimum_size = Vector2(380, 24)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/background = SubResource("StyleBoxFlat_bar_bg")
+theme_override_styles/fill = SubResource("StyleBoxFlat_fatigue_fg")
+value = 10.0
+show_percentage = false
+
+[node name="FatigueValue" type="Label" parent="Panel/VBoxContainer2/FatigueBox"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "10%"
+horizontal_alignment = 2
+
+[node name="SatBox" type="HBoxContainer" parent="Panel/VBoxContainer2"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="Title" type="Label" parent="Panel/VBoxContainer2/SatBox"]
+custom_minimum_size = Vector2(160, 0)
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "Мораль"
+
+[node name="SatisfactionBar" type="ProgressBar" parent="Panel/VBoxContainer2/SatBox"]
+custom_minimum_size = Vector2(380, 24)
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/background = SubResource("StyleBoxFlat_bar_bg")
+theme_override_styles/fill = SubResource("StyleBoxFlat_sat_fg")
+value = 85.0
+show_percentage = false
+
+[node name="SatisfactionValue" type="Label" parent="Panel/VBoxContainer2/SatBox"]
+custom_minimum_size = Vector2(80, 0)
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "85%"
+horizontal_alignment = 2
 
 [node name="esc" type="Button" parent="Panel" unique_id=1265133664]
 layout_mode = 0
-offset_left = 4.0
-offset_top = 4.0
-offset_right = 44.0
-offset_bottom = 44.0
+offset_left = 650.0
+offset_top = 16.0
+offset_right = 698.0
+offset_bottom = 64.0
 theme_override_styles/normal = SubResource("StyleBoxFlat_56dwd")
 icon = ExtResource("1_jaqik")
 expand_icon = true

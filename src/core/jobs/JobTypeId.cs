@@ -16,5 +16,7 @@ public enum JobTypeId : byte
     Mining = 8,
     Planting = 9,           // Посадка семян
     Harvesting = 10,        // Сбор урожая
-    WorldPlan = 11          // §123: чертёж стримингового мира (мост WorldJobBoard→Dispatcher)
+    WorldPlan = 11,         // Мировой чертёж за кромкой острова (§123 WorldPlanHandler)
+    OreMining = 12,          // Добыча руды (task-4: жила = хранилище с запасом)
+    Production = 13          // Работа у станка по рецепту (task-20: руда→слиток и т.п.)
 }

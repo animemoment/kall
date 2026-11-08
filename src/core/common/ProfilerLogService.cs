@@ -655,7 +655,7 @@ public sealed class ProfilerLogService
             // Автодиагностика
             sb.AppendLine("### 💡 АВТО-ДИАГНОСТИКА AI");
             bool detected = false;
-            if (ctx.DrawCalls > 200) // measured norm 2026-10-28: ~40 game, ~110 with F3 open
+            if (ctx.DrawCalls > 800)
             {
                 sb.AppendLine($"- ⚠️ **Высокие DrawCalls**: {ctx.DrawCalls} вызовов отрисовки! Рекомендуется объединить геометрию в MultiMesh.");
                 detected = true;

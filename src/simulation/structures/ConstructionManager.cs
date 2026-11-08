@@ -15,6 +15,11 @@ public sealed class ConstructionManager
     public static ConstructionManager Instance { get; } = new();
 
     private readonly object _lock = new();
+
+    // task-21: мост UI→sim (как GroundItemManager.SetMapData): чтобы гейты руды
+    // работали и для вызовов без mapData (BlueprintManager.AddBlueprint и т.п.).
+    // Устанавливается из Main.OnMapApplied; в sim-потоке читается через ссылку.
+    private MapData _mapData;
     private readonly Dictionary<(int X, int Y), ConstructionSite> _sites = new(2048);
     private int _nextGroupId = 1;
     private readonly Dictionary<int, HashSet<(int X, int Y)>> _groupToCells = new();
@@ -33,7 +38,39 @@ public sealed class ConstructionManager
 
     public bool IsSiteAt(int x, int y)
     {
-        lock (_lock) return _sites.ContainsKey((x, y));
+        lock (_lock)
+        {
+            if (_sites.ContainsKey((x, y)))
+                return true;
+        }
+        // task-22: ЛЮБАЯ клетка габарита сайта — «занято сайтом» (станок 3×4).
+        return FootprintRegistry.TryGetOrigin(x, y, out var origin)
+            && _sites.ContainsKey(origin);
+    }
+
+    /// <summary>
+    /// task-22: origin сайта по любой его клетке (габарит); false — клетка не сайт.
+    /// </summary>
+    public bool TryGetSiteOrigin(int x, int y, out int originX, out int originY)
+    {
+        lock (_lock)
+        {
+            if (_sites.ContainsKey((x, y)))
+            {
+                originX = x;
+                originY = y;
+                return true;
+            }
+        }
+        if (FootprintRegistry.TryGetOrigin(x, y, out var origin) && _sites.ContainsKey(origin))
+        {
+            originX = origin.X;
+            originY = origin.Y;
+            return true;
+        }
+        originX = x;
+        originY = y;
+        return false;
     }
 
     public bool TryGetSite(int x, int y, out ConstructionSite site)
@@ -80,7 +117,7 @@ public sealed class ConstructionManager
             return site.Stage == ConstructionStage.Supplying;
 
         if (typeId == JobTypeId.Construction)
-            return site.Stage == ConstructionStage.Assembling;
+            return site.Stage == ConstructionStage.Assembling && site.IsFullySupplied;
 
         return true;
     }
@@ -93,6 +130,132 @@ public sealed class ConstructionManager
     public void NotifySupplyDone(int x, int y)
     {
         // В новой логике обработано внутри DeliverMaterial
+    }
+
+    /// <summary>
+    /// task-19 / B-01 / U-02: материалы клетки довезены ПОЛНОСТЬЮ (все типы) — продвинуть
+    /// пайплайн. Стройка начинается ТОЛЬКО после 100% доставки материалов на сайт.
+    /// Один вход для обоих режимов: обычный монтаж по клетке либо
+    /// групповой гейт WaitForAllSiteResources (здание целиком).
+    /// </summary>
+    public void NotifyMaterialsComplete(int x, int y)
+    {
+        int groupId = 0;
+        bool shouldRegisterNow = false;
+        lock (_lock)
+        {
+            if (!_sites.TryGetValue((x, y), out var site) || !site.IsFullySupplied)
+                return;
+
+            site.Stage = BuildConfig.WaitForAllSiteResources ? ConstructionStage.WaitingAll : ConstructionStage.Assembling;
+            if (!BuildConfig.WaitForAllSiteResources)
+            {
+                shouldRegisterNow = true;
+            }
+            else
+            {
+                _cellToGroup.TryGetValue((x, y), out groupId);
+            }
+        }
+
+        if (shouldRegisterNow)
+        {
+            JobBroker.Instance.RegisterConstructionAt(x, y);
+        }
+        else if (groupId > 0)
+        {
+            CheckGroupFullSupply(groupId);
+        }
+    }
+
+    /// <summary>Инъекция MapData (Main.OnMapApplied) — нужна гейтам руды (task-21).</summary>
+    public void SetMapData(MapData mapData) => _mapData = mapData;
+
+    /// <summary>
+    /// task-21 / AUDIT task-17 (P4-1): на клетке руды строить нельзя (месторождение
+    /// теряется). Остров — по MapData.HasOre; мир за кромкой — по «известному» набору
+    /// поля (<see cref="OreWorldField.TryPeekKnownOreLocal"/>): он переживает эвикцию
+    /// кэша поля, а «неизвестно» трактуется как «руды нет» (не блокируем игрока из-за
+    /// того, что чанк ещё не считан/кэш очищен).
+    /// </summary>
+    public bool IsOreBlockedCell(int x, int y, MapData mapData = null)
+    {
+        MapData md = mapData ?? _mapData;
+        if (md != null && (uint)x < (uint)md.Width && (uint)y < (uint)md.Height)
+            return md.HasOre(x, y);
+
+        ulong seed = Game.Core.World.WorldModel.Seed;
+        if (seed == 0)
+            return false;
+        return Game.Core.OreWorldField.TryPeekKnownOreLocal(x, y, out bool ore) && ore;
+    }
+
+    /// <summary>
+    /// task-22: можно ли занять ВЕСЬ прямоугольник W×H клеток под постройку.
+    /// Проверяются все клетки: в границах карты, трава (не вода/гора/песок),
+    /// не руда (task-21), нет готовой структуры/сайта/грядки. Камень НЕ запрещаем:
+    /// этап расчистки его добудет (как было со стенами). Мир (mapData==null) —
+    /// гейты ставит инструмент/мир, здесь проверяем только занятость.
+    /// До 12 итераций, без аллокаций.
+    /// </summary>
+    public bool CanOccupyFootprint(int originX, int originY, StructureDefinition def, MapData mapData = null)
+    {
+        if (def == null)
+            return false;
+        int w = Math.Max(1, def.Width);
+        int h = Math.Max(1, def.Height);
+        bool multiTile = w > 1 || h > 1;
+        MapData md = mapData ?? _mapData;
+
+        for (int y = originY; y < originY + h; y++)
+        {
+            for (int x = originX; x < originX + w; x++)
+            {
+                if (md != null)
+                {
+                    if ((uint)x >= (uint)md.Width || (uint)y >= (uint)md.Height)
+                        return false;
+                    if (md.Ground[x, y] != TileType.Grass)
+                        return false;
+                    if (md.HasOre(x, y))
+                        return false;
+                    if (multiTile && (md.TreeOnGrass[x, y] || md.StoneOnGrass[x, y]))
+                        return false; // станок не прорастает сквозь дерево/камень
+                }
+
+                // Специфика слоев: полы и крыши не блокируются структурами
+                if (def.IsFloor)
+                {
+                    if (StructureManager.Instance.TryGetFloor(x, y, out var fl) && fl.Definition.Type == def.Type)
+                        return false;
+                }
+                else if (def.IsRoof)
+                {
+                    if (StructureManager.Instance.HasRoofAt(x, y))
+                        return false;
+                }
+                else
+                {
+                    if (StructureManager.Instance.IsOccupiedForBuildAt(x, y))
+                        return false;
+                    if (BuildingManager.Instance.HasBuildingAt(x, y))
+                        return false;
+                    if (FarmJobManager.Instance.IsGardenBed(x, y) || FarmJobManager.Instance.IsPlotMarked(x, y))
+                        return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /// <summary>task-22: занять габарит сайта (atomic; false — клетки уже заняты).</summary>
+    private static bool OccupySiteFootprint(int originX, int originY, StructureDefinition def)
+    {
+        if (def != null && (def.IsFloor || def.IsRoof))
+            return true; // Полы и крыши не занимают Footprint
+        return FootprintRegistry.TryOccupy(originX, originY,
+            def != null ? Math.Max(1, def.Width) : 1,
+            def != null ? Math.Max(1, def.Height) : 1);
     }
 
     public bool StartSite(int x, int y, StructureDefinition def, MapData mapData)
@@ -149,7 +312,16 @@ public sealed class ConstructionManager
             {
                 foreach (var pos in cells)
                 {
-                    if (StructureManager.Instance.HasStructureAt(pos.X, pos.Y) || _sites.ContainsKey(pos))
+                    if ((!def.IsFloor && !def.IsRoof && StructureManager.Instance.HasStructureAt(pos.X, pos.Y)) || _sites.ContainsKey(pos))
+                        continue;
+                    // task-21: чертёж на руде площадку не создаёт (жила сохраняется).
+                    if (IsOreBlockedCell(pos.X, pos.Y, mapData))
+                        continue;
+                    // task-22: станок 3×4 валидируется и занимается ЦЕЛИКОМ — иначе
+                    // площадка наезжает на стены/грядки/другой станок.
+                    if (!CanOccupyFootprint(pos.X, pos.Y, def, mapData))
+                        continue;
+                    if (!OccupySiteFootprint(pos.X, pos.Y, def))
                         continue;
 
                     var site = new ConstructionSite(pos.X, pos.Y, def)
@@ -157,9 +329,35 @@ public sealed class ConstructionManager
                         SiteId = groupId
                     };
 
-                    bool hasTree = treeMask != null && (uint)pos.X < (uint)treeMask.GetLength(0) && (uint)pos.Y < (uint)treeMask.GetLength(1) && treeMask[pos.X, pos.Y];
-                    bool hasStone = stoneMask != null && (uint)pos.X < (uint)stoneMask.GetLength(0) && (uint)pos.Y < (uint)stoneMask.GetLength(1) && stoneMask[pos.X, pos.Y];
-                    bool hasItems = GroundItemManager.Instance.HasItemsAt(pos.X, pos.Y);
+                    int sW = def?.Width ?? 1;
+                    int sH = def?.Height ?? 1;
+
+                    bool hasTree = false;
+                    bool hasStone = false;
+                    bool hasItems = false;
+
+                    for (int dy = 0; dy < sH; dy++)
+                    {
+                        for (int dx = 0; dx < sW; dx++)
+                        {
+                            var cell = new Vector2I(pos.X + dx, pos.Y + dy);
+                            if (treeMask != null && (uint)cell.X < (uint)treeMask.GetLength(0) && (uint)cell.Y < (uint)treeMask.GetLength(1) && treeMask[cell.X, cell.Y])
+                            {
+                                hasTree = true;
+                                treesToChop.Add((cell.X, cell.Y));
+                            }
+                            if (stoneMask != null && (uint)cell.X < (uint)stoneMask.GetLength(0) && (uint)cell.Y < (uint)stoneMask.GetLength(1) && stoneMask[cell.X, cell.Y])
+                            {
+                                hasStone = true;
+                                stonesToMine.Add((cell.X, cell.Y));
+                            }
+                            if (GroundItemManager.Instance.HasItemsAt(cell.X, cell.Y))
+                            {
+                                hasItems = true;
+                                itemsToHaul.Add((cell.X, cell.Y));
+                            }
+                        }
+                    }
 
                     site.NeedTree = hasTree;
                     site.NeedStone = hasStone;
@@ -174,10 +372,6 @@ public sealed class ConstructionManager
                     _cellToGroup[pos] = groupId;
                     groupCells.Add(pos);
                     addedSites.Add(site);
-
-                    if (hasTree) treesToChop.Add(pos);
-                    if (hasStone) stonesToMine.Add(pos);
-                    if (hasItems) itemsToHaul.Add(pos);
                 }
             }
         }
@@ -395,11 +589,15 @@ public sealed class ConstructionManager
         List<(int X, int Y)> pendingWarehouseToActivate = null;
         lock (_lock)
         {
-            if (!_sites.TryGetValue((x, y), out site))
+            // task-22: завершить можно по ЛЮБОЙ клетке габарита — приводим к origin.
+            if (!TryGetSiteOrigin(x, y, out int originX, out int originY)
+                || !_sites.TryGetValue((originX, originY), out site))
             {
                 completedDef = null;
                 return false;
             }
+            x = originX;
+            y = originY;
 
             site.Stage = ConstructionStage.Completed;
             _sites.Remove((x, y));
@@ -424,8 +622,39 @@ public sealed class ConstructionManager
         // Гасим спрайт прогресса
         OnProgressStageChanged?.Invoke((x, y), -1);
 
+        // task-22: сайт освобождает ВЕСЬ габарит, структура тут же занимает его
+        // заново (W×H станка) — без окна «клетки свободны».
+        FootprintRegistry.ReleaseOrigin(x, y);
+
         // Добавляем готовую структуру и выталкиваем агентов из возведенной стены
         StructureManager.Instance.AddStructure(x, y, completedDef, ctx, pool);
+
+        // Автоматическая установка пола и крыши для станков (промышленные) и кроватей (жилые)
+        if (completedDef.Category == StructureCategory.Production)
+        {
+            var floorDef = StructureRegistry.ConcreteFloor;
+            var roofDef = StructureRegistry.RoofIndustrial;
+            for (int dy = 0; dy < completedDef.Height; dy++)
+            {
+                for (int dx = 0; dx < completedDef.Width; dx++)
+                {
+                    int fx = x + dx, fy = y + dy;
+                    if (!StructureManager.Instance.HasFloorAt(fx, fy))
+                        StructureManager.Instance.AddStructure(fx, fy, floorDef, ctx, pool);
+                    if (!StructureManager.Instance.HasRoofAt(fx, fy))
+                        StructureManager.Instance.AddStructure(fx, fy, roofDef, ctx, pool);
+                }
+            }
+        }
+        else if (completedDef.Type == BuildingType.Bed)
+        {
+            var floorDef = StructureRegistry.WoodFloor;
+            var roofDef = StructureRegistry.RoofResidential;
+            if (!StructureManager.Instance.HasFloorAt(x, y))
+                StructureManager.Instance.AddStructure(x, y, floorDef, ctx, pool);
+            if (!StructureManager.Instance.HasRoofAt(x, y))
+                StructureManager.Instance.AddStructure(x, y, roofDef, ctx, pool);
+        }
 
         // Если здание склада полностью достроено — активируем его зону
         if (pendingWarehouseToActivate != null && pendingWarehouseToActivate.Count > 0)
@@ -443,8 +672,11 @@ public sealed class ConstructionManager
         List<(int X, int Y)> pendingToRemove = null;
         lock (_lock)
         {
-            if (!_sites.Remove((x, y), out site))
+            if (!TryGetSiteOrigin(x, y, out int originX, out int originY)
+                || !_sites.Remove((originX, originY), out site))
                 return;
+            x = originX;
+            y = originY;
 
             if (_cellToGroup.TryGetValue((x, y), out int gid))
             {
@@ -466,6 +698,9 @@ public sealed class ConstructionManager
             StockpileManager.Instance.RemoveZoneTilesBatch(pendingToRemove);
         }
 
+        // task-22: освободить все клетки габарита снесённого сайта.
+        FootprintRegistry.ReleaseOrigin(x, y);
+
         UnregisterSiteJobsAndRefund(x, y, site);
         OnProgressStageChanged?.Invoke((x, y), -1);
         Callable.From(() => OnSiteRemoved?.Invoke((x, y))).CallDeferred();
@@ -479,8 +714,12 @@ public sealed class ConstructionManager
         var pendingBatchesToRemove = new List<List<(int X, int Y)>>();
         lock (_lock)
         {
-            foreach (var pos in cells)
+            foreach (var rawPos in cells)
             {
+                // task-22: клетки внутри габарита станка сносят его по origin.
+                if (!TryGetSiteOrigin(rawPos.X, rawPos.Y, out int ox, out int oy))
+                    continue;
+                var pos = (X: ox, Y: oy);
                 if (_sites.Remove(pos, out var site))
                 {
                     removed.Add((pos, site));
@@ -513,6 +752,8 @@ public sealed class ConstructionManager
         foreach (var (pos, site) in removed)
         {
             removedPosList.Add(pos);
+            // task-22: освободить весь габарит снесённого сайта.
+            FootprintRegistry.ReleaseOrigin(pos.X, pos.Y);
             UnregisterSiteJobsAndRefund(pos.X, pos.Y, site);
             OnProgressStageChanged?.Invoke(pos, -1);
         }
@@ -541,16 +782,22 @@ public sealed class ConstructionManager
                 if (count > 0)
                 {
                     (int X, int Y) stand = (x, y);
-                    for (int oy = -2; oy <= 2; oy++)
-                        for (int ox = -2; ox <= 2; ox++)
+                    bool placed = false;
+                    for (int oy = -2; oy <= 2 && !placed; oy++)
+                    {
+                        for (int ox = -2; ox <= 2 && !placed; ox++)
                         {
                             if (ox == 0 && oy == 0) continue;
-                            if (!GroundItemManager.Instance.HasItemsAt(x + ox, y + oy))
+                            int nx = x + ox, ny = y + oy;
+                            if (Game.Core.World.WorldModel.IsInsideIsland(nx, ny) &&
+                                !GroundItemManager.Instance.HasItemsAt(nx, ny) &&
+                                !StructureManager.Instance.IsWallAt(nx, ny))
                             {
-                                stand = (x + ox, y + oy);
-                                break;
+                                stand = (nx, ny);
+                                placed = true;
                             }
                         }
+                    }
                     GroundItemManager.Instance.SpawnItems(stand.X, stand.Y, item, count);
                 }
             }
@@ -567,6 +814,8 @@ public sealed class ConstructionManager
             _groupToCells.Clear();
             _cellToGroup.Clear();
             _groupToPendingWarehouse.Clear();
+            // task-22: все занятые габариты сайтов снимаются вместе с картой.
+            FootprintRegistry.Clear();
         }
 
         var positions = new List<(int X, int Y)>(snapshot.Count);
@@ -633,14 +882,57 @@ public sealed class ConstructionManager
             }
             else if (site.Stage == ConstructionStage.Supplying)
             {
-                if (!idx.HasJobAt(x, y, JobTypeId.BlueprintDelivery))
+                if (site.IsFullySupplied)
                 {
+                    NotifyMaterialsComplete(x, y);
+                }
+                else if (!idx.HasJobAt(x, y, JobTypeId.BlueprintDelivery))
+                {
+                    JobBroker.Instance.RegisterBlueprint(x, y, site.Definition.Type, site.Definition.TotalRequiredItems);
+                }
+            }
+            else if (site.Stage == ConstructionStage.WaitingAll)
+            {
+                // J-14: у WaitingAll не было самопочинки — продвинуть группу могла
+                // ТОЛЬКО очередная доставка (DeliverMaterial → CheckGroupFullSupply).
+                // Если все клетки группы уже полностью снабжены, а доставок больше
+                // не будет, группа висела в WaitingAll вечно: стройка «встала, хотя
+                // всё расчищено и материал есть». Теперь состояние перепроверяется
+                // на каждом reconcile-тике, и группа продвигается сама.
+                if (_cellToGroup.TryGetValue((x, y), out int waitingGroupId) && waitingGroupId > 0)
+                {
+                    CheckGroupFullSupply(waitingGroupId);
+                }
+
+                // Всё ещё висим и материала не хватает — значит доставка потерялась
+                // (работу сняли/выполнили мимо счётчика). Пересоздаём blueprint,
+                // чтобы материал можно было донести; для уже снабжённой клетки
+                // это было бы перепроизводство, поэтому только при !IsFullySupplied.
+                if (site.Stage == ConstructionStage.WaitingAll
+                    && !site.IsFullySupplied
+                    && !idx.HasJobAt(x, y, JobTypeId.BlueprintDelivery))
+                {
+                    site.Stage = ConstructionStage.Supplying;
                     JobBroker.Instance.RegisterBlueprint(x, y, site.Definition.Type, site.Definition.TotalRequiredItems);
                 }
             }
             else if (site.Stage == ConstructionStage.Assembling)
             {
-                if (!idx.HasJobAt(x, y, JobTypeId.Construction))
+                if (!site.IsFullySupplied)
+                {
+                    // B-01 / U-02: Если на стадии Assembling материалы не поставлены на 100%,
+                    // возвращаем в Supplying и пересоздаем BlueprintDelivery.
+                    site.Stage = ConstructionStage.Supplying;
+                    if (idx.HasJobAt(x, y, JobTypeId.Construction))
+                    {
+                        JobDispatcher.Instance.UnregisterJobByPos(x, y, JobTypeId.Construction);
+                    }
+                    if (!idx.HasJobAt(x, y, JobTypeId.BlueprintDelivery))
+                    {
+                        JobBroker.Instance.RegisterBlueprint(x, y, site.Definition.Type, site.Definition.TotalRequiredItems);
+                    }
+                }
+                else if (!idx.HasJobAt(x, y, JobTypeId.Construction))
                 {
                     JobBroker.Instance.RegisterConstructionAt(x, y);
                 }

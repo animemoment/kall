@@ -1,190 +1,306 @@
 [gd_scene format=3 uid="uid://cm6y1rkslsxkw"]
 
-[ext_resource type="FontFile" uid="uid://dtxjeqjsb5eii" path="res://assets/fonts/Handjet-VariableFont_ELGR,ELSH,wght.ttf" id="1_581w3"]
-[ext_resource type="Texture2D" uid="uid://dlwnf30f3d30l" path="res://ui/assets/textures/icons/PrioritetIcons/Logistic_icon.png" id="2_581w3"]
-[ext_resource type="Texture2D" uid="uid://44rxtlo4n47u" path="res://ui/assets/textures/icons/PrioritetIcons/lumberjack.png" id="3_dxflp"]
-[ext_resource type="Texture2D" uid="uid://bwtxffukyyje0" path="res://ui/assets/textures/icons/Wheat.png" id="4_fjwvm"]
-[ext_resource type="Texture2D" uid="uid://c2h36jt7fhipf" path="res://ui/assets/textures/icons/PrioritetIcons/BuildIconPriotitet.png" id="5_8p48s"]
+[ext_resource type="FontFile" uid="uid://dtxjeqjsb5eii" path="res://assets/fonts/Handjet-VariableFont_ELGR,ELSH,wght.ttf" id="1_font"]
+[ext_resource type="Texture2D" uid="uid://dlwnf30f3d30l" path="res://ui/assets/textures/icons/PrioritetIcons/Logistic_icon.png" id="2_log"]
+[ext_resource type="Texture2D" uid="uid://44rxtlo4n47u" path="res://ui/assets/textures/icons/PrioritetIcons/lumberjack.png" id="3_lumb"]
+[ext_resource type="Texture2D" uid="uid://bwtxffukyyje0" path="res://ui/assets/textures/icons/Wheat.png" id="4_farm"]
+[ext_resource type="Texture2D" uid="uid://c2h36jt7fhipf" path="res://ui/assets/textures/icons/PrioritetIcons/BuildIconPriotitet.png" id="5_build"]
 
-[sub_resource type="Theme" id="Theme_8p48s"]
-default_font = ExtResource("1_581w3")
+[sub_resource type="Theme" id="Theme_main"]
+default_font = ExtResource("1_font")
+default_font_size = 20
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_qt3qv"]
-bg_color = Color(0, 0, 0, 1)
+[sub_resource type="StyleBoxFlat" id="SB_panel"]
+bg_color = Color(0.0156863, 0.0156863, 0.0196078, 0.985)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.196078, 0.196078, 0.211765, 1)
 
-[node name="Control" type="Control" unique_id=370585758]
-custom_minimum_size = Vector2(0, -1.83)
+[sub_resource type="StyleBoxFlat" id="SB_header"]
+bg_color = Color(0.027451, 0.027451, 0.0313726, 1)
+border_width_bottom = 1
+border_color = Color(0.196078, 0.196078, 0.211765, 1)
+content_margin_left = 18.0
+content_margin_top = 12.0
+content_margin_right = 18.0
+content_margin_bottom = 12.0
+
+[sub_resource type="StyleBoxFlat" id="SB_button"]
+bg_color = Color(0.0431373, 0.0431373, 0.0470588, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.211765, 0.211765, 0.223529, 1)
+content_margin_left = 6.0
+content_margin_top = 2.0
+content_margin_right = 6.0
+content_margin_bottom = 2.0
+
+[sub_resource type="StyleBoxFlat" id="SB_button_hover"]
+bg_color = Color(0.101961, 0.101961, 0.113725, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.501961, 0.501961, 0.533333, 1)
+content_margin_left = 6.0
+content_margin_top = 2.0
+content_margin_right = 6.0
+content_margin_bottom = 2.0
+
+[sub_resource type="StyleBoxFlat" id="SB_button_pressed"]
+bg_color = Color(0.0117647, 0.0117647, 0.0156863, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.909804, 0.909804, 0.909804, 1)
+content_margin_left = 6.0
+content_margin_top = 2.0
+content_margin_right = 6.0
+content_margin_bottom = 2.0
+
+[sub_resource type="StyleBoxFlat" id="SB_icon"]
+bg_color = Color(0, 0, 0, 0)
+content_margin_left = 2.0
+content_margin_top = 2.0
+content_margin_right = 2.0
+content_margin_bottom = 2.0
+
+[node name="Control" type="Control"]
+custom_minimum_size = Vector2(0, 0)
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+mouse_filter = 2
+theme = SubResource("Theme_main")
 
-[node name="PriorityBoard" type="PanelContainer" parent="." unique_id=1208462569]
+[node name="PriorityBoard" type="PanelContainer" parent="."]
 layout_mode = 0
 offset_left = 1646.0
 offset_top = 454.0
 offset_right = 1920.0
 offset_bottom = 1080.0
-theme = SubResource("Theme_8p48s")
-theme_override_styles/panel = SubResource("StyleBoxFlat_qt3qv")
+theme_override_styles/panel = SubResource("SB_panel")
 
-[node name="VBoxContainer" type="VBoxContainer" parent="PriorityBoard" unique_id=1885065381]
+[node name="VBoxContainer" type="VBoxContainer" parent="PriorityBoard"]
 layout_mode = 2
-theme_override_constants/separation = 15
+theme_override_constants/separation = 12
 
-[node name="Label" type="Label" parent="PriorityBoard/VBoxContainer" unique_id=1969565178]
+[node name="Label" type="Label" parent="PriorityBoard/VBoxContainer"]
 layout_mode = 2
-theme_override_fonts/font = ExtResource("1_581w3")
-theme_override_font_sizes/font_size = 24
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 22
+theme_override_styles/normal = SubResource("SB_header")
 text = "Приоритеты работ"
 horizontal_alignment = 1
 
-[node name="LogisticsSpecialist" type="HBoxContainer" parent="PriorityBoard/VBoxContainer" unique_id=1544298691]
+[node name="LogisticsSpecialist" type="HBoxContainer" parent="PriorityBoard/VBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 0
 size_flags_vertical = 4
+theme_override_constants/separation = 8
 
-[node name="LogisticPrioritetContainer" type="PanelContainer" parent="PriorityBoard/VBoxContainer/LogisticsSpecialist" unique_id=411558801]
+[node name="LogisticPrioritetContainer" type="PanelContainer" parent="PriorityBoard/VBoxContainer/LogisticsSpecialist"]
 custom_minimum_size = Vector2(45, 45)
 layout_mode = 2
 size_flags_horizontal = 0
 size_flags_vertical = 4
+theme_override_styles/panel = SubResource("SB_icon")
 
-[node name="TextureRect" type="TextureRect" parent="PriorityBoard/VBoxContainer/LogisticsSpecialist/LogisticPrioritetContainer" unique_id=249573111]
+[node name="TextureRect" type="TextureRect" parent="PriorityBoard/VBoxContainer/LogisticsSpecialist/LogisticPrioritetContainer"]
 layout_mode = 2
-texture = ExtResource("2_581w3")
+texture = ExtResource("2_log")
 expand_mode = 5
 
-[node name="VBoxContainer" type="VBoxContainer" parent="PriorityBoard/VBoxContainer/LogisticsSpecialist" unique_id=1359967983]
+[node name="VBoxContainer" type="VBoxContainer" parent="PriorityBoard/VBoxContainer/LogisticsSpecialist"]
 custom_minimum_size = Vector2(20, 5)
 layout_mode = 2
 
-[node name="+" type="Button" parent="PriorityBoard/VBoxContainer/LogisticsSpecialist/VBoxContainer" unique_id=810901416]
+[node name="+" type="Button" parent="PriorityBoard/VBoxContainer/LogisticsSpecialist/VBoxContainer"]
 custom_maximum_size = Vector2(25, 25)
 layout_mode = 2
-theme_override_font_sizes/font_size = 22
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 18
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 text = "+"
 
-[node name="-" type="Button" parent="PriorityBoard/VBoxContainer/LogisticsSpecialist/VBoxContainer" unique_id=1021273175]
+[node name="-" type="Button" parent="PriorityBoard/VBoxContainer/LogisticsSpecialist/VBoxContainer"]
 custom_minimum_size = Vector2(25, 25)
 custom_maximum_size = Vector2(25, 25)
 layout_mode = 2
-theme_override_font_sizes/font_size = 22
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 18
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 text = "-"
 
-[node name="NumLog" type="Label" parent="PriorityBoard/VBoxContainer/LogisticsSpecialist" unique_id=1318925055]
+[node name="NumLog" type="Label" parent="PriorityBoard/VBoxContainer/LogisticsSpecialist"]
 custom_minimum_size = Vector2(35, 0)
 layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 18
+horizontal_alignment = 1
+vertical_alignment = 1
 
-[node name="LumberjackPrioritetContainer" type="HBoxContainer" parent="PriorityBoard/VBoxContainer" unique_id=722754267]
+[node name="LumberjackPrioritetContainer" type="HBoxContainer" parent="PriorityBoard/VBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 0
 size_flags_vertical = 4
+theme_override_constants/separation = 8
 
-[node name="WoodContainer" type="PanelContainer" parent="PriorityBoard/VBoxContainer/LumberjackPrioritetContainer" unique_id=647512178]
+[node name="WoodContainer" type="PanelContainer" parent="PriorityBoard/VBoxContainer/LumberjackPrioritetContainer"]
 custom_minimum_size = Vector2(45, 45)
 layout_mode = 2
 size_flags_horizontal = 0
 size_flags_vertical = 4
+theme_override_styles/panel = SubResource("SB_icon")
 
-[node name="TextureRect" type="TextureRect" parent="PriorityBoard/VBoxContainer/LumberjackPrioritetContainer/WoodContainer" unique_id=352332119]
+[node name="TextureRect" type="TextureRect" parent="PriorityBoard/VBoxContainer/LumberjackPrioritetContainer/WoodContainer"]
 layout_mode = 2
-texture = ExtResource("3_dxflp")
+texture = ExtResource("3_lumb")
 expand_mode = 4
 
-[node name="VBoxContainer" type="VBoxContainer" parent="PriorityBoard/VBoxContainer/LumberjackPrioritetContainer" unique_id=1514946983]
+[node name="VBoxContainer" type="VBoxContainer" parent="PriorityBoard/VBoxContainer/LumberjackPrioritetContainer"]
 custom_minimum_size = Vector2(20, 5)
 layout_mode = 2
 
-[node name="+" type="Button" parent="PriorityBoard/VBoxContainer/LumberjackPrioritetContainer/VBoxContainer" unique_id=1808308318]
+[node name="+" type="Button" parent="PriorityBoard/VBoxContainer/LumberjackPrioritetContainer/VBoxContainer"]
 custom_maximum_size = Vector2(-1, 25)
 layout_mode = 2
-theme_override_font_sizes/font_size = 22
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 18
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 text = "+"
 
-[node name="-" type="Button" parent="PriorityBoard/VBoxContainer/LumberjackPrioritetContainer/VBoxContainer" unique_id=181856232]
+[node name="-" type="Button" parent="PriorityBoard/VBoxContainer/LumberjackPrioritetContainer/VBoxContainer"]
 custom_minimum_size = Vector2(25, 25)
 custom_maximum_size = Vector2(25, 25)
 layout_mode = 2
-theme_override_font_sizes/font_size = 22
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 18
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 text = "-"
 
-[node name="NumLumb" type="Label" parent="PriorityBoard/VBoxContainer/LumberjackPrioritetContainer" unique_id=1068931516]
+[node name="NumLumb" type="Label" parent="PriorityBoard/VBoxContainer/LumberjackPrioritetContainer"]
 custom_minimum_size = Vector2(30, 0)
 layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 18
+horizontal_alignment = 1
+vertical_alignment = 1
 
-[node name="FarmerPrioritetContainer2" type="HBoxContainer" parent="PriorityBoard/VBoxContainer" unique_id=1685747688]
+[node name="FarmerPrioritetContainer2" type="HBoxContainer" parent="PriorityBoard/VBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 0
 size_flags_vertical = 4
+theme_override_constants/separation = 8
 
-[node name="FarmerContainer" type="PanelContainer" parent="PriorityBoard/VBoxContainer/FarmerPrioritetContainer2" unique_id=411018641]
+[node name="FarmerContainer" type="PanelContainer" parent="PriorityBoard/VBoxContainer/FarmerPrioritetContainer2"]
 custom_minimum_size = Vector2(45, 45)
 layout_mode = 2
 size_flags_horizontal = 0
 size_flags_vertical = 4
+theme_override_styles/panel = SubResource("SB_icon")
 
-[node name="TextureRect" type="TextureRect" parent="PriorityBoard/VBoxContainer/FarmerPrioritetContainer2/FarmerContainer" unique_id=1619884526]
+[node name="TextureRect" type="TextureRect" parent="PriorityBoard/VBoxContainer/FarmerPrioritetContainer2/FarmerContainer"]
 layout_mode = 2
-texture = ExtResource("4_fjwvm")
+texture = ExtResource("4_farm")
 expand_mode = 4
 
-[node name="VBoxContainer" type="VBoxContainer" parent="PriorityBoard/VBoxContainer/FarmerPrioritetContainer2" unique_id=1527248243]
+[node name="VBoxContainer" type="VBoxContainer" parent="PriorityBoard/VBoxContainer/FarmerPrioritetContainer2"]
 custom_minimum_size = Vector2(20, 5)
 layout_mode = 2
 
-[node name="+" type="Button" parent="PriorityBoard/VBoxContainer/FarmerPrioritetContainer2/VBoxContainer" unique_id=1334202067]
+[node name="+" type="Button" parent="PriorityBoard/VBoxContainer/FarmerPrioritetContainer2/VBoxContainer"]
 custom_maximum_size = Vector2(-1, 25)
 layout_mode = 2
-theme_override_font_sizes/font_size = 22
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 18
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 text = "+"
 
-[node name="-" type="Button" parent="PriorityBoard/VBoxContainer/FarmerPrioritetContainer2/VBoxContainer" unique_id=631818292]
+[node name="-" type="Button" parent="PriorityBoard/VBoxContainer/FarmerPrioritetContainer2/VBoxContainer"]
 custom_minimum_size = Vector2(25, 25)
 custom_maximum_size = Vector2(25, 25)
 layout_mode = 2
-theme_override_font_sizes/font_size = 22
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 18
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 text = "-"
 
-[node name="NumFarm" type="Label" parent="PriorityBoard/VBoxContainer/FarmerPrioritetContainer2" unique_id=688633254]
+[node name="NumFarm" type="Label" parent="PriorityBoard/VBoxContainer/FarmerPrioritetContainer2"]
 custom_minimum_size = Vector2(30, 0)
 layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 18
+horizontal_alignment = 1
+vertical_alignment = 1
 
-[node name="BuilderPrioritetContainer3" type="HBoxContainer" parent="PriorityBoard/VBoxContainer" unique_id=1532118563]
+[node name="BuilderPrioritetContainer3" type="HBoxContainer" parent="PriorityBoard/VBoxContainer"]
 layout_mode = 2
 size_flags_horizontal = 0
 size_flags_vertical = 4
+theme_override_constants/separation = 8
 
-[node name="BuilderContainer" type="PanelContainer" parent="PriorityBoard/VBoxContainer/BuilderPrioritetContainer3" unique_id=2050046848]
+[node name="BuilderContainer" type="PanelContainer" parent="PriorityBoard/VBoxContainer/BuilderPrioritetContainer3"]
 custom_minimum_size = Vector2(45, 45)
 layout_mode = 2
 size_flags_horizontal = 0
 size_flags_vertical = 4
+theme_override_styles/panel = SubResource("SB_icon")
 
-[node name="TextureRect" type="TextureRect" parent="PriorityBoard/VBoxContainer/BuilderPrioritetContainer3/BuilderContainer" unique_id=1670445341]
+[node name="TextureRect" type="TextureRect" parent="PriorityBoard/VBoxContainer/BuilderPrioritetContainer3/BuilderContainer"]
 layout_mode = 2
-texture = ExtResource("5_8p48s")
+texture = ExtResource("5_build")
 expand_mode = 4
 
-[node name="VBoxContainer" type="VBoxContainer" parent="PriorityBoard/VBoxContainer/BuilderPrioritetContainer3" unique_id=454880079]
+[node name="VBoxContainer" type="VBoxContainer" parent="PriorityBoard/VBoxContainer/BuilderPrioritetContainer3"]
 custom_minimum_size = Vector2(20, 5)
 layout_mode = 2
 
-[node name="+" type="Button" parent="PriorityBoard/VBoxContainer/BuilderPrioritetContainer3/VBoxContainer" unique_id=378182078]
+[node name="+" type="Button" parent="PriorityBoard/VBoxContainer/BuilderPrioritetContainer3/VBoxContainer"]
 custom_maximum_size = Vector2(-1, 25)
 layout_mode = 2
-theme_override_font_sizes/font_size = 22
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 18
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 text = "+"
 
-[node name="-" type="Button" parent="PriorityBoard/VBoxContainer/BuilderPrioritetContainer3/VBoxContainer" unique_id=492789159]
+[node name="-" type="Button" parent="PriorityBoard/VBoxContainer/BuilderPrioritetContainer3/VBoxContainer"]
 custom_minimum_size = Vector2(25, 25)
 custom_maximum_size = Vector2(25, 25)
 layout_mode = 2
-theme_override_font_sizes/font_size = 22
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 18
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 text = "-"
 
-[node name="NumBuild" type="Label" parent="PriorityBoard/VBoxContainer/BuilderPrioritetContainer3" unique_id=461038191]
+[node name="NumBuild" type="Label" parent="PriorityBoard/VBoxContainer/BuilderPrioritetContainer3"]
 custom_minimum_size = Vector2(30, 0)
 layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 18
+horizontal_alignment = 1
+vertical_alignment = 1

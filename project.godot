@@ -17,8 +17,10 @@ run/max_fps=1000
 
 [autoload]
 
+McpInteractionServer="*res://autoload/mcp_interaction_server.gd"
 AgentTools="*res://autoload/agent_tools.gd"
 PerfProbe="*res://autoload/perf_probe.gd"
+LiveBridge="*res://addons/live_bridge/live_bridge.gd"
 
 [display]
 
@@ -31,6 +33,10 @@ window/vsync/vsync_mode=0
 [dotnet]
 
 project/assembly_name="Game"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/godot_ai/plugin.cfg", "res://addons/godot-mcp/plugin.cfg")
 
 [game]
 

@@ -1,147 +1,232 @@
 [gd_scene format=3 uid="uid://cmrgl28eaa27n"]
 
-[ext_resource type="Texture2D" uid="uid://bwtxffukyyje0" path="res://ui/assets/textures/icons/Wheat.png" id="1_bbej2"]
-[ext_resource type="Texture2D" uid="uid://yvagabo1xd7m" path="res://ui/assets/textures/icons/CheckMark.png" id="2_b86uc"]
-[ext_resource type="Texture2D" uid="uid://buw3nohde55eb" path="res://ui/assets/textures/icons/no.png" id="3_tcupk"]
-[ext_resource type="Texture2D" uid="uid://dwnuonti5n42d" path="res://ui/assets/textures/icons/info.png" id="4_04ohc"]
-[ext_resource type="Texture2D" uid="uid://cn4relttiql7r" path="res://ui/assets/textures/icons/jobdisplay.png" id="5_ea4ef"]
+[ext_resource type="FontFile" uid="uid://dtxjeqjsb5eii" path="res://assets/fonts/Handjet-VariableFont_ELGR,ELSH,wght.ttf" id="1_font"]
+[ext_resource type="Texture2D" uid="uid://yvagabo1xd7m" path="res://ui/assets/textures/icons/CheckMark.png" id="3_check"]
+[ext_resource type="Texture2D" uid="uid://buw3nohde55eb" path="res://ui/assets/textures/icons/no.png" id="4_no"]
+[ext_resource type="Texture2D" uid="uid://dwnuonti5n42d" path="res://ui/assets/textures/icons/info.png" id="5_info"]
+[ext_resource type="Texture2D" uid="uid://cn4relttiql7r" path="res://ui/assets/textures/icons/jobdisplay.png" id="6_job"]
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_4pfqy"]
-bg_color = Color(0, 0, 0, 1)
+[sub_resource type="Theme" id="Theme_main"]
+default_font = ExtResource("1_font")
+default_font_size = 20
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_0yrv2"]
-bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
+[sub_resource type="StyleBoxFlat" id="SB_panel"]
+content_margin_left = 12.0
+content_margin_top = 10.0
+content_margin_right = 12.0
+content_margin_bottom = 12.0
+bg_color = Color(0.0156863, 0.0156863, 0.0196078, 0.985)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.196078, 0.196078, 0.211765, 1)
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_g8rbv"]
-bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
+[sub_resource type="StyleBoxFlat" id="SB_header"]
+content_margin_left = 18.0
+content_margin_top = 12.0
+content_margin_right = 18.0
+content_margin_bottom = 12.0
+bg_color = Color(0.027451, 0.027451, 0.0313726, 1)
+border_width_bottom = 1
+border_color = Color(0.196078, 0.196078, 0.211765, 1)
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_va8w1"]
-bg_color = Color(0.54471636, 0.10887573, 1.4439226e-07, 0.4)
+[sub_resource type="StyleBoxFlat" id="SB_button"]
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
+bg_color = Color(0.0431373, 0.0431373, 0.0470588, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.211765, 0.211765, 0.223529, 1)
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_2n86q"]
-bg_color = Color(0, 0, 0, 1)
+[sub_resource type="StyleBoxFlat" id="SB_button_pressed"]
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
+bg_color = Color(0.0117647, 0.0117647, 0.0156863, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.909804, 0.909804, 0.909804, 1)
 
-[node name="Control" type="Control" unique_id=913188786]
+[sub_resource type="StyleBoxFlat" id="SB_button_hover"]
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
+bg_color = Color(0.101961, 0.101961, 0.113725, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.501961, 0.501961, 0.533333, 1)
+
+[sub_resource type="StyleBoxFlat" id="SB_icon"]
+content_margin_left = 4.0
+content_margin_top = 4.0
+content_margin_right = 4.0
+content_margin_bottom = 4.0
+bg_color = Color(0, 0, 0, 0)
+
+[sub_resource type="StyleBoxFlat" id="SB_stat"]
+content_margin_left = 14.0
+content_margin_top = 12.0
+content_margin_right = 14.0
+content_margin_bottom = 12.0
+bg_color = Color(0.0392157, 0.0392157, 0.0431373, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.133333, 0.133333, 0.145098, 1)
+
+[node name="Control2" type="Control" unique_id=1922810694]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+theme = SubResource("Theme_main")
 
-[node name="ScrollContainer" type="ScrollContainer" parent="." unique_id=1952743419]
-layout_mode = 0
+[node name="ScrollContainer" type="ScrollContainer" parent="." unique_id=617768504]
+layout_mode = 1
+anchors_preset = 9
+anchor_bottom = 1.0
 offset_top = 73.0
 offset_right = 502.0
-offset_bottom = 1080.0
+grow_vertical = 2
 
-[node name="PanelContainer" type="PanelContainer" parent="ScrollContainer" unique_id=2008775494]
+[node name="PanelContainer" type="PanelContainer" parent="ScrollContainer" unique_id=2077200323]
 custom_minimum_size = Vector2(502, 0)
 layout_mode = 2
-theme_override_styles/panel = SubResource("StyleBoxFlat_4pfqy")
+theme_override_styles/panel = SubResource("SB_panel")
 
-[node name="VBoxContainer" type="VBoxContainer" parent="ScrollContainer/PanelContainer" unique_id=544966951]
+[node name="VBoxContainer" type="VBoxContainer" parent="ScrollContainer/PanelContainer" unique_id=1520903074]
 layout_mode = 2
-theme_override_constants/separation = 20
+theme_override_constants/separation = 14
 
-[node name="HBoxContainer" type="HBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=1662450368]
+[node name="HBoxContainer" type="HBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=296989762]
 layout_mode = 2
 
-[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer" unique_id=1020842059]
+[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer" unique_id=1469474927]
 custom_minimum_size = Vector2(250, 30)
 layout_mode = 2
-theme_override_font_sizes/font_size = 24
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 22
 text = "N клеток"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="HBoxContainer2" type="HBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=1315033493]
+[node name="AmountOfResources" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=1394582240]
 layout_mode = 2
-theme_override_constants/separation = 50
-alignment = 1
+theme_override_colors/font_color = Color(0.8, 0.8, 0.823529, 1)
+theme_override_font_sizes/font_size = 14
+text = "Семена: 0 · растёт 0/0"
 
-[node name="VBoxContainer" type="VBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=1305543176]
+[node name="SelectedCropName" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=1839476377]
 layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 22
+text = "Культура не выбрана"
 
-[node name="TextureRect" type="TextureRect" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2/VBoxContainer" unique_id=11695330]
-custom_minimum_size = Vector2(200, 200)
+[node name="SelectedCropDetails" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=1354992004]
 layout_mode = 2
-texture = ExtResource("1_bbej2")
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 14
+text = "Выберите культуру для этой зоны"
 
-[node name="Description" type="RichTextLabel" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2/VBoxContainer" unique_id=449777636]
-custom_minimum_size = Vector2(20, 100)
+[node name="FoodHeader" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=1380987726]
 layout_mode = 2
-theme_override_font_sizes/normal_font_size = 12
-text = "Пшеница — это важнейшая зерновая культура из семейства злаков, которая служит основой питания для миллионов людей по всему миру"
+theme_override_colors/font_color = Color(0.74902, 0.74902, 0.780392, 1)
+theme_override_font_sizes/font_size = 16
+text = "Еда · 14"
 
-[node name="VBoxContainer2" type="VBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=1945923467]
+[node name="FoodGrid" type="GridContainer" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=1985231142]
 layout_mode = 2
-theme_override_constants/separation = 20
+theme_override_constants/h_separation = 6
+theme_override_constants/v_separation = 6
+columns = 5
 
-[node name="CheckMark" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2/VBoxContainer2" unique_id=469941885]
-custom_maximum_size = Vector2(64, 64)
+[node name="FiberHeader" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=749075698]
 layout_mode = 2
-theme_override_styles/normal = SubResource("StyleBoxFlat_0yrv2")
-icon = ExtResource("2_b86uc")
+theme_override_colors/font_color = Color(0.74902, 0.74902, 0.780392, 1)
+theme_override_font_sizes/font_size = 16
+text = "Волокно · 4"
 
-[node name="AmountOfResources" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2/VBoxContainer2" unique_id=2110566991]
+[node name="FiberGrid" type="GridContainer" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=1519410025]
 layout_mode = 2
-text = "количество необходимых 
-ресурсов для посадки 
-ферсы"
+theme_override_constants/h_separation = 6
+theme_override_constants/v_separation = 6
+columns = 5
 
-[node name="Label" type="Label" parent="." unique_id=63811646]
+[node name="Label" type="Label" parent="." unique_id=324867697]
 layout_mode = 0
 offset_right = 502.0
 offset_bottom = 73.0
-theme_override_font_sizes/font_size = 40
-theme_override_styles/normal = SubResource("StyleBoxFlat_g8rbv")
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 30
+theme_override_styles/normal = SubResource("SB_header")
 text = "Ферма"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="esc" type="Button" parent="." unique_id=327029660]
+[node name="esc" type="Button" parent="." unique_id=201051045]
 layout_mode = 0
 offset_left = 4.0
 offset_top = 4.0
 offset_right = 44.0
 offset_bottom = 44.0
-theme_override_styles/normal = SubResource("StyleBoxFlat_va8w1")
-icon = ExtResource("3_tcupk")
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+theme_override_styles/hover = SubResource("SB_button_hover")
+icon = ExtResource("4_no")
 expand_icon = true
 
-[node name="CheckMark" type="Button" parent="." unique_id=205479199]
+[node name="CheckMark" type="Button" parent="." unique_id=1330726940]
 layout_mode = 0
 offset_left = 502.0
 offset_right = 575.0
 offset_bottom = 73.0
-theme_override_styles/normal = SubResource("StyleBoxFlat_0yrv2")
-icon = ExtResource("2_b86uc")
+theme_override_styles/normal = SubResource("SB_icon")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+theme_override_styles/hover = SubResource("SB_button_hover")
+icon = ExtResource("3_check")
 
-[node name="Infoormation" type="Button" parent="." unique_id=2053136278]
+[node name="Infoormation" type="Button" parent="." unique_id=1519622380]
 layout_mode = 0
 offset_left = 502.0
 offset_top = 73.0
 offset_right = 575.0
 offset_bottom = 146.0
-theme_override_styles/normal = SubResource("StyleBoxFlat_0yrv2")
-icon = ExtResource("4_04ohc")
+theme_override_styles/normal = SubResource("SB_icon")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+theme_override_styles/hover = SubResource("SB_button_hover")
+icon = ExtResource("5_info")
 
-[node name="ButtonForJobDisplay" type="Button" parent="." unique_id=1278412628]
+[node name="ButtonForJobDisplay" type="Button" parent="." unique_id=505196284]
 layout_mode = 0
 offset_left = 502.0
 offset_top = 146.0
 offset_right = 575.0
 offset_bottom = 219.0
-theme_override_styles/normal = SubResource("StyleBoxFlat_0yrv2")
-icon = ExtResource("5_ea4ef")
+theme_override_styles/normal = SubResource("SB_icon")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+theme_override_styles/hover = SubResource("SB_button_hover")
+icon = ExtResource("6_job")
 expand_icon = true
 
-[node name="InfoWindow" type="Label" parent="." unique_id=1970562515]
+[node name="InfoWindow" type="Label" parent="." unique_id=591747262]
 layout_mode = 0
-offset_left = -236.0
-offset_top = 354.0
-offset_right = -62.183594
-offset_bottom = 445.05765
-theme_override_font_sizes/font_size = 20
-theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+offset_top = 321.0
+offset_right = 200.0
+offset_bottom = 412.0
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("SB_stat")

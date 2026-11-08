@@ -1,14 +1,11 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Threading.Tasks;
 using Game.Core;
 using Game.Core.World;
 using Game.Core.WorldStreaming;
 using Game.Core.WorldStreaming.Integration;
-using Game.Tools;
 using Game.UI;
-using Game.UI.Tools;
 using Godot;
 
 namespace Game.UI.Streaming;
@@ -29,13 +26,6 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 {
 	/// <summary>Kind записей delta для пользовательских постоянных меток (стен).</summary>
 	public const byte WallKind = WorldDeltaKind.Wall;
-
-	/// <summary>
-	/// Стены обеих сторон рисует островной слой (MapRenderer) — единый автотайл.
-	/// false только на аварийном пути (сценовый TileSet стен недоступен).
-	/// </summary>
-	public static bool IslandWallRendererActive =>
-		GodotObject.IsInstanceValid(MapRenderer.Instance) && MapRenderer.GetWallTerrainTileSet() != null;
 
 	/// <summary>Пикселей текстуры на одну игровую клетку (сейчас — тайл 64×64 на клетку).</summary>
 	// Рендер — настоящими тайлами игры: 1 клетка = один тайл 64×64 (TilePx).
@@ -75,13 +65,25 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 	private TileMapLayer _decorLayer;
 	private TileMapLayer _markLayer;
 
-	/// <summary>
-	/// §122: зона склада — отдельный слой с ОБЩИМ тайлом ToolVisualSpec.
-	/// Раньше фиолетовый тайл лежал в общем _markLayer без тонировки и отличался
-	/// от островной «тонированной травы»; теперь оба рендерера берут один пиксель.
-	/// </summary>
-	private TileMapLayer _stockpileLayer;
-	private TileMapLayer _stockpilePlanLayer;
+	// task-8: руда мира. Базовое поле — детерминированное OreWorldField (чистая
+	// функция абсолютных координат), поверх — OreWorldState (мутации: добыто).
+	// Чанковые массивы считаются в фоне, рисуются по готовности.
+	private TileMapLayer _oreLayer;
+	private OreTileSetBuilder _oreTiles;
+	private readonly Dictionary<ChunkKey, OreWorldField.ChunkOre> _oreArrays = new();
+	private readonly Dictionary<ChunkKey, Task<OreArrays>> _oreJobs = new();
+	private readonly HashSet<ChunkKey> _oreReady = new();
+	private readonly HashSet<ChunkKey> _orePainted = new();
+
+	private sealed class OreArrays
+	{
+		public ChunkKey Key;
+		public OreWorldField.ChunkOre Center;
+		public OreWorldField.ChunkOre N;
+		public OreWorldField.ChunkOre S;
+		public OreWorldField.ChunkOre E;
+		public OreWorldField.ChunkOre W;
+	}
 
 	/// <summary>Слой чертежей (§29): план рисуется полупрозрачно, готовое — обычными слоями.</summary>
 	private TileMapLayer _planLayer;
@@ -100,12 +102,6 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 
 	/// <summary>Загруженные персистентные метки: чанк → kind → множество локальных индексов.</summary>
 	private readonly Dictionary<ChunkKey, Dictionary<byte, HashSet<ushort>>> _blocks = new();
-	/// <summary>
-	/// §122: payload меток (для Building/BuildingPlan — байт BuildingType). Ключ —
-	/// (kind &lt;&lt; 16) | localIndex. Живёт ровно столько же, сколько _blocks: удаляется
-	/// при снятии метки и при выгрузке чанка.
-	/// </summary>
-	private readonly Dictionary<ChunkKey, Dictionary<uint, byte[]>> _blockData = new();
 	private readonly HashSet<ChunkKey> _textureDirty = new();
 	// Reused instead of allocating a new array each time a batch of chunks arrives.
 	private readonly List<ChunkKey> _dirtyBuffer = new();
@@ -170,6 +166,7 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		int workerCount = Math.Clamp(MaxConcurrency, 1, workerLimit);
 		_streamer = new WorldChunkStreamer(_planner, WorldSeed, GeneratorVersion, _store, workerCount);
 		BuildTileLayers();
+		OreWorldState.CellChanged += OnOreStateChanged;
 		_initialized = true;
 	}
 
@@ -179,6 +176,22 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 	/// </summary>
 	public void ResetWorld(ulong newSeed = 0)
 	{
+		// P0 (bughunt 05-1, регрессия R-053): ДО очистки кэша сохраняем несохранённые
+		// правки resident-чанков. Раньше _chunkData/_blocks чистились, а
+		// FlushResidentDeltas вызывался только из _ExitTree → стены и постройки,
+		// поставленные в текущем окне, исчезали при «Карта мира → тот же регион → назад».
+		// Флашим ДО смены WorldSeed: сохраняем в каталог того мира, где строили.
+		try
+		{
+			int flushed = FlushResidentDeltas();
+			if (flushed > 0)
+				GD.Print($"[World] ResetWorld: сохранено {flushed} чанков перед сменой мира");
+		}
+		catch (Exception ex)
+		{
+			GD.PrintErr($"[World] ResetWorld: не удалось сохранить чанки — {ex.Message}");
+		}
+
 		if (newSeed != 0)
 			WorldSeed = newSeed;
 
@@ -198,8 +211,18 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 
 		_decorLayer?.Clear();
 		_markLayer?.Clear();
-		_stockpileLayer?.Clear();
-		_stockpilePlanLayer?.Clear();
+		_oreLayer?.Clear();
+		_oreArrays.Clear();
+		_oreReady.Clear();
+		_orePainted.Clear();
+		_oreJobs.Clear();
+		_decorRepairQueue.Clear();
+		_decorRepairQueued.Clear();
+		_decorRepairCursor.Clear();
+		// Смена мира: мутации руды прошлого мира уже сохранены FlushResidentDeltas.
+		OreWorldState.Clear();
+		// Кэш поля адресуется локальными чанками — при смене origin он невалиден.
+		OreWorldField.ClearCache();
 		_planLayer?.Clear();
 		_mountainLayer?.Clear();
 		_wallLayer?.Clear();
@@ -214,7 +237,6 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 
 		_chunkData.Clear();
 		_blocks.Clear();
-		_blockData.Clear();
 		WallCount = 0;
 		_lastPlan = default;
 
@@ -280,7 +302,19 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		_focusCellX = currentFocusX;
 		_focusCellY = currentFocusY;
 		ApplyAdaptiveWindow(visibleTileBounds);
-		_lastPlan = _streamer.Update(ClampVisibleToWindow(visibleTileBounds));
+		// S-08: даже с корректным клампом планировщик может отвергнуть прямоугольник
+		// (его контракт — «видимая область с запасом помещается в целое число
+		// выровненных чанков»). Раньше ArgumentException из недр Update летел прямо
+		// в игровой цикл; теперь пропускаем кадр и логируем один раз.
+		try
+		{
+			_lastPlan = _streamer.Update(ClampVisibleToWindow(visibleTileBounds));
+		}
+		catch (ArgumentException ex)
+		{
+			LogStreamingWindowErrorOnce(ex);
+			return;
+		}
 
 		foreach (ChunkKey key in _lastPlan.Exited)
 		{
@@ -301,10 +335,6 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 
 	/// <summary>Добавить персистентную метку-блок в клетку; чанк должен быть загружен.</summary>
 	public bool AddBlock(byte kind, long cellX, long cellY)
-		=> AddBlock(kind, cellX, cellY, ReadOnlySpan<byte>.Empty);
-
-	/// <summary>Добавить метку с payload (для Building/BuildingPlan — тип здания).</summary>
-	public bool AddBlock(byte kind, long cellX, long cellY, ReadOnlySpan<byte> data)
 	{
 		if (!_initialized)
 			return false;
@@ -313,51 +343,18 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 			return false;
 		HashSet<ushort> set = GetOrCreateSet(key, kind);
 		LocalCell local = WorldCoordinates.LocalForTile(cellX, cellY);
-		ushort index = (ushort)(local.Y * WorldCoordinates.ChunkSize + local.X);
-		if (!set.Add(index))
+		if (!set.Add((ushort)(local.Y * WorldCoordinates.ChunkSize + local.X)))
 			return false;
-		if (!data.IsEmpty)
-		{
-			if (!_blockData.TryGetValue(key, out Dictionary<uint, byte[]> payloads))
-			{
-				payloads = new Dictionary<uint, byte[]>();
-				_blockData[key] = payloads;
-			}
-			payloads[BlockDataKey(kind, index)] = data.ToArray();
-		}
 		if (kind == WallKind)
 		{
 			WallCount++;
-			// D-11 п.4: окна мирового HPA держат КОПИЮ стоимости. Без этой пометки
-			// свежепостроенная стена невидима WorldPathfinder, и агент идёт сквозь неё
-			// (R-019/14-02: MarkBlocked не вызывался ниоткуда). Идемпотентно:
-			// повторный AddBlock на ту же клетку уже вернул false выше.
-			WorldCostCache.MarkBlocked(cellX, cellY);
+			Game.Core.World.WorldCostCache.MarkBlocked(cellX, cellY);
+			OnWallAdded?.Invoke(cellX, cellY);
 		}
 		RepaintCell(cellX, cellY);
 		OnBlockAdded?.Invoke(kind, cellX, cellY);
-		if (kind == WallKind)
-			OnWallAdded?.Invoke(cellX, cellY);
 		return true;
 	}
-
-	/// <summary>Payload метки; false — payload отсутствует (не ошибка для стен/меток).</summary>
-	public bool TryGetBlockData(byte kind, long cellX, long cellY, out byte[] data)
-	{
-		data = Array.Empty<byte>();
-		ChunkKey key = WorldCoordinates.ChunkForTile(cellX, cellY);
-		if (!_blockData.TryGetValue(key, out Dictionary<uint, byte[]> payloads))
-			return false;
-		LocalCell local = WorldCoordinates.LocalForTile(cellX, cellY);
-		ushort index = (ushort)(local.Y * WorldCoordinates.ChunkSize + local.X);
-		if (!payloads.TryGetValue(BlockDataKey(kind, index), out byte[] found) || found == null)
-			return false;
-		data = found;
-		return true;
-	}
-
-	private static uint BlockDataKey(byte kind, ushort localIndex)
-		=> ((uint)kind << 16) | localIndex;
 
 	/// <summary>Добавить постоянную стену (удобная обёртка над AddBlock).</summary>
 	public bool AddWall(long cellX, long cellY) => AddBlock(WallKind, cellX, cellY);
@@ -387,25 +384,16 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		ushort index = (ushort)(local.Y * WorldCoordinates.ChunkSize + local.X);
 		if (set.Remove(index))
 		{
-			if (_blockData.TryGetValue(key, out Dictionary<uint, byte[]> payloads))
-			{
-				payloads.Remove(BlockDataKey(kind, index));
-				if (payloads.Count == 0)
-					_blockData.Remove(key);
-			}
 			if (kind == WallKind)
 			{
 				WallCount--;
 				if (WallCount < 0)
 					WallCount = 0;
-				// Снос: снимаем блокировку пути (D-11 п.4). Чертежи и прочие метки
-				// стоимость не трогают — они не блокируют проход.
-				WorldCostCache.MarkUnblocked(cellX, cellY);
+				Game.Core.World.WorldCostCache.MarkUnblocked(cellX, cellY);
+				OnWallRemoved?.Invoke(cellX, cellY);
 			}
 			RepaintCell(cellX, cellY);
 			OnBlockRemoved?.Invoke(kind, cellX, cellY);
-			if (kind == WallKind)
-				OnWallRemoved?.Invoke(cellX, cellY);
 			return true;
 		}
 		return false;
@@ -730,17 +718,21 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 			if (WorldChunkDeltaCodec.TryDecode(result.Snapshot.Payload, out WorldChunkDelta delta, out string error))
 			{
 				var map = new Dictionary<byte, HashSet<ushort>>();
-				var payloads = new Dictionary<uint, byte[]>();
 				foreach (WorldChunkDeltaRecord record in delta.Records)
 				{
+					if (record.Kind == WorldDeltaKind.OreMined)
+					{
+						// task-8: остаток запаса руды (0 = выработано) переживает выход.
+						if (OreWorldState.TryDecodePayload(record.Data, out ushort oreReserve))
+							ApplyOreRecord(key, record.LocalIndex, oreReserve);
+						continue;
+					}
 					if (!map.TryGetValue(record.Kind, out HashSet<ushort> set))
 					{
 						set = new HashSet<ushort>();
 						map[record.Kind] = set;
 					}
 					set.Add(record.LocalIndex);
-					if (record.Data != null && record.Data.Length > 0)
-						payloads[BlockDataKey(record.Kind, record.LocalIndex)] = record.Data;
 				}
 
 				// A re-delivered snapshot replaces, rather than double-counts, its old walls.
@@ -752,24 +744,8 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 				{
 					_blocks[key] = map;
 					if (map.TryGetValue(WallKind, out HashSet<ushort> walls))
-					{
 						WallCount += walls.Count;
-						// D-11 п.4: стены вернулись с диска — обязаны вернуться и в
-						// стоимость мира (WorldCostCache не переживает перезапуск).
-						// Это и есть недостающая «помпа»: раньше её не было вовсе.
-						long chunkOriginX = key.X * (long)WorldCoordinates.ChunkSize;
-						long chunkOriginY = key.Y * (long)WorldCoordinates.ChunkSize;
-						foreach (ushort wallIndex in walls)
-						{
-							WorldCostCache.MarkBlocked(
-								chunkOriginX + wallIndex % WorldCoordinates.ChunkSize,
-								chunkOriginY + wallIndex / WorldCoordinates.ChunkSize);
-						}
-					}
 				}
-				_blockData.Remove(key);
-				if (payloads.Count > 0)
-					_blockData[key] = payloads;
 			}
 			else
 			{
@@ -779,6 +755,9 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 
 		_paintJobs.Remove(key); // any queued token will pick up the replacement job
 		_chunkData[key] = result.Chunk;
+		// Фикс гонки: ore-массивы могли быть готовы РАНЬШЕ данных чанка —
+		// PaintOreChunk тогда молча вышел, а Scheduling по _oreReady уже запрещён.
+		EnsureOrePainted(key);
 		if (wasLoaded)
 			_freshPaint.Remove(key);
 		else
@@ -846,35 +825,18 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 					_exitScheduled.Add(k);
 				}
 			}
-			else if (!_streamer.IsDesired(k))
+			else
 			{
-				// §122: камера могла вернуться, пока unload-задача летела: чанк снова
-				// Desired и ApplyReady уже положил новые тайлы/данные. Удалять их
-				// нельзя — иначе повторный вход даёт пустой чанк (BLOCK_NOT_PAINTED).
-				RemoveChunkTiles(k);
+				// FIX (bughunt 15-3): unload завершился, но чанк мог УЖЕ вернуться в окно и
+				// быть перерисован (стример после unload успевает перегенерить и отдать его
+				// заново). Безусловный RemoveChunkTiles стирал свежие _chunkData/_blocks/
+				// _textureDirty/_paintJobs → пустой чанк до выхода из окна; далее EncodeBlocks
+				// от пустого чанка давал SaveChunk(empty), а тот УДАЛЯЕТ файл дельты
+				// (WorldChunkStore.cs) — безвозвратная потеря стен и построек.
+				if (!_chunkData.ContainsKey(k))
+					RemoveChunkTiles(k);
 			}
 			_unloadTasks.RemoveAt(i);
-		}
-	}
-
-	/// <summary>
-	/// Пометить клетки чанка грязными в островном слое стен (стены рисует он).
-	/// Индексы — внутренние (y*64+x), поэтому переводим в мировые координаты.
-	/// </summary>
-	private void MarkIslandWallCellsDirty(ChunkKey key, Dictionary<byte, HashSet<ushort>> map, byte kind)
-	{
-		if (map == null || !map.TryGetValue(kind, out HashSet<ushort> set) || set.Count == 0)
-			return;
-		var mapRenderer = MapRenderer.Instance;
-		if (!GodotObject.IsInstanceValid(mapRenderer))
-			return;
-		long originX = key.X * (long)WorldCoordinates.ChunkSize;
-		long originY = key.Y * (long)WorldCoordinates.ChunkSize;
-		foreach (ushort index in set)
-		{
-			int lx = index % WorldCoordinates.ChunkSize;
-			int ly = index / WorldCoordinates.ChunkSize;
-			mapRenderer.MarkWallCellDirty(originX + lx, originY + ly);
 		}
 	}
 
@@ -897,22 +859,17 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 
 		_paintedChunks.Remove(key);
 		_chunkData.Remove(key);
-		_blockData.Remove(key);
-		if (_blocks.Remove(key, out Dictionary<byte, HashSet<ushort>> map))
-		{
-			if (map.TryGetValue(WallKind, out HashSet<ushort> walls))
-				WallCount = Math.Max(0, WallCount - walls.Count);
-			// Стены рисует островной слой: после выгрузки чанка его клетки обязаны
-			// исчезнуть и там, иначе на экране остаётся «призрачная» стена.
-			if (IslandWallRendererActive)
-			{
-				MarkIslandWallCellsDirty(key, map, WallKind);
-				MarkIslandWallCellsDirty(key, map, WorldDeltaKind.WallPlan);
-			}
-		}
+		if (_blocks.Remove(key, out Dictionary<byte, HashSet<ushort>> map)
+			&& map.TryGetValue(WallKind, out HashSet<ushort> walls))
+			WallCount = Math.Max(0, WallCount - walls.Count);
 		_textureDirty.Remove(key);
 		_freshPaint.Remove(key);
 		_paintJobs.Remove(key);
+		// task-8: руда выгружаемого чанка (массивы в кэше поля остаются).
+		_orePainted.Remove(key);
+		_oreReady.Remove(key);
+		_oreJobs.Remove(key);
+		_oreArrays.Remove(key);
 	}
 
 	/// <summary>
@@ -952,6 +909,17 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 	/// чанков. Если она больше максимального окна — сужаем прямоугольник вокруг центра (дальние
 	/// края дозаполнятся при движении камеры), а не падаем исключением из планировщика.
 	/// </summary>
+	/// <summary>
+	/// S-08: ошибка контракта окна логируется ОДИН раз, а не каждый кадр — иначе
+	/// сломанный прямоугольник утопил бы консоль (это путь из игрового цикла).
+	/// </summary>
+	private bool _windowErrorLogged;
+	private void LogStreamingWindowErrorOnce(ArgumentException ex)
+	{
+		if (_windowErrorLogged) return;
+		_windowErrorLogged = true;
+		Godot.GD.PrintErr("[StreamingWorldView] видимое окно отвергнуто планировщиком: " + ex.Message);
+	}
 	private WorldRect ClampVisibleToWindow(WorldRect visible)
 	{
 		long side = _planner.WindowChunks;
@@ -963,14 +931,32 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		long centerY = (visible.MinY + visible.MaxY) / 2;
 		long halfW = Math.Min(width, available) / 2;
 		long halfH = Math.Min(height, available) / 2;
-		// Страховка от выравнивания: прямоугольник с запасом должен попадать в side чанков.
-		while (halfW > 1
+		// S-08 (бывший W-08 AUDIT-A): страховка от выравнивания не имеет права
+		// «дожать» полуширину до нуля/минуса. Раньше шаг −32 при условии `halfW > 1`
+		// из любого halfW ∈ (1, 33] приводил к 0 или отрицательному значению, а
+		// `new WorldRect(center-halfW, ..., center+halfW, ...)` становился вырожденным —
+		// и ChunkWindowPlanner.ValidateVisibleBounds бросал ArgumentException прямо из
+		// игрового цикла. Теперь нижняя граница — ровно один чанк (кламп никогда не
+		// инвертирует прямоугольник), а не «страховка, которая падает».
+		const long MinHalfExtent = WorldCoordinates.ChunkSize / 2;
+		halfW = Math.Max(MinHalfExtent, halfW);
+		halfH = Math.Max(MinHalfExtent, halfH);
+
+		while (halfW > MinHalfExtent
 			&& ChunkSpan(centerX - halfW - _planner.MarginTiles, centerX + halfW + _planner.MarginTiles) > side)
-			halfW -= WorldCoordinates.ChunkSize / 2;
-		while (halfH > 1
+			halfW = Math.Max(MinHalfExtent, halfW - WorldCoordinates.ChunkSize / 2);
+		while (halfH > MinHalfExtent
 			&& ChunkSpan(centerY - halfH - _planner.MarginTiles, centerY + halfH + _planner.MarginTiles) > side)
-			halfH -= WorldCoordinates.ChunkSize / 2;
-		return new WorldRect(centerX - halfW, centerY - halfH, centerX + halfW, centerY + halfH);
+			halfH = Math.Max(MinHalfExtent, halfH - WorldCoordinates.ChunkSize / 2);
+
+		// Инвариант планера: Max exclusive и строго больше Min.
+		long minX = centerX - halfW;
+		long maxX = centerX + halfW;
+		long minY = centerY - halfH;
+		long maxY = centerY + halfH;
+		if (maxX <= minX) maxX = minX + 1;
+		if (maxY <= minY) maxY = minY + 1;
+		return new WorldRect(minX, minY, maxX, maxY);
 	}
 
 	/// <summary>
@@ -980,22 +966,31 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 	/// </summary>
 	private byte[] EncodeBlocks(ChunkKey key)
 	{
-		if (!_blocks.TryGetValue(key, out Dictionary<byte, HashSet<ushort>> map) || map.Count == 0)
-			return Array.Empty<byte>();
-
-		_blockData.TryGetValue(key, out Dictionary<uint, byte[]> payloads);
 		var records = new List<WorldChunkDeltaRecord>();
-		foreach (KeyValuePair<byte, HashSet<ushort>> kindSet in map)
+		if (_blocks.TryGetValue(key, out Dictionary<byte, HashSet<ushort>> map) && map.Count > 0)
 		{
-			foreach (ushort index in kindSet.Value)
+			foreach (KeyValuePair<byte, HashSet<ushort>> kindSet in map)
 			{
-				byte[] data = Array.Empty<byte>();
-				if (payloads != null)
-					payloads.TryGetValue(BlockDataKey(kindSet.Key, index), out data);
-				records.Add(new WorldChunkDeltaRecord(index, kindSet.Key,
-					data ?? Array.Empty<byte>()));
+				foreach (ushort index in kindSet.Value)
+					records.Add(new WorldChunkDeltaRecord(index, kindSet.Key, Array.Empty<byte>()));
 			}
 		}
+
+		// task-8: мутации руды этого чанка (остаток запаса; 0 = выработано).
+		// Это же покрывает остров: его клетки — те же чанки локального холста,
+		// поэтому добыча на острове тоже переживает выход/вход.
+		List<(int LocalX, int LocalY, ushort Reserve)> ore = OreWorldState.EnumerateChunk(key.X, key.Y);
+		for (int i = 0; i < ore.Count; i++)
+		{
+			var (localX, localY, reserve) = ore[i];
+			LocalCell local = WorldCoordinates.LocalForTile(localX, localY);
+			ushort index = (ushort)(local.Y * WorldCoordinates.ChunkSize + local.X);
+			records.Add(new WorldChunkDeltaRecord(index, WorldDeltaKind.OreMined,
+				OreWorldState.EncodePayload(reserve)));
+		}
+
+		if (records.Count == 0)
+			return Array.Empty<byte>();
 		records.Sort(static (left, right) =>
 		{
 			int indexOrder = left.LocalIndex.CompareTo(right.LocalIndex);
@@ -1003,7 +998,6 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		});
 		return WorldChunkDeltaCodec.Encode(new WorldChunkDelta(records));
 	}
-
 	private WorldSaveMetadata MakeMetadata()
 		=> new(WorldChunkCodec.CurrentFormatVersion, GeneratorVersion,
 			UnifiedWorldGenerator.FeatureSchemaVersion, WorldSeed, GameTimeCheckpoint: 0.0);
@@ -1039,6 +1033,9 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		}
 
 		ProcessPaintSlices(operationBudget);
+		ProcessOreJobs();
+		// N-5: после готовности ore-массивов докрашиваем отложенный декор.
+		ProcessDecorRepair(DecorRepairCellsPerFrame);
 		_mountainTerrain?.Flush(IsMountainCell);
 		_wallTerrain?.Flush(IsWallCell);
 		_wallPlanTerrain?.Flush(IsWallPlanCell);
@@ -1131,6 +1128,7 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 			{
 				_paintJobs.Remove(key);
 				MarkTerrainRing(job.OriginX, job.OriginY);
+				ScheduleOreChunk(key);
 				continue;
 			}
 
@@ -1149,6 +1147,7 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 			{
 				_paintJobs.Remove(key);
 				MarkTerrainRing(job.OriginX, job.OriginY);
+				ScheduleOreChunk(key);
 			}
 			else if (_paintQueued.Add(key))
 			{
@@ -1227,17 +1226,19 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 				var pos = new Vector2I((int)(originX + index % WorldCoordinates.ChunkSize),
 					(int)(originY + index / WorldCoordinates.ChunkSize));
 				_decorLayer?.EraseCell(pos);
+				// Руду стираем только у ВЫГРУЖЕННОГО чанка: если чанк вернулся в окно,
+				// пока шёл erase, его руда должна остаться (иначе «мигание»).
+				if (!_chunkData.ContainsKey(key))
+					_oreLayer?.EraseCell(pos);
 
 				if (job.MarkCursor < job.MarkIndices.Length && job.MarkIndices[job.MarkCursor] == index)
 				{
 					_markLayer?.EraseCell(pos);
-					_stockpileLayer?.EraseCell(pos);
 					job.MarkCursor++;
 				}
 				if (job.PlanCursor < job.PlanIndices.Length && job.PlanIndices[job.PlanCursor] == index)
 				{
 					_planLayer?.EraseCell(pos);
-					_stockpilePlanLayer?.EraseCell(pos);
 					job.PlanCursor++;
 				}
 				job.Cursor++;
@@ -1249,6 +1250,10 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 				_eraseQueue.Dequeue();
 				_eraseJobs.Remove(key);
 				_eraseScheduled.Remove(key);
+				// Чанк вернулся, пока шёл erase: часть клеток руды могла быть
+				// стёрта. После снятия erase-джобы перерисовываем чанк руды.
+				if (_chunkData.ContainsKey(key))
+					EnsureOrePainted(key, force: true);
 			}
 			else
 			{
@@ -1373,34 +1378,13 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 
 	// ---------- Рендер: настоящие тайлы игры (1 клетка = 1 тайл 64×64) ----------
 
-	/// <summary>
-	/// Прозрачность слоя чертежей (§29): план отличим от готовой постройки.
-	/// ВАЖНО: ровно как у островных слоёв чертежей (MapRenderer Blueprint/WallPlan/
-	/// FarmPlan = 0.5). Разные значения на двух половинах одной постройки давали
-	/// «одна стена двух оттенков» — рассинхрон ловит tests/run_seam_parity.gd (B2).
-	/// </summary>
-	private const float PlanAlpha = ToolVisualSpec.BlueprintAlpha;
+	/// <summary>Прозрачность слоя чертежей (§29): план отличим от готовой постройки.</summary>
+	private const float PlanAlpha = 0.55f;
 
 	private const int SrcCrop = 8;       // food/corn.png
-	private const int SrcStockpile = 9;  // rt:stockpile_zone (ToolVisualSpec)
+	private const int SrcStockpile = 9;  // icons/logistic_zone.png
 	private const int SrcWork = 10;      // sprites/ProcessOfWork.png
 	private const int SrcWall = 11;      // construction items/wooden_wall.png (7×7)
-	// §122: per-type спрайты зданий — те же файлы, что у MapRenderer/ToolVisualSpec.
-	private const int SrcWorkTable = 20;
-	private const int SrcBed = 21;
-	private const int SrcBench = 22;
-	private const int SrcNightstand = 23;
-	private const int SrcCentralBlock = 24;
-
-	private static int SourceForBuildingType(BuildingType type) => type switch
-	{
-		BuildingType.WorkTable => SrcWorkTable,
-		BuildingType.Bed => SrcBed,
-		BuildingType.Bench => SrcBench,
-		BuildingType.Nightstand => SrcNightstand,
-		BuildingType.CentralBlock => SrcCentralBlock,
-		_ => SrcWork,
-	};
 
 	// Terrain-разметка сцен (mountains_tile, wood_wall_tile) — как в MapRenderer.
 	private const int MountainTerrainSetId = 0;
@@ -1435,40 +1419,22 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 	{
 		_tileSet = new TileSet { TileSize = new Vector2I(TilePx, TilePx) };
 		AddSingleTile("res://ui/assets/textures/food/corn.png", SrcCrop);
-		// §122: тот же рантайм-тайл, что у MapRenderer, — без второй палитры.
-		AddGeneratedSingleTile(ToolVisualSpec.CreateStockpileZoneTexture(), SrcStockpile);
+		AddStockpileZoneTile(SrcStockpile);
 		AddSingleTile("res://ui/assets/textures/sprites/ProcessOfWork.png", SrcWork);
 		AddAtlasTileSet("res://ui/assets/textures/construction items/wooden_wall.png", SrcWall);
-		// §122: тип здания больше не теряется — у каждого свой спрайт, как на острове.
-		AddSingleTile(ToolVisualSpec.TextureForBuilding(BuildingType.WorkTable), SrcWorkTable);
-		AddSingleTile(ToolVisualSpec.TextureForBuilding(BuildingType.Bed), SrcBed);
-		AddSingleTile(ToolVisualSpec.TextureForBuilding(BuildingType.Bench), SrcBench);
-		AddSingleTile(ToolVisualSpec.TextureForBuilding(BuildingType.Nightstand), SrcNightstand);
-		AddSingleTile(ToolVisualSpec.TextureForBuilding(BuildingType.CentralBlock), SrcCentralBlock);
 		BuildDecorSource();
 
-		// Декор: ZIndex=2 при виде на ZIndex=-1 ⇒ эффективный z=+1 — над шейдерной
-		// землёй MapRenderer. Прежний слой «WorldGroundAndDecor» (составные тайлы
-		// земля+декор поверх streaming_ground.gdshader) — вторая земля — удалён.
-		_decorLayer = MakeLayer("WorldDecor", _tileSet);
-		_decorLayer.ZIndex = 2;
-		// §124: метки игрока (планы/здания/склады/стены/грядки/горы) — ZIndex=2,
-		// как у декора: effective z=+1, НАД непрозрачным terrain-шейдером MapRenderer
-		// (z=0, сиблинг вида добавлен позже вида с z=-1). Раньше все слои кроме
-		// декора лежали ПОД землёй: чертёж ставился в _blocks (фантом блокировал
-		// повторную постановку), но тайл рисовался под terrain'ом — «исчезал».
-		// Порядок внутри z=2 — по дереву: декор первым (под), план последним (над).
-		_markLayer = MakeLayer("WorldMark", _tileSet);
-		_markLayer.ZIndex = 2;
-		_stockpileLayer = MakeLayer("WorldStockpile", _tileSet);
-		_stockpileLayer.ZIndex = 2;
-		_stockpilePlanLayer = MakeLayer("WorldStockpilePlan", _tileSet);
-		_stockpilePlanLayer.ZIndex = 2;
-		_stockpilePlanLayer.Modulate = new Color(1f, 1f, 1f, ToolVisualSpec.PlanAlpha);
+		// R2-01: Декор и слои мира получают абсолютный ZIndex=2 (или 3 для меток) при ZAsRelative=false,
+		// чтобы гарантированно не уходить под шейдерную землю ColorRect _groundSurface (z=0) при ZIndex=-1 корня мира.
+		_decorLayer = MakeLayer("WorldDecor", _tileSet, 2);
+		_markLayer = MakeLayer("WorldMark", _tileSet, 3);
 		AddChild(_decorLayer);
 		AddChild(_markLayer);
-		AddChild(_stockpileLayer);
-		AddChild(_stockpilePlanLayer);
+
+		// task-8: слой руды мира (те же тайлы ore47, что у острова).
+		_oreTiles = new OreTileSetBuilder();
+		_oreLayer = MakeLayer("WorldOre", _oreTiles.TileSet, 2);
+		AddChild(_oreLayer);
 
 		// Горы, стены и грядки выглядят как в игре: TileSet берём из сцен (там terrain-разметка),
 		// и соединения подбирает движок, а не мы вручную атласом.
@@ -1476,29 +1442,21 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		if (mountainTiles != null)
 		{
 			_mountainLayer = MakeLayer("WorldMountain", mountainTiles);
-			_mountainLayer.ZIndex = 2; // §124: над terrain-шейдером
 			AddChild(_mountainLayer);
 			_mountainTerrain = new TerrainTileLayer(_mountainLayer, MountainTerrainSetId, MountainTerrainId);
 		}
 		TileSet wallTiles = MapRenderer.GetWallTerrainTileSet();
 		if (wallTiles != null)
 		{
-			// Стены обеих сторон рисует островной слой MapRenderer: автотайл Godot
-			// считает только внутри одного TileMapLayer, поэтому две сетки на кромке
-			// давали два торца и «несоединённую» стену. Мир отдаёт свои клетки туда.
-			MapRenderer.WorldWallLookup = HasWall;
-			MapRenderer.WorldWallPlanLookup = (x, y) => HasBlock(WorldDeltaKind.WallPlan, x, y);
 			// Коллизии стен считаются геймплеем по меткам-блокам (WorldGameRules /
 			// _blocks / MapData), НЕ через физику тайлов: в проекте нет ни одного
 			// CharacterBody/RigidBody/Area2D/запроса пересечений — поэтому у ВСЕХ
 			// слоёв вида tile-физика/навигация/окклюзия отключены (§117, researcher-аудит).
 			_wallLayer = MakeLayer("WorldWall", wallTiles);
-			_wallLayer.ZIndex = 2; // §124: над terrain-шейдером
 			AddChild(_wallLayer);
 			_wallTerrain = new TerrainTileLayer(_wallLayer, WallTerrainSetId, WallTerrainId);
 
 			_wallPlanLayer = MakeLayer("WorldWallPlan", wallTiles);
-			_wallPlanLayer.ZIndex = 2; // §124
 			_wallPlanLayer.Modulate = new Color(1f, 1f, 1f, PlanAlpha);
 			AddChild(_wallPlanLayer);
 			_wallPlanTerrain = new TerrainTileLayer(_wallPlanLayer, WallTerrainSetId, WallTerrainId);
@@ -1508,21 +1466,17 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		if (farmTiles != null)
 		{
 			_farmLayer = MakeLayer("WorldFarm", farmTiles);
-			_farmLayer.ZIndex = 2; // §124: над terrain-шейдером
 			AddChild(_farmLayer);
 			_farmTerrain = new TerrainTileLayer(_farmLayer, 0, 0);
 
 			_farmPlanLayer = MakeLayer("WorldFarmPlan", farmTiles);
-			_farmPlanLayer.ZIndex = 2; // §124
 			_farmPlanLayer.Modulate = new Color(1f, 1f, 1f, PlanAlpha);
 			AddChild(_farmPlanLayer);
 			_farmPlanTerrain = new TerrainTileLayer(_farmPlanLayer, 0, 0);
 		}
 
 		// §29: чертежи (планы) — своим слоем и полупрозрачно, чтобы отличать от готового.
-		// §124: ZIndex=2 — над terrain-шейдером (последним среди z=2 — поверх меток).
 		_planLayer = MakeLayer("WorldPlan", _tileSet);
-		_planLayer.ZIndex = 2;
 		_planLayer.Modulate = new Color(1f, 1f, 1f, PlanAlpha);
 		AddChild(_planLayer);
 	}
@@ -1534,8 +1488,10 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 	/// ни одного физического тела или запроса пересечений), поэтому отключаем всё.
 	/// RenderingQuadrantSize=64 = размеру чанка (рекомендация мейнтейнера TileMapLayer),
 	/// Y-sort остаётся выключенным.
+	/// R2-01: ZAsRelative = false, ZIndex = zIndex (по умолчанию 2) гарантирует, что слои мира
+	/// не уходят под шейдерную землю ColorRect _groundSurface (z=0) при ZIndex=-1 корня мира.
 	/// </summary>
-	private static TileMapLayer MakeLayer(string name, TileSet tileSet)
+	private static TileMapLayer MakeLayer(string name, TileSet tileSet, int zIndex = 2)
 		=> new()
 		{
 			Name = name,
@@ -1543,17 +1499,29 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 			RenderingQuadrantSize = 64,
 			CollisionEnabled = false,
 			NavigationEnabled = false,
-			OcclusionEnabled = false
+			OcclusionEnabled = false,
+			ZAsRelative = false,
+			ZIndex = zIndex
 		};
 
-	/// <summary>Одиночный source из готовой рантайм-текстуры (§122).</summary>
-	private void AddGeneratedSingleTile(Texture2D texture, int sourceId)
+	/// <summary>Процедурный фиолетовый тайл складской зоны (64×64) с четкой границей вместо иконки.</summary>
+	private void AddStockpileZoneTile(int sourceId)
 	{
-		if (texture == null || _tileSet.HasSource(sourceId))
-			return;
+		var img = Image.CreateEmpty(TilePx, TilePx, false, Image.Format.Rgba8);
+		var fillColor = new Color(0.65f, 0.15f, 0.9f, 0.5f);
+		var borderColor = new Color(0.85f, 0.35f, 1f, 0.9f);
+		for (int y = 0; y < TilePx; y++)
+		{
+			for (int x = 0; x < TilePx; x++)
+			{
+				bool isBorder = x <= 1 || x >= TilePx - 2 || y <= 1 || y >= TilePx - 2;
+				img.SetPixel(x, y, isBorder ? borderColor : fillColor);
+			}
+		}
+		var tex = ImageTexture.CreateFromImage(img);
 		var source = new TileSetAtlasSource
 		{
-			Texture = texture,
+			Texture = tex,
 			TextureRegionSize = new Vector2I(TilePx, TilePx)
 		};
 		source.CreateTile(Vector2I.Zero);
@@ -1735,12 +1703,12 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		_fertilityValid = true;
 	}
 
-	/// <summary>LerpQ16 — побитовая копия интерполяции генератора (округление +32768).</summary>
+	/// <summary>LerpQ16 — побитовая копия интерполяции генератора (умножение со сдвигом вместо IDIV).</summary>
 	private static ushort LerpQ16(ushort a, ushort b, uint t)
 	{
 		uint clampedT = Math.Min(t, 65535);
-		long value = (long)a * (65535 - clampedT) + (long)b * clampedT + 32768;
-		return (ushort)Math.Clamp(value / 65535, 0, 65535);
+		ulong value = (ulong)((long)a * (65535 - clampedT) + (long)b * clampedT + 32768);
+		return (ushort)((value * 0x80008001UL) >> 47);
 	}
 
 	/// <summary>
@@ -1751,6 +1719,15 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 	private int GetDecorIndex(long cellX, long cellY, int localIndex, GeneratedCell cell, BlockLookup kinds)
 	{
 		if (cell.Terrain != BaseTerrainKind.Grass)
+			return -1;
+		// task-8/23: на клетке руды декор гасим (как остров: «дерево в жиле»).
+		// N-5: если поле руды чанка ЕЩЁ НЕ посчитано — декор НЕ ставим вовсе
+		// (консервативно), иначе «дерево в жиле» проявилось бы после выработки.
+		// После готовности ore-массивов чанк докрашивается ProcessDecorRepair.
+		bool? oreBase = OreBaseAtCellCached(cellX, cellY);
+		if (!oreBase.HasValue)
+			return -1;
+		if (oreBase.Value)
 			return -1;
 		if ((BiomeType)cell.Biome == BiomeType.DeepWater)
 			return -1;
@@ -1839,6 +1816,81 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		}
 	}
 
+	// --- Диагностика для SeamInspector (src/tools): только чтение, без мутаций ---
+
+	/// <summary>Есть ли в клетке мира хоть один блок (план/готовое) — диагностика.</summary>
+	public bool HasAnyBlockAt(long cellX, long cellY)
+	{
+		ChunkKey key = WorldCoordinates.ChunkForTile(cellX, cellY);
+		if (!_blocks.TryGetValue(key, out Dictionary<byte, HashSet<ushort>> map) || map.Count == 0)
+			return false;
+		LocalCell local = WorldCoordinates.LocalForTile(cellX, cellY);
+		ushort idx = (ushort)(local.Y * WorldCoordinates.ChunkSize + local.X);
+		foreach (HashSet<ushort> set in map.Values)
+		{
+			if (set.Contains(idx))
+				return true;
+		}
+		return false;
+	}
+
+	/// <summary>Нарисован ли в клетке мира декор (диагностика шва).</summary>
+	public bool HasAnyDrawnTileAt(long cellX, long cellY)
+	{
+		ChunkKey key = WorldCoordinates.ChunkForTile(cellX, cellY);
+		if (!_chunkData.TryGetValue(key, out WorldChunk chunk))
+			return false;
+		LocalCell local = WorldCoordinates.LocalForTile(cellX, cellY);
+		GeneratedCell cell = chunk.Cells.Span[local.Y * WorldCoordinates.ChunkSize + local.X];
+		return cell.Biome != 0 || cell.Variant != 0 || cell.ForestQ16 != 0 || cell.StoneQ16 != 0;
+	}
+
+	/// <summary>Что стоит в клетке мира по мнению рендерера — диагностика шва.</summary>
+	public string DescribeCellVisual(long cellX, long cellY)
+	{
+		ChunkKey key = WorldCoordinates.ChunkForTile(cellX, cellY);
+		LocalCell local = WorldCoordinates.LocalForTile(cellX, cellY);
+		bool resident = _chunkData.ContainsKey(key);
+		var sb = new System.Text.StringBuilder(256);
+		sb.Append("StreamingWorldView: cell=(").Append(cellX).Append(',').Append(cellY)
+		  .Append(") chunk=(").Append(key.X).Append(',').Append(key.Y)
+		  .Append(") local=(").Append(local.X).Append(',').Append(local.Y)
+		  .Append(") resident=").Append(resident ? "y" : "n");
+		if (resident && _chunkData.TryGetValue(key, out WorldChunk chunk))
+		{
+			GeneratedCell cell = chunk.Cells.Span[local.Y * WorldCoordinates.ChunkSize + local.X];
+			sb.Append(" terrain=").Append(cell.Terrain)
+			  .Append(" biome=").Append(cell.Biome)
+			  .Append(" variant=").Append(cell.Variant)
+			  .Append(" forest=").Append(cell.ForestQ16)
+			  .Append(" stone=").Append(cell.StoneQ16);
+		}
+		if (_blocks.TryGetValue(key, out Dictionary<byte, HashSet<ushort>> map) && map.Count > 0)
+		{
+			ushort idx = (ushort)(local.Y * WorldCoordinates.ChunkSize + local.X);
+			sb.Append(" types=");
+			bool first = true;
+			foreach (KeyValuePair<byte, HashSet<ushort>> pair in map)
+			{
+				if (!pair.Value.Contains(idx)) continue;
+				if (!first) sb.Append(',');
+				sb.Append(pair.Key);
+				first = false;
+			}
+			if (first) sb.Append('-');
+		}
+		return sb.Append('\n').ToString();
+	}
+
+	/// <summary>Компактная строка диагностики клетки мира (для полосы/сводки).</summary>
+	public string CompactCellVisual(long cellX, long cellY)
+	{
+		ChunkKey key = WorldCoordinates.ChunkForTile(cellX, cellY);
+		bool resident = _chunkData.ContainsKey(key);
+		bool block = HasAnyBlockAt(cellX, cellY);
+		return resident || block ? $"world:{(resident ? "res" : "-")}{(block ? "+blk" : "")}" : "world:-";
+	}
+
 	/// <summary>Есть ли гора в мировой клетке (по resident-чанку).</summary>
 	private bool IsMountainAt(long cellX, long cellY)
 	{
@@ -1900,6 +1952,11 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		// ЗЕМЛЮ во всём мире (остров + за кромкой) рисует terrain_blend.gdshader
 		// (MapRenderer): здесь кладём только прозрачный декор поверх неё.
 		// Горы рисует _mountainLayer (terrain-автотайлинг, тайлы из сцен игры).
+		// W-03: сглаживание кромки воды — ОДНА функция (terrain_blend.gdshader,
+		// evaluate_biome + shore_inset) для острова и для мира за 1024. Этот слой
+		// не должен рисовать ни земли, ни воды: тайл декора собран BlendRect на
+		// пустой альфе, поэтому подложки-квадрата 64×64 поверх шейдера нет и
+		// «лесенок» 64 px за кромкой он не вносит (см. BuildDecorSource).
 		int decorIndex = GetDecorIndex(cellX, cellY, localIndex, cell, kinds);
 		if (decorIndex < 0)
 			_decorLayer.EraseCell(pos);
@@ -1912,20 +1969,13 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		if (clearEmptyLayers)
 		{
 			_markLayer.EraseCell(pos);
-			_stockpileLayer?.EraseCell(pos);
-			_stockpilePlanLayer?.EraseCell(pos);
 			_planLayer?.EraseCell(pos);
 			_wallPlanLayer?.EraseCell(pos);
 			_farmPlanLayer?.EraseCell(pos);
 		}
 		if (BlockLookup.Contains(kinds.Wall, localIndex))
 		{
-			// Стены рисует ОДИН слой — островной (MapRenderer): автотайл Godot
-			// считает только внутри одного TileMapLayer, поэтому две сетки на
-			// кромке 1023|1024 рисовали два торца («стена не соединяется»).
-			if (IslandWallRendererActive)
-				MapRenderer.Instance?.MarkWallCellDirty(cellX, cellY);
-			else if (_wallLayer != null)
+			if (_wallLayer != null)
 				_wallTerrain.MarkDirty(pos);
 			else
 				_markLayer.SetCell(pos, SrcWall, Vector2I.Zero);
@@ -1938,15 +1988,13 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 				_markLayer.SetCell(pos, SrcCrop, Vector2I.Zero);
 		}
 		else if (BlockLookup.Contains(kinds.Stockpile, localIndex))
-			_stockpileLayer?.SetCell(pos, SrcStockpile, Vector2I.Zero);
+			_markLayer.SetCell(pos, SrcStockpile, Vector2I.Zero);
 		else if (BlockLookup.Contains(kinds.Building, localIndex))
-			_markLayer.SetCell(pos, SourceForBuildingType(BuildingTypeAt(cellX, cellY, WorldDeltaKind.Building)), Vector2I.Zero);
+			_markLayer.SetCell(pos, SrcWork, Vector2I.Zero);
 
 		if (BlockLookup.Contains(kinds.WallPlan, localIndex))
 		{
-			if (IslandWallRendererActive)
-				MapRenderer.Instance?.MarkWallCellDirty(cellX, cellY);
-			else if (_wallPlanLayer != null)
+			if (_wallPlanLayer != null)
 				_wallPlanTerrain.MarkDirty(pos);
 			else
 				_planLayer?.SetCell(pos, SrcWall, Vector2I.Zero);
@@ -1959,34 +2007,11 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 				_planLayer?.SetCell(pos, SrcCrop, Vector2I.Zero);
 		}
 		else if (BlockLookup.Contains(kinds.StockpilePlan, localIndex))
-			// Зона склада — это РАЗМЕТКА, а не стройка: на острове она рисуется сразу
-			// (StockpileManager.AddZoneTiles), без «затемнения чертежа». Раньше мир клал
-			// её в слой планов (α 0.55 × α 0.45 ≈ 0.25) — половины одной зоны на кромке
-			// выглядели как две разные. Теперь слои и прозрачность совпадают.
-			_stockpileLayer?.SetCell(pos, SrcStockpile, Vector2I.Zero);
-		else if (BlockLookup.Contains(kinds.BuildingPlan, localIndex))
-			_planLayer?.SetCell(pos, SourceForBuildingType(BuildingTypeAt(cellX, cellY, WorldDeltaKind.BuildingPlan)), Vector2I.Zero);
-		else if (BlockLookup.Contains(kinds.CutTreePlan, localIndex)
+			_planLayer?.SetCell(pos, SrcStockpile, Vector2I.Zero);
+		else if (BlockLookup.Contains(kinds.BuildingPlan, localIndex)
+			|| BlockLookup.Contains(kinds.CutTreePlan, localIndex)
 			|| BlockLookup.Contains(kinds.MinedStonePlan, localIndex))
 			_planLayer?.SetCell(pos, SrcWork, Vector2I.Zero);
-	}
-
-	/// <summary>
-	/// §122: тип здания из payload. Старые дельты/чужие записи без payload
-	/// трактуются как WorkTable (первый не-стеновой тип), а не роняют рендер.
-	/// </summary>
-	private BuildingType BuildingTypeAt(long cellX, long cellY, byte kind)
-	{
-		ChunkKey key = WorldCoordinates.ChunkForTile(cellX, cellY);
-		if (!_blockData.TryGetValue(key, out Dictionary<uint, byte[]> payloads))
-			return BuildingType.WorkTable;
-		LocalCell local = WorldCoordinates.LocalForTile(cellX, cellY);
-		ushort index = (ushort)(local.Y * WorldCoordinates.ChunkSize + local.X);
-		if (!payloads.TryGetValue(BlockDataKey(kind, index), out byte[] data)
-			|| data == null || data.Length == 0)
-			return BuildingType.WorkTable;
-		byte raw = data[0];
-		return raw <= (byte)BuildingType.CentralBlock ? (BuildingType)raw : BuildingType.WorkTable;
 	}
 
 	private readonly struct BlockLookup
@@ -2027,206 +2052,382 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 			=> set != null && set.Contains((ushort)localIndex);
 	}
 
-	// ================== СЕЙМ-ИНСПЕКТОР ==================
-
-	/// <summary>
-	/// Что стриминговый вид РЕАЛЬНО нарисовал в клетке (мировая сторона).
-	/// Плюс состояние данных: загружен ли чанк, покрашен ли, какие метки-блоки стоят.
-	/// «Блок есть, тайла нет» — отдельный класс багов стыка (недокрашенный чанк).
-	/// </summary>
-	public string DescribeCellVisual(long cellX, long cellY)
-	{
-		var sb = new StringBuilder(768);
-		bool inside = WorldModel.IsInsideIsland(cellX, cellY);
-		ChunkKey key = WorldCoordinates.ChunkForTile(cellX, cellY);
-		bool loaded = _chunkData.ContainsKey(key);
-		bool painted = _paintedChunks.Contains(key);
-		sb.Append($"StreamingWorldView cell=({cellX},{cellY}) insideIsland={inside} chunk=({key.X},{key.Y}) loaded={loaded} painted={painted}\n");
-
-		if (_chunkData.TryGetValue(key, out WorldChunk chunk) && FitsTileMapCell(cellX, cellY))
-		{
-			LocalCell local = WorldCoordinates.LocalForTile(cellX, cellY);
-			GeneratedCell cell = chunk.Cells.Span[local.Y * WorldCoordinates.ChunkSize + local.X];
-			sb.Append($"  chunkCell      terrain={cell.Terrain} forest={cell.ForestQ16} stone={cell.StoneQ16} moist={cell.MoistureQ16}\n");
-		}
-
-		sb.Append("  blocks         ").Append(DescribeBlocksAt(key, cellX, cellY)).Append('\n');
-
-		DescribeWorldLayer(sb, "Decor", _decorLayer, cellX, cellY);
-		DescribeWorldLayer(sb, "Mountain", _mountainLayer, cellX, cellY);
-		DescribeWorldLayer(sb, "Wall", _wallLayer, cellX, cellY);
-		DescribeWorldLayer(sb, "WallPlan", _wallPlanLayer, cellX, cellY);
-		DescribeWorldLayer(sb, "Farm", _farmLayer, cellX, cellY);
-		DescribeWorldLayer(sb, "FarmPlan", _farmPlanLayer, cellX, cellY);
-		DescribeWorldLayer(sb, "Mark", _markLayer, cellX, cellY);
-		DescribeWorldLayer(sb, "Stockpile", _stockpileLayer, cellX, cellY);
-		DescribeWorldLayer(sb, "StockpilePlan", _stockpilePlanLayer, cellX, cellY);
-		DescribeWorldLayer(sb, "Plan", _planLayer, cellX, cellY);
-		return sb.ToString();
-	}
-
-	/// <summary>
-	/// Тело короткой строки для сетки 10×10: только НЕПУСТЫЕ слои, текстура «файл#атлас»,
-	/// блоки и состояние чанка. Полная карточка — <see cref="DescribeCellVisual"/>.
-	/// </summary>
-	public string CompactCellVisual(long cellX, long cellY)
-	{
-		var sb = new StringBuilder(128);
-		ChunkKey key = WorldCoordinates.ChunkForTile(cellX, cellY);
-		bool loaded = _chunkData.ContainsKey(key);
-		bool painted = _paintedChunks.Contains(key);
-		sb.Append("ch=").Append(key.X).Append(',').Append(key.Y)
-		  .Append(" L=").Append(loaded ? '1' : '0')
-		  .Append(" P=").Append(painted ? '1' : '0');
-
-		string blocks = DescribeBlocksAt(key, cellX, cellY);
-		if (blocks != "<none>")
-			sb.Append(" blk=").Append(blocks);
-
-		CompactWorldLayer(sb, "Decor", _decorLayer, cellX, cellY);
-		CompactWorldLayer(sb, "Mountain", _mountainLayer, cellX, cellY);
-		CompactWorldLayer(sb, "Wall", _wallLayer, cellX, cellY);
-		CompactWorldLayer(sb, "WallPlan", _wallPlanLayer, cellX, cellY);
-		CompactWorldLayer(sb, "Farm", _farmLayer, cellX, cellY);
-		CompactWorldLayer(sb, "FarmPlan", _farmPlanLayer, cellX, cellY);
-		CompactWorldLayer(sb, "Mark", _markLayer, cellX, cellY);
-		CompactWorldLayer(sb, "Stockpile", _stockpileLayer, cellX, cellY);
-		CompactWorldLayer(sb, "StockpilePlan", _stockpilePlanLayer, cellX, cellY);
-		CompactWorldLayer(sb, "Plan", _planLayer, cellX, cellY);
-		return sb.ToString();
-	}
-
-	private static void CompactWorldLayer(StringBuilder sb, string name, TileMapLayer layer, long cellX, long cellY)
-	{
-		if (layer == null || !FitsTileMapCell(cellX, cellY))
-			return;
-		var pos = new Vector2I((int)cellX, (int)cellY);
-		int sourceId = layer.GetCellSourceId(pos);
-		if (sourceId < 0)
-			return;
-
-		Vector2I atlas = layer.GetCellAtlasCoords(pos);
-		var atlasSource = layer.TileSet?.GetSource(sourceId) as TileSetAtlasSource;
-		sb.Append(' ').Append(name).Append('=')
-		  .Append(VisualDescribe.Short(atlasSource?.Texture, atlasSource, atlas));
-
-		string tint = VisualDescribe.ShortTint(layer.Modulate);
-		if (tint.Length > 0)
-			sb.Append(' ').Append(tint);
-	}
-
-	/// <summary>Есть ли в клетке хоть один нарисованный мировой тайл.</summary>
-	public bool HasAnyDrawnTileAt(long cellX, long cellY)
-	{
-		if (!FitsTileMapCell(cellX, cellY))
-			return false;
-		var pos = new Vector2I((int)cellX, (int)cellY);
-		return HasTile(_decorLayer, pos)
-			|| HasTile(_mountainLayer, pos)
-			|| HasTile(_wallLayer, pos)
-			|| HasTile(_wallPlanLayer, pos)
-			|| HasTile(_farmLayer, pos)
-			|| HasTile(_farmPlanLayer, pos)
-			|| HasTile(_markLayer, pos)
-			|| HasTile(_stockpileLayer, pos)
-			|| HasTile(_stockpilePlanLayer, pos)
-			|| HasTile(_planLayer, pos);
-	}
-
-	/// <summary>Есть ли в клетке хоть одна персистентная метка-блок.</summary>
-	public bool HasAnyBlockAt(long cellX, long cellY)
-	{
-		ChunkKey key = WorldCoordinates.ChunkForTile(cellX, cellY);
-		if (!_blocks.TryGetValue(key, out Dictionary<byte, HashSet<ushort>> kinds) || kinds == null)
-			return false;
-		LocalCell local = WorldCoordinates.LocalForTile(cellX, cellY);
-		int index = local.Y * WorldCoordinates.ChunkSize + local.X;
-		foreach (KeyValuePair<byte, HashSet<ushort>> pair in kinds)
-			if (pair.Value != null && pair.Value.Contains((ushort)index))
-				return true;
-		return false;
-	}
-
-	private static bool HasTile(TileMapLayer layer, Vector2I pos)
-		=> layer != null && layer.GetCellSourceId(pos) >= 0;
-
-	private string DescribeBlocksAt(ChunkKey key, long cellX, long cellY)
-	{
-		if (!_blocks.TryGetValue(key, out Dictionary<byte, HashSet<ushort>> kinds) || kinds == null)
-			return "<none>";
-		LocalCell local = WorldCoordinates.LocalForTile(cellX, cellY);
-		int index = local.Y * WorldCoordinates.ChunkSize + local.X;
-		var sb = new StringBuilder(64);
-		foreach (KeyValuePair<byte, HashSet<ushort>> pair in kinds)
-		{
-			if (pair.Value == null || !pair.Value.Contains((ushort)index))
-				continue;
-			if (sb.Length > 0)
-				sb.Append(',');
-			sb.Append(KindName(pair.Key));
-		}
-		return sb.Length == 0 ? "<none>" : sb.ToString();
-	}
-
-	private static string KindName(byte kind) => kind switch
-	{
-		WorldDeltaKind.Wall => "Wall",
-		WorldDeltaKind.Building => "Building",
-		WorldDeltaKind.MinedStone => "MinedStone",
-		WorldDeltaKind.CutTree => "CutTree",
-		WorldDeltaKind.Stockpile => "Stockpile",
-		WorldDeltaKind.Crop => "Crop",
-		WorldDeltaKind.GroundItems => "GroundItems",
-		WorldDeltaKind.WallPlan => "WallPlan",
-		WorldDeltaKind.BuildingPlan => "BuildingPlan",
-		WorldDeltaKind.CropPlan => "CropPlan",
-		WorldDeltaKind.StockpilePlan => "StockpilePlan",
-		WorldDeltaKind.CutTreePlan => "CutTreePlan",
-		WorldDeltaKind.MinedStonePlan => "MinedStonePlan",
-		_ => $"0x{kind:X2}"
-	};
-
-	private static void DescribeWorldLayer(StringBuilder sb, string name, TileMapLayer layer, long cellX, long cellY)
-	{
-		if (!FitsTileMapCell(cellX, cellY))
-		{
-			sb.Append("  ").Append(name.PadRight(14)).Append(" <out of int32 tile range>\n");
-			return;
-		}
-		if (layer == null)
-		{
-			sb.Append("  ").Append(name.PadRight(14)).Append(" <no layer>\n");
-			return;
-		}
-
-		var pos = new Vector2I((int)cellX, (int)cellY);
-		int sourceId = layer.GetCellSourceId(pos);
-
-		if (sourceId < 0)
-		{
-			sb.Append("  ").Append(name.PadRight(14))
-			  .Append(" empty vis=").Append(layer.Visible ? "y" : "n")
-			  .Append('\n');
-			return;
-		}
-
-		Vector2I atlas = layer.GetCellAtlasCoords(pos);
-		var atlasSource = layer.TileSet?.GetSource(sourceId) as TileSetAtlasSource;
-		sb.Append("  ").Append(name.PadRight(14))
-		  .Append(" src=").Append(sourceId)
-		  .Append(" atlas=").Append(atlas)
-		  .Append(' ').Append(VisualDescribe.Texture(atlasSource?.Texture, atlasSource, atlas))
-		  .Append(" vis=").Append(layer.Visible ? "y" : "n")
-		  .Append(" mod=").Append(layer.Modulate)
-		  .Append(" z=").Append(layer.ZIndex)
-		  .Append('\n');
-	}
-
 	/// <summary>
 	/// Клетки чанка представимы в int32: TileMapLayer адресует клетки int32, и за этим
 	/// диапазоном рисование/стирание «завернулось» бы и стёрло чужие тайлы. Такой чанк
 	/// просто не рисуем (мир дальше ~±2.1 млрд клеток не отображается — предел TileMapLayer).
 	/// </summary>
+	// ================= task-8: руда стримингового мира =================
+
+	/// <summary>
+	/// Запланировать фоновый расчёт базового поля руды чанка и 4 соседей (маски
+	/// на границе нужны с обеих сторон). Тяжёлые сэмплы мира — НЕ на главном потоке.
+	/// </summary>
+	private void ScheduleOreChunk(ChunkKey key)
+	{
+		if (_oreLayer == null || _oreJobs.ContainsKey(key) || _oreReady.Contains(key))
+			return;
+		ulong seed = WorldSeed;
+		uint ver = GeneratorVersion;
+		_oreJobs[key] = Task.Run(() => new OreArrays
+		{
+			Key = key,
+			Center = OreWorldField.EnsureChunk(key.X, key.Y, seed, ver),
+			N = OreWorldField.EnsureChunk(key.X, key.Y - 1, seed, ver),
+			S = OreWorldField.EnsureChunk(key.X, key.Y + 1, seed, ver),
+			E = OreWorldField.EnsureChunk(key.X + 1, key.Y, seed, ver),
+			W = OreWorldField.EnsureChunk(key.X - 1, key.Y, seed, ver),
+		});
+	}
+
+	/// <summary>Дренаж готовых фоновых полей и покраска чанков руды (главный поток).</summary>
+	private void ProcessOreJobs()
+	{
+		if (_oreJobs.Count == 0)
+			return;
+		_oreJobBuffer.Clear();
+		foreach (var kvp in _oreJobs)
+			if (kvp.Value.IsCompleted)
+				_oreJobBuffer.Add(kvp.Key);
+		for (int i = 0; i < _oreJobBuffer.Count; i++)
+		{
+			ChunkKey key = _oreJobBuffer[i];
+			Task<OreArrays> task = _oreJobs[key];
+			_oreJobs.Remove(key);
+			if (task.IsFaulted)
+			{
+				GD.PrintErr($"[World] ore chunk failed {key}: {task.Exception?.GetBaseException().Message}");
+				continue;
+			}
+			OreArrays bundle = task.Result;
+			_oreArrays[key] = bundle.Center;
+			_oreArrays[new ChunkKey(key.X, key.Y - 1)] = bundle.N;
+			_oreArrays[new ChunkKey(key.X, key.Y + 1)] = bundle.S;
+			_oreArrays[new ChunkKey(key.X + 1, key.Y)] = bundle.E;
+			_oreArrays[new ChunkKey(key.X - 1, key.Y)] = bundle.W;
+			_oreReady.Add(key);
+			// N-5 (task-23): декор этого чанка мог быть отложен — докрашиваем.
+			EnqueueDecorRepair(key);
+			EnsureOrePainted(key);
+			// Кромка соседей: их маски на стыке теперь знают про этот чанк.
+			PaintOreEdge(new ChunkKey(key.X, key.Y - 1), 1);
+			PaintOreEdge(new ChunkKey(key.X, key.Y + 1), 0);
+			PaintOreEdge(new ChunkKey(key.X + 1, key.Y), 2);
+			PaintOreEdge(new ChunkKey(key.X - 1, key.Y), 3);
+		}
+		if (_oreJobBuffer.Count > 0)
+			_oreJobBuffer.Clear();
+	}
+
+	/// <summary>N-5: поставить чанк в очередь докраса декора (ore-массивы готовы).</summary>
+	private void EnqueueDecorRepair(ChunkKey key)
+	{
+		if (_decorLayer == null || !_chunkData.ContainsKey(key) || !_oreReady.Contains(key))
+			return;
+		if (!_decorRepairQueued.Add(key))
+			return;
+		_decorRepairCursor[key] = 0;
+		_decorRepairQueue.Add(key);
+	}
+
+	/// <summary>
+	/// N-5: докрас декора чанка, у которого на момент первой покраски поле руды ещё
+	/// не было посчитано. Бюджет на кадр, чтобы не давать хитч на главном потоке.
+	/// </summary>
+	private void ProcessDecorRepair(int cellBudget)
+	{
+		if (_decorRepairQueue.Count == 0 || _decorLayer == null)
+			return;
+		int budget = Math.Max(64, cellBudget);
+		while (budget > 0 && _decorRepairQueue.Count > 0)
+		{
+			ChunkKey key = _decorRepairQueue[0];
+			if (!_chunkData.TryGetValue(key, out WorldChunk chunk) || !_oreReady.Contains(key))
+			{
+				_decorRepairQueue.RemoveAt(0);
+				_decorRepairQueued.Remove(key);
+				_decorRepairCursor.Remove(key);
+				continue;
+			}
+
+			_blocks.TryGetValue(key, out Dictionary<byte, HashSet<ushort>> map);
+			var lookup = new BlockLookup(map);
+			int cursor = _decorRepairCursor.TryGetValue(key, out int saved) ? saved : 0;
+			int end = Math.Min(WorldChunk.CellCount, cursor + budget);
+			ReadOnlySpan<GeneratedCell> cells = chunk.Cells.Span;
+			long originX = key.X * (long)WorldCoordinates.ChunkSize;
+			long originY = key.Y * (long)WorldCoordinates.ChunkSize;
+			for (int index = cursor; index < end; index++)
+			{
+				long cellX = originX + index % WorldCoordinates.ChunkSize;
+				long cellY = originY + index / WorldCoordinates.ChunkSize;
+				if (WorldModel.IsInsideIsland(cellX, cellY) || !FitsTileMapCell(cellX, cellY))
+					continue;
+				var pos = new Vector2I((int)cellX, (int)cellY);
+				int decorIndex = GetDecorIndex(cellX, cellY, index, cells[index], lookup);
+				if (decorIndex < 0)
+					_decorLayer.EraseCell(pos);
+				else
+					_decorLayer.SetCell(pos, SrcDecor, new Vector2I(decorIndex, 0));
+				budget--;
+			}
+
+			if (end >= WorldChunk.CellCount)
+			{
+				_decorRepairQueue.RemoveAt(0);
+				_decorRepairQueued.Remove(key);
+				_decorRepairCursor.Remove(key);
+			}
+			else
+			{
+				_decorRepairCursor[key] = end;
+			}
+		}
+	}
+
+	private readonly List<ChunkKey> _oreJobBuffer = new();
+
+	// N-5 (task-23): покадровый докрас ДЕКОРА после готовности ore-массивов чанка
+	// (при первой покраске декор на таких чанках консервативно отложен).
+	private readonly Dictionary<ChunkKey, int> _decorRepairCursor = new();
+	private readonly List<ChunkKey> _decorRepairQueue = new();
+	private readonly HashSet<ChunkKey> _decorRepairQueued = new();
+	private const int DecorRepairCellsPerFrame = 2048;
+
+	private void RepaintOreNeighbor(ChunkKey key)
+	{
+		if (_oreReady.Contains(key) && _oreArrays.ContainsKey(key))
+			PaintOreChunk(key);
+	}
+
+	/// <summary>Перекрасить только кромку чанка (маска на стыке изменилась).
+	/// Полная перекраска соседа на каждый готовый чанк — 5×4096 клеток, лишний хитч.</summary>
+	private void PaintOreEdge(ChunkKey key, int side)
+	{
+		if (_oreLayer == null || !_oreReady.Contains(key) || !_chunkData.ContainsKey(key))
+			return;
+		long originX = key.X * (long)WorldCoordinates.ChunkSize;
+		long originY = key.Y * (long)WorldCoordinates.ChunkSize;
+		int last = WorldCoordinates.ChunkSize - 1;
+		for (int i = 0; i <= last; i++)
+		{
+			switch (side)
+			{
+				case 0: PaintOreCell(originX + i, originY); break;          // север
+				case 1: PaintOreCell(originX + i, originY + last); break;   // юг
+				case 2: PaintOreCell(originX, originY + i); break;          // запад
+				default: PaintOreCell(originX + last, originY + i); break;  // восток
+			}
+		}
+	}
+
+	/// <summary>
+	/// Инвариант покраски: чанк ДОЛЖЕН быть покрашен, если его данные на месте,
+	/// ore-массивы готовы, а покраски ещё не было. Вызывается из ApplyReady (данные
+	/// могли прийти позже поля), из ProcessOreJobs и после erase. force — перекрасить
+	/// даже если чанк считался покрашенным (часть клеток могла быть стёрта erase).
+	/// </summary>
+	private void EnsureOrePainted(ChunkKey key, bool force = false)
+	{
+		if (!_chunkData.ContainsKey(key))
+			return;
+		if (!_oreReady.Contains(key))
+		{
+			ScheduleOreChunk(key);
+			return;
+		}
+		if (!force && _orePainted.Contains(key))
+			return;
+		PaintOreChunk(key);
+	}
+
+	/// <summary>Полная покраска слоя руды одного чанка (главный поток, массивы уже в кэше).</summary>
+	private void PaintOreChunk(ChunkKey key)
+	{
+		if (_oreLayer == null || !_chunkData.ContainsKey(key))
+			return;
+		long originX = key.X * (long)WorldCoordinates.ChunkSize;
+		long originY = key.Y * (long)WorldCoordinates.ChunkSize;
+		if (!FitsTileMap(originX, originY))
+			return;
+		for (int index = 0; index < WorldCoordinates.ChunkSize * WorldCoordinates.ChunkSize; index++)
+		{
+			int x = index % WorldCoordinates.ChunkSize;
+			int y = index / WorldCoordinates.ChunkSize;
+			PaintOreCell(originX + x, originY + y);
+		}
+		_orePainted.Add(key);
+	}
+
+	/// <summary>Одна клетка слоя руды: тип/состояние из поля+мутаций, маска по соседям.</summary>
+	private void PaintOreCell(long cellX, long cellY)
+	{
+		if (_oreLayer == null || !FitsTileMapCell(cellX, cellY))
+			return;
+		// Остров рисует MapRenderer своим слоем — здесь гейт, как у декора.
+		if (WorldModel.IsInsideIsland(cellX, cellY))
+			return;
+
+		var pos = new Vector2I((int)cellX, (int)cellY);
+		byte type = EffectiveOreType(cellX, cellY);
+		if (type == OreConfig.None)
+		{
+			if (_orePaintedChunkOf(cellX, cellY))
+				_oreLayer.EraseCell(pos);
+			return;
+		}
+
+		// N-5: руда выше декора по z, но старый тайл дерева под ней не оставляем —
+		// после выработки он стал бы виден.
+		_decorLayer?.EraseCell(pos);
+
+		int mask = ComputeOreMask(cellX, cellY, type);
+		int maskIndex = OreMaskHelper.IndexOf((byte)mask);
+		if (maskIndex < 0)
+		{
+			_oreLayer.EraseCell(pos);
+			return;
+		}
+		ushort reserve = EffectiveOreReserve(cellX, cellY);
+		ushort initial = BaseOreReserve(cellX, cellY);
+		byte state = (byte)OreConfig.StateFor(reserve, initial);
+		if (!_oreTiles.TryGetTile(type, state, maskIndex, out int sourceId, out Vector2I atlas))
+			return; // арта нет — warning уже отдан билдером
+		_oreLayer.SetCell(pos, sourceId, atlas);
+	}
+
+	private bool _orePaintedChunkOf(long cellX, long cellY)
+	{
+		ChunkKey key = WorldCoordinates.ChunkForTile(cellX, cellY);
+		return _orePainted.Contains(key);
+	}
+
+	/// <summary>
+	/// N-5 (task-23): БАЗОВАЯ руда клетки по УЖЕ посчитанным массивам чанка.
+	/// null — поле чанка ещё не посчитано (декор отложен); true — клетка жилы
+	/// (декор запрещён и ПОСЛЕ выработки — как остров очищает декор на жиле);
+	/// false — руды нет. Без тяжёлых синхронных расчётов.
+	/// </summary>
+	private bool? OreBaseAtCellCached(long cellX, long cellY)
+	{
+		ChunkKey key = WorldCoordinates.ChunkForTile(cellX, cellY);
+		if (!_oreArrays.TryGetValue(key, out OreWorldField.ChunkOre chunk))
+			return null;
+		LocalCell local = WorldCoordinates.LocalForTile(cellX, cellY);
+		int index = local.Y * WorldCoordinates.ChunkSize + local.X;
+		return chunk.Types[index] != OreConfig.None;
+	}
+
+	/// <summary>Есть ли руда в клетке по УЖЕ посчитанным массивам (без семпла поля).</summary>
+	private bool OreCellHasOreCached(long cellX, long cellY)
+	{
+		ChunkKey key = WorldCoordinates.ChunkForTile(cellX, cellY);
+		if (!_oreArrays.TryGetValue(key, out OreWorldField.ChunkOre chunk))
+			return false;
+		LocalCell local = WorldCoordinates.LocalForTile(cellX, cellY);
+		int index = local.Y * WorldCoordinates.ChunkSize + local.X;
+		byte type = chunk.Types[index];
+		if (type == OreConfig.None)
+			return false;
+		if (OreWorldState.TryGet((int)cellX, (int)cellY, out ushort mutated) && mutated == 0)
+			return false;
+		return true;
+	}
+
+	private byte EffectiveOreType(long cellX, long cellY)
+	{
+		ChunkKey key = WorldCoordinates.ChunkForTile(cellX, cellY);
+		if (!_oreArrays.TryGetValue(key, out OreWorldField.ChunkOre chunk))
+			return OreConfig.None;
+		LocalCell local = WorldCoordinates.LocalForTile(cellX, cellY);
+		byte type = chunk.Types[local.Y * WorldCoordinates.ChunkSize + local.X];
+		if (type == OreConfig.None)
+			return OreConfig.None;
+		if (OreWorldState.TryGet((int)cellX, (int)cellY, out ushort mutated) && mutated == 0)
+			return OreConfig.None; // выработано
+		return type;
+	}
+
+	private ushort EffectiveOreReserve(long cellX, long cellY)
+	{
+		if (OreWorldState.TryGet((int)cellX, (int)cellY, out ushort mutated))
+			return mutated;
+		return BaseOreReserve(cellX, cellY);
+	}
+
+	private ushort BaseOreReserve(long cellX, long cellY)
+	{
+		ChunkKey key = WorldCoordinates.ChunkForTile(cellX, cellY);
+		if (!_oreArrays.TryGetValue(key, out OreWorldField.ChunkOre chunk))
+			return 0;
+		LocalCell local = WorldCoordinates.LocalForTile(cellX, cellY);
+		return chunk.Reserves[local.Y * WorldCoordinates.ChunkSize + local.X];
+	}
+
+	private int ComputeOreMask(long cellX, long cellY, byte type)
+	{
+		bool n = EffectiveOreType(cellX, cellY - 1) == type;
+		bool e = EffectiveOreType(cellX + 1, cellY) == type;
+		bool s = EffectiveOreType(cellX, cellY + 1) == type;
+		bool w = EffectiveOreType(cellX - 1, cellY) == type;
+		int mask = 0;
+		if (n) mask |= OreMaskHelper.N;
+		if (e) mask |= OreMaskHelper.E;
+		if (s) mask |= OreMaskHelper.S;
+		if (w) mask |= OreMaskHelper.W;
+		if (n && e && EffectiveOreType(cellX + 1, cellY - 1) == type) mask |= OreMaskHelper.NE;
+		if (e && s && EffectiveOreType(cellX + 1, cellY + 1) == type) mask |= OreMaskHelper.SE;
+		if (s && w && EffectiveOreType(cellX - 1, cellY + 1) == type) mask |= OreMaskHelper.SW;
+		if (w && n && EffectiveOreType(cellX - 1, cellY - 1) == type) mask |= OreMaskHelper.NW;
+		return mask;
+	}
+
+	/// <summary>Перекрасить одну клетку руды (после добычи/смены состояния).</summary>
+	public void RefreshOreCell(int localX, int localY)
+	{
+		if (WorldModel.IsInsideIsland(localX, localY))
+			return; // остров — слоем MapRenderer
+		ChunkKey key = WorldCoordinates.ChunkForTile(localX, localY);
+		if (!_oreArrays.ContainsKey(key))
+		{
+			ScheduleOreChunk(key);
+			return;
+		}
+		PaintOreCell(localX, localY);
+		// Маска соседей могла измениться — обновим 8 клеток вокруг.
+		PaintOreCell(localX + 1, localY);
+		PaintOreCell(localX - 1, localY);
+		PaintOreCell(localX, localY + 1);
+		PaintOreCell(localX, localY - 1);
+		PaintOreCell(localX + 1, localY + 1);
+		PaintOreCell(localX - 1, localY + 1);
+		PaintOreCell(localX + 1, localY - 1);
+		PaintOreCell(localX - 1, localY - 1);
+	}
+
+	/// <summary>OreWorldState.CellChanged может прийти из sim-потока — маршалим.</summary>
+	private void OnOreStateChanged(int localX, int localY)
+		=> Callable.From(() => RefreshOreCell(localX, localY)).CallDeferred();
+
+	/// <summary>Применить запись OreMined из чанк-стора (загрузка чанка).</summary>
+	private static void ApplyOreRecord(ChunkKey key, ushort localIndex, ushort reserve)
+	{
+		int localX = (int)(key.X * WorldCoordinates.ChunkSize + localIndex % WorldCoordinates.ChunkSize);
+		int localY = (int)(key.Y * WorldCoordinates.ChunkSize + localIndex / WorldCoordinates.ChunkSize);
+		OreWorldState.ApplyLoadedReserve(localX, localY, reserve);
+		if (WorldModel.IsInsideIsland(localX, localY))
+			MapRenderer.Instance?.ApplyWorldOreToIslandCell(localX, localY);
+	}
+
+	public override void _ExitTree()
+	{
+		OreWorldState.CellChanged -= OnOreStateChanged;
+		_oreJobs.Clear();
+		_oreArrays.Clear();
+		_oreReady.Clear();
+		_orePainted.Clear();
+		base._ExitTree();
+	}
 	private static bool FitsTileMap(long originX, long originY, long margin = 0)
 		=> originX >= (long)int.MinValue + margin
 			&& originY >= (long)int.MinValue + margin

@@ -1,0 +1,29 @@
+{
+  "name": "PlanetaryRealismWorld",
+  "sea_level": 32768,
+  "mountain_threshold": 48000,
+  "tree_line_elevation": 43000,
+  
+  "continental_scale": 1024,
+  "sub_continental_scale": 256,
+  
+  "rift_strait_width": 24,
+  "rift_frequency": 768,
+  
+  "archipelago_chance": 35,
+  "archipelago_scale": 64,
+  
+  "great_river_period": 1024,
+  "great_river_width": 900,
+  "riparian_zone_multiplier": 4,
+  
+  "great_lake_threshold": 3200,
+  "great_lake_scale": 512,
+  
+  "domain_warp_meso_scale": 64,
+  "domain_warp_micro_scale": 16,
+  "forest_min_q16": 30000,
+  "stone_min_q16": 35000,
+  "start_clear_radius": 14,
+  "climate_lattice_step": 16
+}

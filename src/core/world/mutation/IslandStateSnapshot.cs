@@ -14,7 +14,7 @@ namespace Game.Core.WorldStreaming.Mutation;
 // оно не пишет. Здесь, на выходе из колонии, каждой существующей метке
 // пристраивается снапшот состояния:
 //   Stockpile      → item/count слота (null = пустой слот),
-//   Crop           → stage/growthTimer/zoneId (null = грядка без культуры),
+//   Crop           → stage/growthTimer/zoneId + ТИП культуры (null = грядка без культуры),
 //   WallPlan/BuildingPlan → stage + доставленные материалы + WorkProgress,
 //   CutTreePlan/MinedStonePlan → fraction CellProgressStore,
 //   GroundItems    → СИНХРОНИЗАЦИЯ НАБОРА: старые метки снимаются, свежий
@@ -26,17 +26,21 @@ namespace Game.Core.WorldStreaming.Mutation;
 
 public static class IslandStateSnapshot
 {
+    /// <summary>
+    /// Обновить payload'ы всех меток зоны актуальным состоянием доменов.
+    /// <paramref name="writeLog"/> = false — для headless-стендов без запущенного
+    /// движка (GD.Print/GD.PushWarning вне движка роняют процесс); на результат
+    /// и запись в стор не влияет.
+    /// </summary>
     public static (int PayloadsSet, int GroundApplied, int GroundRemoved) RefreshPayloads(
-        IslandOverrideStore store, long originX, long originY)
+        IslandOverrideStore store, long originX, long originY, bool writeLog = true)
     {
         if (store == null)
             return (0, 0, 0);
 
-        long maxX = originX + ActiveArea.Size - 1;
-        long maxY = originY + ActiveArea.Size - 1;
-
         var cells = new List<(byte Kind, long CellX, long CellY)>(store.Count);
-        store.Enumerate(originX, originY, maxX, maxY, 0, cells);
+        // ST-37 / S-09: перечисляем все дельты стора без обрезки по ActiveArea.Size
+        store.Enumerate(long.MinValue, long.MinValue, long.MaxValue, long.MaxValue, 0, cells);
 
         int set = 0;
         int groundApplied = 0;
@@ -47,16 +51,15 @@ public static class IslandStateSnapshot
         foreach (var s in StockpileManager.Instance.GetStorageSnapshot())
             storageSnap[(s.X, s.Y)] = (s.Item, s.Count);
 
-        var cropsSnap = new Dictionary<(int, int), (int Stage, float Timer, int ZoneId)>();
+        var cropsSnap = new Dictionary<(int, int), (int Stage, float Timer, int ZoneId, Game.Core.CropType Type)>();
         foreach (CropData c in CropGrowthManager.Instance.GetCropsSnapshot())
-            cropsSnap[(c.X, c.Y)] = (c.Stage, c.GrowthTimer, c.ZoneId);
+            cropsSnap[(c.X, c.Y)] = (c.Stage, c.GrowthTimer, c.ZoneId, c.Type);
 
         foreach ((byte kind, long wx, long wy) in cells)
         {
             int x = checked((int)(wx - originX));
             int y = checked((int)(wy - originY));
-            if (x < 0 || y < 0 || x >= ActiveArea.Size || y >= ActiveArea.Size)
-                continue;
+            // ST-37: не отсекаем по ActiveArea.Size
             try
             {
                 switch (kind)
@@ -74,7 +77,8 @@ public static class IslandStateSnapshot
                     {
                         byte[] payload = null;
                         if (cropsSnap.TryGetValue((x, y), out var c))
-                            payload = IslandPayload.WriteCrop(c.Stage, c.Timer, c.ZoneId);
+                            // Схема v2: тип культуры едет вместе со стадией/таймером.
+                            payload = IslandPayload.WriteCrop(c.Stage, c.Timer, c.ZoneId, c.Type);
                         if (store.TrySetPayload(kind, wx, wy, payload))
                             set++;
                         break;
@@ -112,7 +116,8 @@ public static class IslandStateSnapshot
             }
             catch (Exception ex)
             {
-                GD.PushWarning($"[IslandStateSnapshot] kind=0x{kind:X2} ({x},{y}): {ex.Message}");
+                if (writeLog)
+                    GD.PushWarning($"[IslandStateSnapshot] kind=0x{kind:X2} ({x},{y}): {ex.Message}");
             }
         }
 
@@ -141,10 +146,8 @@ public static class IslandStateSnapshot
                 int n = 0;
                 foreach (var p in piles)
                 {
-                    // Кучи за пределами зоны (теоретически) — не пишем.
+                    // ST-37 / S-09: пишем все кучи, включая клетки за пределами острова
                     long wx = originX + p.X, wy = originY + p.Y;
-                    if (p.X < 0 || p.Y < 0 || wx > maxX || wy > maxY)
-                        continue;
                     add[n++] = new WorldMutation(WorldDeltaKind.GroundItems, wx, wy,
                         IslandPayload.WriteGroundItems(p.Item3, p.Item4));
                 }
@@ -158,10 +161,12 @@ public static class IslandStateSnapshot
         }
         catch (Exception ex)
         {
-            GD.PushWarning($"[IslandStateSnapshot] ground items sync: {ex.Message}");
+            if (writeLog)
+                GD.PushWarning($"[IslandStateSnapshot] ground items sync: {ex.Message}");
         }
 
-        GD.Print($"[World] state-snapshot острова: payload'ы={set} ground+={groundApplied} ground-={groundRemoved}");
+        if (writeLog)
+            GD.Print($"[World] state-snapshot острова: payload'ы={set} ground+={groundApplied} ground-={groundRemoved}");
         return (set, groundApplied, groundRemoved);
     }
 }

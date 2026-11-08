@@ -45,10 +45,18 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
     private bool _updating;
     private long _lastTilesMs;
     private int _pendingTiles = -1;
+    /// <summary>FIX (bughunt 15-8): id зоны для отложенного радиуса — к моменту
+    /// слива выбор уже может быть снят (крестик), а значение терять нельзя.</summary>
+    private int _pendingTilesZoneId = -1;
     private string _lastInfo = "";
     private double _infoTimer;
 
     private const long TilesThrottleMs = 150;
+
+    // UI-14: двухэтапное подтверждение сноса зоны
+    private bool _awaitingRemoveConfirmation;
+    private long _removeConfirmExpireMs;
+    private const long RemoveConfirmWindowMs = 3500;
 
     public event Action OnOpened;
     public event Action OnClosed;
@@ -99,6 +107,7 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
                     _rootPanel = packed.Instantiate<Control>();
                     AddChild(_rootPanel);
                     _rootPanel.Visible = false;
+
 
                     ConfigureInputBlocking(_rootPanel);
 
@@ -162,7 +171,7 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
 
                     if (_escapeButton != null)
                     {
-                        _escapeButton.Pressed += () => WorkZoneManager.Instance.DeselectZone();
+                        _escapeButton.Pressed += OnCloseButtonPressed;
                     }
 
                     _farmBackButton = _rootPanel.FindChild("ButtonForFarm", true, false) as BaseButton;
@@ -206,6 +215,20 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
     }
 
     /// <summary>
+    /// Крестик/esc JobDisplay. FIX (bughunt 15-2): окно одно и для Work-, и для
+    /// Farm-зон, а Work-фасад снимает выбор только у Kind==Work. В режиме фермы
+    /// выбрана Farm-зона — гасим её через FarmZoneManager, иначе крестик был
+    /// no-op и окно не закрывалось (OnZoneDeselected не выстреливал).
+    /// </summary>
+    private void OnCloseButtonPressed()
+    {
+        if (_farmMode)
+            FarmZoneManager.Instance.DeselectZone();
+        else
+            WorkZoneManager.Instance.DeselectZone();
+    }
+
+    /// <summary>
     /// §119/P6: провести радиус в зону. P0 слился — фасад отдаёт SetRadius
     /// (ZoneManager.SetWorkRadius, кламп 64..512 внутри). ПЛОЩАДЬ больше не
     /// проводим: слайдер теперь радиус.
@@ -226,11 +249,41 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
         if (now - _lastTilesMs < TilesThrottleMs)
         {
             _pendingTiles = v;
+            // FIX (bughunt 15-8): запоминаем зону — к моменту слива выбор может быть снят.
+            _pendingTilesZoneId = zone.Id;
             return;
         }
         _lastTilesMs = now;
         _pendingTiles = -1;
+        _pendingTilesZoneId = -1;
         ApplyRadiusToZone(zone.Id, v);
+    }
+
+    /// <summary>
+    /// FIX (bughunt 15-8): применить отложенный троттлингом радиус, не дожидаясь
+    /// следующего _Process. Вызывается при закрытии окна/смене зоны — иначе
+    /// последний сдвиг слайдера (попавший в 150-мс окно) терялся.
+    /// </summary>
+    private void FlushPendingTiles()
+    {
+        if (_pendingTiles < 0)
+            return;
+        int value = _pendingTiles;
+        int zoneId = _pendingTilesZoneId;
+        _pendingTiles = -1;
+        _pendingTilesZoneId = -1;
+        // Выключенная тумблером зона изменения слайдера не принимает (см. OnEnabledToggled).
+        if (!_zoneEnabled || _farmMode)
+            return;
+        if (zoneId < 0)
+        {
+            var zone = WorkZoneManager.Instance.SelectedZone;
+            if (zone == null)
+                return;
+            zoneId = zone.Id;
+        }
+        _lastTilesMs = System.Environment.TickCount64;
+        ApplyRadiusToZone(zoneId, value);
     }
 
     private void OnWorkerSliderChanged(double value)
@@ -266,18 +319,46 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
     /// блокирует pushes слайдеров из этого окна; TODO: push Enabled через фасад.</summary>
     private void OnEnabledToggled(bool pressed)
     {
+        // FIX (bughunt 15-8): отложенный радиус применяем ДО смены режима, а не
+        // выбрасываем — иначе последнее значение слайдера пропадало.
+        FlushPendingTiles();
+        ResetRemoveConfirmation();
         _zoneEnabled = pressed;
-        if (!pressed)
-            _pendingTiles = -1; // отставший троттлинг-пуш сбрасываем
         GD.Print($"[JobDisplay] зона {(pressed ? "включена" : "выключена")} (push Enabled ждёт SetEnabled в фасаде).");
         RefreshInfo();
     }
 
     /// <summary>§119/P6: кнопка «Снести зону» → WorkZoneManagerFacade.RemoveZone(id).</summary>
+    private void ResetRemoveConfirmation()
+    {
+        _awaitingRemoveConfirmation = false;
+        _removeConfirmExpireMs = 0;
+        if (_removeZoneButton is Button btn)
+        {
+            btn.Text = "Снести зону";
+            btn.Modulate = Colors.White;
+        }
+    }
+
     private void OnRemoveZonePressed()
     {
         var zone = WorkZoneManager.Instance.SelectedZone;
         if (zone == null) return;
+        long now = System.Environment.TickCount64;
+        if (!_awaitingRemoveConfirmation || now > _removeConfirmExpireMs)
+        {
+            _awaitingRemoveConfirmation = true;
+            _removeConfirmExpireMs = now + RemoveConfirmWindowMs;
+            if (_removeZoneButton is Button btn)
+            {
+                btn.Text = "Подтвердите снос!";
+                btn.Modulate = new Color(1.0f, 0.4f, 0.4f);
+            }
+            return;
+        }
+
+        ResetRemoveConfirmation();
+
         int id = zone.Id;
         bool removed = WorkZoneManager.Instance.RemoveZone(id);
         GD.Print($"[JobDisplay] Снести зону {id}: {(removed ? "удалена" : "менеджер отказал")}");
@@ -301,6 +382,11 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
         if (farmCtrl != null && farmCtrl.IsOpen)
             farmCtrl.Close();
 
+        // FIX (bughunt 15-8): сменили режим — отложенный радиус прошлой Work-зоны
+        // досылаем сейчас, пока _farmMode ещё false (иначе он бы потерялся).
+        FlushPendingTiles();
+        ResetRemoveConfirmation();
+
         CameFromFarmZoneId = farmZoneId;
         _farmMode = true;
 
@@ -319,6 +405,7 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
             if (_prioritySlider != null) _prioritySlider.Value = prio;
             if (_priorityNumber != null) _priorityNumber.Text = prio.ToString();
             _pendingTiles = -1;
+            _pendingTilesZoneId = -1;
             _lastInfo = "";
         }
         finally
@@ -369,6 +456,11 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
     {
         if (_rootPanel == null || zone == null) return;
 
+        // FIX (bughunt 15-8): не теряем отложенный радиус ПРЕДЫДУЩЕЙ зоны при
+        // переключении выбора — досылаем его старому id до сброса состояния.
+        FlushPendingTiles();
+        ResetRemoveConfirmation();
+
         // Обычный выбор Work-зоны — режим фермы сбрасываем, кнопка назад скрыта.
         _farmMode = false;
         CameFromFarmZoneId = -1;
@@ -411,6 +503,7 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
             if (_prioritySlider != null) _prioritySlider.Value = prio;
             if (_priorityNumber != null) _priorityNumber.Text = prio.ToString();
             _pendingTiles = -1;
+            _pendingTilesZoneId = -1;
             _lastTilesMs = System.Environment.TickCount64;
             _lastInfo = "";
         }
@@ -427,7 +520,7 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
     private static int GetLiveMinPriority(WorkZone zone)
     {
         int min = int.MaxValue;
-        for (int t = 1; t <= 10; t++)
+        for (int t = 1; t <= (int)JobTypeId.Production; t++)
         {
             if (!zone.Matches((JobTypeId)t)) continue;
             int p = JobPriorityManager.Instance.GetPriorityForJobType((JobTypeId)t);
@@ -439,7 +532,7 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
     private static Dictionary<JobCategory, int> CollectCategoryGlobals(WorkZone zone)
     {
         var dict = new Dictionary<JobCategory, int>();
-        for (int t = 1; t <= 10; t++)
+        for (int t = 1; t <= (int)JobTypeId.Production; t++)
         {
             var typeId = (JobTypeId)t;
             if (!zone.Matches(typeId)) continue;
@@ -483,6 +576,15 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
         // T8: "Назначено {perPass} · Работ в чанках {total} · лимит {N/∞}".
         int perPass = System.Threading.Volatile.Read(ref zone.AssignedCount);
         int desired = zone.DesiredWorkers;
+        // FIX (bughunt 15-4): подпись Worker «назначено/желаемое» и строка Information
+        // берутся из ОДНОГО расчёта. Раньше _workerNumber писался только при движении
+        // слайдера, и в окне одновременно жили «0/12» и «Назначено 12/12».
+        if (_workerNumber != null)
+        {
+            string workerText = $"{perPass}/{desired}";
+            if (_workerNumber.Text != workerText)
+                _workerNumber.Text = workerText;
+        }
         // §119 P0: покрытие зоны — вычисляемая площадь πr² (клетки не материализуются).
         long coverage = zone.CellCount;
         // T4/T5: строка конфликта — покрытые категории + их текущие глобальные значения.
@@ -492,9 +594,27 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
             parts.Add($"{kv.Key}={kv.Value}");
         string conflict = parts.Count > 0 ? string.Join(", ", parts) : "—";
         string state = _zoneEnabled ? "вкл" : "выкл";
+        // task-13: в окне зоны видно ОТРАСЛЬ и её объекты (зона = отрасль).
+        var industryBuilds = ZoneIndustryRegistry.Get(zone.Kind).Buildings;
+        var objectNames = new List<string>(industryBuilds.Count);
+        for (int bi = 0; bi < industryBuilds.Count; bi++)
+            objectNames.Add(StructureRegistry.Get(industryBuilds[bi]).DisplayName);
+        string objectList = objectNames.Count > 0 ? string.Join(", ", objectNames) : "—";
+        // task-20: что производит станок этой отрасли (рецепт = «2× руда → 1× слиток»).
+        var productionParts = new List<string>();
+        for (int bi = 0; bi < industryBuilds.Count; bi++)
+        {
+            var recipe = RecipeRegistry.GetForStation(industryBuilds[bi]);
+            if (recipe == null) continue;
+            productionParts.Add($"{StructureRegistry.Get(industryBuilds[bi]).DisplayName}: {recipe.Summary}");
+        }
+        string productionLine = productionParts.Count > 0
+            ? "\nПроизводство: " + string.Join(" · ", productionParts)
+            : string.Empty;
         string text =
+            $"Отрасль: {zone.IndustryTitle} · Объекты: {objectList}\n" +
             $"Очередь зоны (чанки): {total} · Покрытие: {coverage} кл. (r={zone.RadiusTiles}) · Назначено {perPass}/{desired} · " +
-            $"Вне зон: — (нет данных, ждёт P1) · Состояние: {state}\nглобально: {conflict}";
+            $"Вне зон: — (нет данных, ждёт P1) · Состояние: {state}\ngлобально: {conflict}" + productionLine;
         if (text != _lastInfo)
         {
             _lastInfo = text;
@@ -506,6 +626,8 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
     public override void _Process(double delta)
     {
         if (_rootPanel == null || !_rootPanel.Visible) return;
+        if (_awaitingRemoveConfirmation && System.Environment.TickCount64 > _removeConfirmExpireMs)
+            ResetRemoveConfirmation();
         if (_farmMode)
         {
             // Режим фермы: слайдеры заблокированы, тикает только инфо-строка.
@@ -521,10 +643,9 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
         if (zone == null) return;
         if (_zoneEnabled && _pendingTiles >= 0 && System.Environment.TickCount64 - _lastTilesMs >= TilesThrottleMs)
         {
-            _lastTilesMs = System.Environment.TickCount64;
-            int v = _pendingTiles;
-            _pendingTiles = -1;
-            ApplyRadiusToZone(zone.Id, v);
+            // FIX (bughunt 15-8): слив через общий помощник (ту же логику зовёт Close).
+            FlushPendingTiles();
+        ResetRemoveConfirmation();
         }
         _infoTimer += delta;
         if (_infoTimer >= 1.0)
@@ -536,6 +657,10 @@ public partial class WorkZoneController : Control, IZoneWindow, IFarmJobDisplayH
 
     public void Close()
     {
+        // FIX (bughunt 15-8): досылаем отложенный троттлингом радиус ДО скрытия —
+        // после закрытия _Process ранний выход, и последний сдвиг слайдера терялся.
+        FlushPendingTiles();
+        ResetRemoveConfirmation();
         if (_rootPanel != null && _rootPanel.Visible)
         {
             _rootPanel.Visible = false;

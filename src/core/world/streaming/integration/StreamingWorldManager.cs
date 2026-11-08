@@ -140,13 +140,6 @@ public sealed class StreamingWorldManager
     /// модификации существующей поверхности. Дубль отклоняется (идемпотентно).
     /// </summary>
     public bool TryPlaceBlock(byte kind, long cellX, long cellY)
-        => TryPlaceBlock(kind, cellX, cellY, ReadOnlySpan<byte>.Empty);
-
-    /// <summary>
-    /// Поставить метку с payload. Для Building/BuildingPlan payload — байт
-    /// <see cref="Game.Core.BuildingType"/>; остальные виды payload не используют.
-    /// </summary>
-    public bool TryPlaceBlock(byte kind, long cellX, long cellY, ReadOnlySpan<byte> data)
     {
         if (!_world.IsLoaded(WorldCoordinates.ChunkForTile(cellX, cellY)))
             return false;
@@ -160,7 +153,7 @@ public sealed class StreamingWorldManager
             return false;
         if (placementKind && HasEntityBlocking(_world, cellX, cellY))
             return false;
-        return blocks.AddBlock(kind, cellX, cellY, data);
+        return blocks.AddBlock(kind, cellX, cellY);
     }
 
     /// <summary>Снять персистентную метку указанного вида (если есть и чанк загружен).</summary>
@@ -201,19 +194,13 @@ public sealed class StreamingWorldManager
                 return false;
         }
 
-        // §122: Plan -> Done переносит payload (тип здания), иначе готовый спрайт
-        // после завершения работы стал бы generic. Payload читаем ДО удаления.
-        byte[] payload = Array.Empty<byte>();
-        blocks.TryGetBlockData(oldKind, cellX, cellY, out payload);
-        payload ??= Array.Empty<byte>();
-
         if (!blocks.RemoveBlock(oldKind, cellX, cellY))
             return false;
 
-        if (!blocks.AddBlock(newKind, cellX, cellY, payload))
+        if (!blocks.AddBlock(newKind, cellX, cellY))
         {
-            // Откат старого блока при сбое — вместе с payload.
-            blocks.AddBlock(oldKind, cellX, cellY, payload);
+            // Откат старого блока при сбое
+            blocks.AddBlock(oldKind, cellX, cellY);
             return false;
         }
 

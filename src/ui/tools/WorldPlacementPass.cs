@@ -1,5 +1,4 @@
 using System;
-using Game.Core.World;
 
 namespace Game.UI.Tools;
 
@@ -28,8 +27,21 @@ public static class WorldPlacementPass
         long endX,
         long endY,
         IToolWorldPlacement placement,
+        Func<long, long, bool> apply)
+        => Run(startX, startY, endX, endY, placement, apply, null);
+
+    /// <summary>
+    /// То же, но с ЯВНЫМ предикатом острова. Он имеет приоритет над адаптером
+    /// (замыкает `??`): адаптеру вопрос о границе не задаётся ни разу.
+    /// </summary>
+    public static int Run(
+        long startX,
+        long startY,
+        long endX,
+        long endY,
+        IToolWorldPlacement placement,
         Func<long, long, bool> apply,
-        Func<long, long, bool> isIslandCell = null)
+        Func<long, long, bool> islandBoundary)
     {
         if (placement == null || apply == null)
             return 0;
@@ -44,20 +56,18 @@ public static class WorldPlacementPass
         long width = maxX - minX + 1;
         long height = maxY - minY + 1;
         LastTruncated = false;
-        if (width <= 0 || height <= 0)
-            return 0;
-        if (width > MaxScannedCells / height)
+        if (width * height > MaxScannedCells)
         {
             LastTruncated = true;
-            // Сохраняем пропорции, не превращая длинное тонкое выделение в квадрат.
-            long clippedWidth = Math.Min(width, MaxScannedCells);
-            long clippedHeight = Math.Min(height, Math.Max(1, MaxScannedCells / clippedWidth));
+            long side = (long)Math.Sqrt(MaxScannedCells);
             long centerX = minX + width / 2;
             long centerY = minY + height / 2;
-            minX = Math.Max(minX, centerX - clippedWidth / 2);
-            minY = Math.Max(minY, centerY - clippedHeight / 2);
-            maxX = Math.Min(maxX, minX + clippedWidth - 1);
-            maxY = Math.Min(maxY, minY + clippedHeight - 1);
+            long newMinX = Math.Max(minX, centerX - side / 2);
+            long newMinY = Math.Max(minY, centerY - side / 2);
+            maxX = Math.Min(maxX, newMinX + side - 1);
+            maxY = Math.Min(maxY, newMinY + side - 1);
+            minX = newMinX;
+            minY = newMinY;
         }
 
         int applied = 0;
@@ -71,10 +81,7 @@ public static class WorldPlacementPass
                     LastTruncated = true;
                     return applied;
                 }
-                // Границу острова спрашиваем у адаптера: он единственный знает размеры,
-        // с которыми его создали (в игре это WorldModel.IslandTiles).
-        Func<long, long, bool> islandBoundary = isIslandCell ?? placement.IsIslandCell;
-        if (islandBoundary(x, y))
+                if (islandBoundary != null ? islandBoundary(x, y) : IsIslandCell(x, y))
                     continue;
                 if (applied >= MaxAppliedCells)
                     return applied;
@@ -87,24 +94,15 @@ public static class WorldPlacementPass
         return applied;
     }
 
-    /// <summary>
-    /// Клетка острова колонии. ЕДИНСТВЕННЫЙ ответ проекта — <see cref="WorldModel.IsInsideIsland"/>
-    /// (R-008: свои формулы границы запрещены, их ловит run_architecture_guards).
-    /// </summary>
-    public static bool IsOnIsland(long cellX, long cellY)
-        => WorldModel.IsInsideIsland(cellX, cellY);
+    /// <summary>Клетка острова колонии: [0, MapWidth)×[0, MapHeight) — там работает обычная островная логика.</summary>
+    public static bool IsIslandCell(long cellX, long cellY)
+        => IsOnIsland(cellX, cellY, MapRenderer.MapWidth, MapRenderer.MapHeight);
 
-    /// <summary>
-    /// Диагностика расхождения размеров (SeamInspector): «влезла бы клетка в остров
-    /// указанного размера». НЕ рабочая формула границы — в игре размер только один,
-    /// <see cref="WorldModel.IslandTiles"/>.
-    /// </summary>
+    /// <summary>Клетка острова при ЯВНЫХ размерах (SeamInspector / тесты).</summary>
     public static bool IsOnIsland(long cellX, long cellY, long width, long height)
-        => width == WorldModel.IslandTiles && height == WorldModel.IslandTiles
-            ? WorldModel.IsInsideIsland(cellX, cellY)
-            : width > 0 && height > 0 && cellX >= 0 && cellY >= 0 && cellX < width && cellY < height;
+        => cellX >= 0 && cellY >= 0 && cellX < width && cellY < height;
 
-    /// <summary>Клетка острова с учётом адаптера инструмента (null → остров проекта).</summary>
-    public static bool IsOnIsland(long cellX, long cellY, IToolWorldPlacement placement)
-        => placement != null ? placement.IsIslandCell(cellX, cellY) : IsOnIsland(cellX, cellY);
+    /// <summary>Клетка острова при размерах по умолчанию (алиас IsIslandCell).</summary>
+    public static bool IsOnIsland(long cellX, long cellY)
+        => IsIslandCell(cellX, cellY);
 }

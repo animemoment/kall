@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Godot;
 using Game.Core.WorldStreaming.Integration;
+// L-03: нарушение слоёв (core → simulation/ui) — правило и список см. docs/ARCHITECTURE.md §7.1
 using Game.Simulation;
 
 namespace Game.Core.WorldStreaming.Mutation;
@@ -161,6 +162,7 @@ public static class IslandDomainReplay
                     case IslandReplayDomain.CutTreePlan:
                         // План рубки = метка TreeJobManager (идемпотентна, батч).
                         var cutList = ToIntList(list);
+                        // L-03: нарушение слоёв (core → simulation/ui) — правило и список см. docs/ARCHITECTURE.md §7.1
                         TreeJobManager.Instance.MarkTreesBatch(cutList);
                         applied += cutList.Count;
                         break;
@@ -200,6 +202,7 @@ public static class IslandDomainReplay
         {
             int ix = checked((int)x);
             int iy = checked((int)y);
+            // L-03: нарушение слоёв (core → simulation/ui) — правило и список см. docs/ARCHITECTURE.md §7.1
             if (StructureManager.Instance.HasStructureAt(ix, iy))
                 continue; // идемпотентный отказ: уже восстановлено (не skipped)
             if (StructureManager.Instance.AddStructure(ix, iy, def, ctx, null))
@@ -247,6 +250,7 @@ public static class IslandDomainReplay
             int iy = checked((int)y);
             // IsZoneTile покрывает и боевую зону, и отложенную (общая битмаска) —
             // true значит «состояние уже восстановлено» (идемпотентный отказ).
+            // L-03: нарушение слоёв (core → simulation/ui) — правило и список см. docs/ARCHITECTURE.md §7.1
             if (StockpileManager.Instance.IsZoneTile(ix, iy))
                 continue;
             batch.Add((ix, iy));
@@ -269,6 +273,7 @@ public static class IslandDomainReplay
         {
             int ix = checked((int)x);
             int iy = checked((int)y);
+            // L-03: нарушение слоёв (core → simulation/ui) — правило и список см. docs/ARCHITECTURE.md §7.1
             if (FarmJobManager.Instance.IsGardenBed(ix, iy))
                 continue; // идемпотентный отказ
             // Готовая грядка: CompletePlot снимает пометку (если была) и ставит

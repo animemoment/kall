@@ -1,0 +1,911 @@
+[gd_scene format=3]
+
+[ext_resource type="FontFile" uid="uid://dtxjeqjsb5eii" path="res://assets/fonts/Handjet-VariableFont_ELGR,ELSH,wght.ttf" id="1_font"]
+[ext_resource type="Texture2D" path="res://ui/assets/textures/icons/PatentIcon.png" id="2_patent"]
+[ext_resource type="Texture2D" path="res://ui/assets/textures/icons/no.png" id="3_close"]
+[ext_resource type="Texture2D" path="res://ui/assets/textures/icons/CheckMark.png" id="4_check"]
+[ext_resource type="Script" path="res://scenes/ui/PatentBureau.gd" id="5_script"]
+
+[sub_resource type="Theme" id="Theme_main"]
+default_font = ExtResource("1_font")
+default_font_size = 20
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_panel"]
+bg_color = Color(0.0156863, 0.0156863, 0.0196078, 0.985)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.196078, 0.196078, 0.211765, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_header"]
+bg_color = Color(0.027451, 0.027451, 0.0313726, 1)
+border_width_bottom = 1
+border_color = Color(0.196078, 0.196078, 0.211765, 1)
+content_margin_left = 18.0
+content_margin_top = 12.0
+content_margin_right = 18.0
+content_margin_bottom = 12.0
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_footer"]
+bg_color = Color(0.027451, 0.027451, 0.0313726, 1)
+border_width_top = 1
+border_color = Color(0.196078, 0.196078, 0.211765, 1)
+content_margin_left = 18.0
+content_margin_top = 8.0
+content_margin_right = 18.0
+content_margin_bottom = 8.0
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_row"]
+bg_color = Color(0.027451, 0.027451, 0.0313726, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.117647, 0.117647, 0.129412, 1)
+content_margin_left = 12.0
+content_margin_top = 8.0
+content_margin_right = 12.0
+content_margin_bottom = 8.0
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_dossier"]
+bg_color = Color(0.0196078, 0.0196078, 0.0235294, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.156863, 0.156863, 0.168627, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_stat"]
+bg_color = Color(0.0392157, 0.0392157, 0.0431373, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.133333, 0.133333, 0.145098, 1)
+content_margin_left = 14.0
+content_margin_top = 12.0
+content_margin_right = 14.0
+content_margin_bottom = 12.0
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_tab"]
+bg_color = Color(0, 0, 0, 0)
+border_width_bottom = 2
+border_color = Color(0, 0, 0, 0)
+content_margin_left = 12.0
+content_margin_top = 7.0
+content_margin_right = 12.0
+content_margin_bottom = 9.0
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_tab_active"]
+bg_color = Color(0, 0, 0, 0)
+border_width_bottom = 2
+border_color = Color(0.909804, 0.909804, 0.909804, 1)
+content_margin_left = 12.0
+content_margin_top = 7.0
+content_margin_right = 12.0
+content_margin_bottom = 9.0
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_button"]
+bg_color = Color(0.0431373, 0.0431373, 0.0470588, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.211765, 0.211765, 0.223529, 1)
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_button_hover"]
+bg_color = Color(0.101961, 0.101961, 0.113725, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.501961, 0.501961, 0.533333, 1)
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_button_pressed"]
+bg_color = Color(0.0117647, 0.0117647, 0.0156863, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.909804, 0.909804, 0.909804, 1)
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_green"]
+bg_color = Color(0.0470588, 0.0862745, 0.0470588, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.372549, 0.623529, 0.372549, 1)
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_green_hover"]
+bg_color = Color(0.0862745, 0.156863, 0.0862745, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.560784, 0.878431, 0.560784, 1)
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
+
+[sub_resource type="StyleBoxFlat" id="StyleBox_icon_button"]
+bg_color = Color(0, 0, 0, 0)
+content_margin_left = 4.0
+content_margin_top = 4.0
+content_margin_right = 4.0
+content_margin_bottom = 4.0
+
+[sub_resource type="StyleBoxLine" id="StyleBox_line"]
+color = Color(0.196078, 0.196078, 0.211765, 1)
+thickness = 1
+
+[node name="PatentBureau" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme = SubResource("Theme_main")
+script = ExtResource("5_script")
+
+[node name="Backdrop" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.025, 0.025, 0.03, 1)
+
+[node name="Frame" type="PanelContainer" parent="."]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -840.0
+offset_top = -470.0
+offset_right = 840.0
+offset_bottom = 470.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBox_panel")
+
+[node name="Margin" type="MarginContainer" parent="Frame"]
+layout_mode = 2
+
+[node name="Main" type="VBoxContainer" parent="Frame/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 0
+
+[node name="Header" type="PanelContainer" parent="Frame/Margin/Main"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBox_header")
+
+[node name="HeaderRow" type="HBoxContainer" parent="Frame/Margin/Main/Header"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="Close" type="Button" parent="Frame/Margin/Main/Header/HeaderRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(38, 38)
+layout_mode = 2
+theme_override_styles/normal = SubResource("StyleBox_icon_button")
+theme_override_styles/hover = SubResource("StyleBox_button_hover")
+theme_override_styles/pressed = SubResource("StyleBox_button_pressed")
+icon = ExtResource("3_close")
+expand_icon = true
+icon_max_width = 22
+
+[node name="PatentIcon" type="TextureRect" parent="Frame/Margin/Main/Header/HeaderRow"]
+custom_minimum_size = Vector2(40, 40)
+layout_mode = 2
+texture = ExtResource("2_patent")
+expand_mode = 1
+stretch_mode = 5
+
+[node name="TitleBlock" type="VBoxContainer" parent="Frame/Margin/Main/Header/HeaderRow"]
+layout_mode = 2
+theme_override_constants/separation = -2
+
+[node name="Title" type="Label" parent="Frame/Margin/Main/Header/HeaderRow/TitleBlock"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 34
+text = "ПАТЕНТНОЕ БЮРО"
+
+[node name="Subtitle" type="Label" parent="Frame/Margin/Main/Header/HeaderRow/TitleBlock"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 14
+text = "1927"
+
+[node name="Spacer" type="Control" parent="Frame/Margin/Main/Header/HeaderRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="BudgetBlock" type="VBoxContainer" parent="Frame/Margin/Main/Header/HeaderRow"]
+layout_mode = 2
+theme_override_constants/separation = -2
+
+[node name="BudgetCaption" type="Label" parent="Frame/Margin/Main/Header/HeaderRow/BudgetBlock"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 12
+text = "БЮДЖЕТ"
+horizontal_alignment = 2
+
+[node name="Budget" type="Label" parent="Frame/Margin/Main/Header/HeaderRow/BudgetBlock"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 26
+text = "100 000 ₽"
+horizontal_alignment = 2
+
+[node name="Check" type="Button" parent="Frame/Margin/Main/Header/HeaderRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(38, 38)
+layout_mode = 2
+theme_override_styles/normal = SubResource("StyleBox_icon_button")
+theme_override_styles/hover = SubResource("StyleBox_button_hover")
+theme_override_styles/pressed = SubResource("StyleBox_button_pressed")
+icon = ExtResource("4_check")
+expand_icon = true
+icon_max_width = 24
+
+[node name="Tabs" type="HBoxContainer" parent="Frame/Margin/Main"]
+layout_mode = 2
+theme_override_constants/separation = 0
+
+[node name="TabLots" type="Button" parent="Frame/Margin/Main/Tabs"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 22
+theme_override_styles/normal = SubResource("StyleBox_tab_active")
+theme_override_styles/hover = SubResource("StyleBox_tab_active")
+theme_override_styles/pressed = SubResource("StyleBox_tab_active")
+text = "ЛОТЫ"
+
+[node name="TabOwned" type="Button" parent="Frame/Margin/Main/Tabs"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 22
+theme_override_styles/normal = SubResource("StyleBox_tab")
+theme_override_styles/hover = SubResource("StyleBox_tab")
+theme_override_styles/pressed = SubResource("StyleBox_tab")
+text = "МОИ ПАТЕНТЫ"
+
+[node name="TabRequests" type="Button" parent="Frame/Margin/Main/Tabs"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 22
+theme_override_styles/normal = SubResource("StyleBox_tab")
+theme_override_styles/hover = SubResource("StyleBox_tab")
+theme_override_styles/pressed = SubResource("StyleBox_tab")
+text = "ЗАЯВКИ"
+
+[node name="TabArchive" type="Button" parent="Frame/Margin/Main/Tabs"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 22
+theme_override_styles/normal = SubResource("StyleBox_tab")
+theme_override_styles/hover = SubResource("StyleBox_tab")
+theme_override_styles/pressed = SubResource("StyleBox_tab")
+text = "АРХИВ"
+
+[node name="TabSpacer" type="Control" parent="Frame/Margin/Main/Tabs"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="CompareLabel" type="Label" parent="Frame/Margin/Main/Tabs"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 14
+text = "СРАВНИТЬ 0 / 3"
+
+[node name="Content" type="HBoxContainer" parent="Frame/Margin/Main"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 18
+
+[node name="ListColumn" type="VBoxContainer" parent="Frame/Margin/Main/Content"]
+custom_minimum_size = Vector2(690, 0)
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="ListHeader" type="HBoxContainer" parent="Frame/Margin/Main/Content/ListColumn"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="ListTitle" type="Label" parent="Frame/Margin/Main/Content/ListColumn/ListHeader"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 22
+text = "ЛОТЫ"
+
+[node name="ListCount" type="Label" parent="Frame/Margin/Main/Content/ListColumn/ListHeader"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 16
+text = "500"
+
+[node name="ListSpacer" type="Control" parent="Frame/Margin/Main/Content/ListColumn/ListHeader"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="FilterAll" type="Button" parent="Frame/Margin/Main/Content/ListColumn/ListHeader"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 14
+theme_override_styles/normal = SubResource("StyleBox_button_pressed")
+theme_override_styles/hover = SubResource("StyleBox_button_hover")
+theme_override_styles/pressed = SubResource("StyleBox_button_pressed")
+text = "ВСЕ"
+
+[node name="FilterSale" type="Button" parent="Frame/Margin/Main/Content/ListColumn/ListHeader"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 14
+theme_override_styles/normal = SubResource("StyleBox_button")
+theme_override_styles/hover = SubResource("StyleBox_button_hover")
+theme_override_styles/pressed = SubResource("StyleBox_button_pressed")
+text = "ПРОДАЖА"
+
+[node name="FilterLicense" type="Button" parent="Frame/Margin/Main/Content/ListColumn/ListHeader"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 14
+theme_override_styles/normal = SubResource("StyleBox_button")
+theme_override_styles/hover = SubResource("StyleBox_button_hover")
+theme_override_styles/pressed = SubResource("StyleBox_button_pressed")
+text = "ЛИЦЕНЗИЯ"
+
+[node name="ListScroll" type="ScrollContainer" parent="Frame/Margin/Main/Content/ListColumn"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="ListContent" type="Control" parent="Frame/Margin/Main/Content/ListColumn/ListScroll"]
+unique_name_in_owner = true
+layout_mode = 2
+custom_minimum_size = Vector2(0, 40000)
+
+[node name="LotTemplate" type="PanelContainer" parent="Frame/Margin/Main/Content/ListColumn/ListScroll/ListContent"]
+visible = false
+layout_mode = 0
+offset_right = 650.0
+offset_bottom = 78.0
+mouse_filter = 0
+theme_override_styles/panel = SubResource("StyleBox_row")
+
+[node name="Row" type="HBoxContainer" parent="Frame/Margin/Main/Content/ListColumn/ListScroll/ListContent/LotTemplate"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="Icon" type="TextureRect" parent="Frame/Margin/Main/Content/ListColumn/ListScroll/ListContent/LotTemplate/Row"]
+custom_minimum_size = Vector2(46, 46)
+layout_mode = 2
+expand_mode = 1
+stretch_mode = 5
+
+[node name="Info" type="VBoxContainer" parent="Frame/Margin/Main/Content/ListColumn/ListScroll/ListContent/LotTemplate/Row"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = -2
+
+[node name="Name" type="Label" parent="Frame/Margin/Main/Content/ListColumn/ListScroll/ListContent/LotTemplate/Row/Info"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 20
+text = "НОМЕР"
+
+[node name="Seller" type="Label" parent="Frame/Margin/Main/Content/ListColumn/ListScroll/ListContent/LotTemplate/Row/Info"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 14
+text = "ПРОДАВЕЦ · ПРОДАЖА"
+
+[node name="PriceBlock" type="VBoxContainer" parent="Frame/Margin/Main/Content/ListColumn/ListScroll/ListContent/LotTemplate/Row"]
+layout_mode = 2
+theme_override_constants/separation = -2
+
+[node name="Price" type="Label" parent="Frame/Margin/Main/Content/ListColumn/ListScroll/ListContent/LotTemplate/Row/PriceBlock"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 20
+text = "0 ₽"
+horizontal_alignment = 2
+
+[node name="Term" type="Label" parent="Frame/Margin/Main/Content/ListColumn/ListScroll/ListContent/LotTemplate/Row/PriceBlock"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.560784, 0.878431, 0.560784, 1)
+theme_override_font_sizes/font_size = 12
+text = "АНАЛИЗ 0 ДН"
+horizontal_alignment = 2
+
+[node name="Dossier" type="PanelContainer" parent="Frame/Margin/Main/Content"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = SubResource("StyleBox_dossier")
+
+[node name="DossierMargin" type="MarginContainer" parent="Frame/Margin/Main/Content/Dossier"]
+layout_mode = 2
+theme_override_constants/margin_left = 22
+theme_override_constants/margin_top = 18
+theme_override_constants/margin_right = 22
+theme_override_constants/margin_bottom = 18
+
+[node name="DossierVBox" type="VBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="Eyebrow" type="HBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox"]
+layout_mode = 2
+
+[node name="EyebrowText" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Eyebrow"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 12
+text = "ЛОТ"
+
+[node name="EyebrowSpacer" type="Control" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Eyebrow"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="DossierStatus" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Eyebrow"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.560784, 0.878431, 0.560784, 1)
+theme_override_font_sizes/font_size = 12
+text = "В ПРОДАЖЕ"
+
+[node name="DossierTitle" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 34
+text = "ЛОТ НЕ ВЫБРАН"
+
+[node name="DossierMeta" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 15
+text = ""
+
+[node name="Line1" type="HSeparator" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox"]
+layout_mode = 2
+theme_override_styles/separator = SubResource("StyleBox_line")
+
+[node name="Stats" type="HBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="StatEffect" type="PanelContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = SubResource("StyleBox_stat")
+
+[node name="VBox" type="VBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats/StatEffect"]
+layout_mode = 2
+theme_override_constants/separation = -2
+
+[node name="StatEffectValue" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats/StatEffect/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.560784, 0.878431, 0.560784, 1)
+theme_override_font_sizes/font_size = 30
+text = "—"
+
+[node name="StatEffectCaption" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats/StatEffect/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 12
+text = "ЭФФЕКТ"
+
+[node name="StatAnalysis" type="PanelContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = SubResource("StyleBox_stat")
+
+[node name="VBox" type="VBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats/StatAnalysis"]
+layout_mode = 2
+theme_override_constants/separation = -2
+
+[node name="StatAnalysisValue" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats/StatAnalysis/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 30
+text = "—"
+
+[node name="StatAnalysisCaption" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats/StatAnalysis/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 12
+text = "АНАЛИЗ"
+
+[node name="StatAdopt" type="PanelContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = SubResource("StyleBox_stat")
+
+[node name="VBox" type="VBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats/StatAdopt"]
+layout_mode = 2
+theme_override_constants/separation = -2
+
+[node name="StatAdoptValue" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats/StatAdopt/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 30
+text = "—"
+
+[node name="StatAdoptCaption" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats/StatAdopt/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 12
+text = "ВНЕДРЕНИЕ"
+
+[node name="StatPrice" type="PanelContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_styles/panel = SubResource("StyleBox_stat")
+
+[node name="VBox" type="VBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats/StatPrice"]
+layout_mode = 2
+theme_override_constants/separation = -2
+
+[node name="StatPriceValue" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats/StatPrice/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 30
+text = "—"
+
+[node name="StatPriceCaption" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stats/StatPrice/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 12
+text = "ЦЕНА"
+
+[node name="DossierTabs" type="HBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="TabEffect" type="Button" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/DossierTabs"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("StyleBox_tab_active")
+theme_override_styles/hover = SubResource("StyleBox_tab_active")
+theme_override_styles/pressed = SubResource("StyleBox_tab_active")
+text = "ЭФФЕКТ"
+
+[node name="TabAdopt" type="Button" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/DossierTabs"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("StyleBox_tab")
+theme_override_styles/hover = SubResource("StyleBox_tab")
+theme_override_styles/pressed = SubResource("StyleBox_tab")
+text = "ВНЕДРЕНИЕ"
+
+[node name="TabSeller" type="Button" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/DossierTabs"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("StyleBox_tab")
+theme_override_styles/hover = SubResource("StyleBox_tab")
+theme_override_styles/pressed = SubResource("StyleBox_tab")
+text = "ПРОДАВЕЦ"
+
+[node name="DossierText" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.8, 0.8, 0.823529, 1)
+theme_override_font_sizes/font_size = 18
+text = "Выберите патент в списке слева."
+autowrap_mode = 2
+
+[node name="Params" type="VBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 7
+
+[node name="Param1" type="HBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Params"]
+layout_mode = 2
+
+[node name="Param1Key" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Params/Param1"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 14
+text = "ГОД ТЕХНОЛОГИИ"
+
+[node name="Spacer" type="Control" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Params/Param1"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Param1Value" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Params/Param1"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.8, 0.8, 0.823529, 1)
+theme_override_font_sizes/font_size = 14
+text = "—"
+
+[node name="Param2" type="HBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Params"]
+layout_mode = 2
+
+[node name="Param2Key" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Params/Param2"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 14
+text = "ОБСЛУЖИВАНИЕ"
+
+[node name="Spacer" type="Control" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Params/Param2"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Param2Value" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Params/Param2"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.8, 0.8, 0.823529, 1)
+theme_override_font_sizes/font_size = 14
+text = "—"
+
+[node name="Param3" type="HBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Params"]
+layout_mode = 2
+
+[node name="Param3Key" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Params/Param3"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 14
+text = "ПРАВО"
+
+[node name="Spacer" type="Control" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Params/Param3"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Param3Value" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Params/Param3"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.8, 0.8, 0.823529, 1)
+theme_override_font_sizes/font_size = 14
+text = "—"
+
+[node name="Line2" type="HSeparator" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox"]
+layout_mode = 2
+theme_override_styles/separator = SubResource("StyleBox_line")
+
+[node name="Stages" type="VBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="StageCaption" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stages"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 12
+text = "ЭТАПЫ ПОЛУЧЕНИЯ"
+
+[node name="Stage1" type="HBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stages"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Text" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stages/Stage1"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.8, 0.8, 0.823529, 1)
+theme_override_font_sizes/font_size = 14
+text = "1. ЗАЯВКА ПРОДАВЦУ"
+
+[node name="Spacer" type="Control" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stages/Stage1"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Stage1Value" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stages/Stage1"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.560784, 0.878431, 0.560784, 1)
+theme_override_font_sizes/font_size = 14
+text = "ОТВЕТ 1–2 ДНЯ"
+
+[node name="Stage2" type="HBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stages"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Text" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stages/Stage2"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.8, 0.8, 0.823529, 1)
+theme_override_font_sizes/font_size = 14
+text = "2. АНАЛИЗ ТЕХНОЛОГИИ"
+
+[node name="Spacer" type="Control" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stages/Stage2"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Stage2Value" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stages/Stage2"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 14
+text = "—"
+
+[node name="Stage3" type="HBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stages"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Text" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stages/Stage3"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.8, 0.8, 0.823529, 1)
+theme_override_font_sizes/font_size = 14
+text = "3. ВНЕДРЕНИЕ В ПРОИЗВОДСТВО"
+
+[node name="Spacer" type="Control" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stages/Stage3"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Stage3Value" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Stages/Stage3"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 14
+text = "—"
+
+[node name="ActionsSpacer" type="Control" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox"]
+custom_minimum_size = Vector2(0, 4)
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="SellerStrip" type="PanelContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBox_row")
+
+[node name="SellerRow" type="HBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/SellerStrip"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="SellerIcon" type="TextureRect" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/SellerStrip/SellerRow"]
+custom_minimum_size = Vector2(30, 30)
+layout_mode = 2
+texture = ExtResource("2_patent")
+expand_mode = 1
+stretch_mode = 5
+
+[node name="SellerInfo" type="VBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/SellerStrip/SellerRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = -2
+
+[node name="Caption" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/SellerStrip/SellerRow/SellerInfo"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 11
+text = "ПРОДАВЕЦ"
+
+[node name="SellerName" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/SellerStrip/SellerRow/SellerInfo"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 18
+text = "—"
+
+[node name="SellerState" type="Label" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/SellerStrip/SellerRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(150, 0)
+layout_mode = 2
+theme_override_colors/font_color = Color(0.560784, 0.878431, 0.560784, 1)
+theme_override_font_sizes/font_size = 12
+text = "ГОТОВ ТОРГОВАТЬСЯ
+ОТВЕТ 1–2 ДНЯ"
+horizontal_alignment = 2
+autowrap_mode = 2
+
+[node name="Actions" type="HBoxContainer" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Watch" type="Button" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Actions"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 14
+theme_override_styles/normal = SubResource("StyleBox_button")
+theme_override_styles/hover = SubResource("StyleBox_button_hover")
+theme_override_styles/pressed = SubResource("StyleBox_button_pressed")
+text = "В ИЗБРАННОЕ"
+
+[node name="ActionSpacer" type="Control" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Actions"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Offer" type="Button" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Actions"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.8, 0.8, 0.823529, 1)
+theme_override_font_sizes/font_size = 15
+theme_override_styles/normal = SubResource("StyleBox_button")
+theme_override_styles/hover = SubResource("StyleBox_button_hover")
+theme_override_styles/pressed = SubResource("StyleBox_button_pressed")
+text = "ПРЕДЛОЖИТЬ ЦЕНУ"
+
+[node name="Buy" type="Button" parent="Frame/Margin/Main/Content/Dossier/DossierMargin/DossierVBox/Actions"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.560784, 0.878431, 0.560784, 1)
+theme_override_colors/font_hover_color = Color(0.7, 1, 0.7, 1)
+theme_override_font_sizes/font_size = 15
+theme_override_styles/normal = SubResource("StyleBox_green")
+theme_override_styles/hover = SubResource("StyleBox_green_hover")
+theme_override_styles/pressed = SubResource("StyleBox_button_pressed")
+text = "КУПИТЬ"
+
+[node name="Footer" type="PanelContainer" parent="Frame/Margin/Main"]
+layout_mode = 2
+theme_override_styles/panel = SubResource("StyleBox_footer")
+
+[node name="FooterRow" type="HBoxContainer" parent="Frame/Margin/Main/Footer"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="FooterStatus" type="Label" parent="Frame/Margin/Main/Footer/FooterRow"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 12
+text = "ВЫБЕРИТЕ ЛОТ"
+
+[node name="FooterSpacer" type="Control" parent="Frame/Margin/Main/Footer/FooterRow"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="FooterCount" type="Label" parent="Frame/Margin/Main/Footer/FooterRow"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.8, 0.8, 0.823529, 1)
+theme_override_font_sizes/font_size = 12
+text = "ВСЕГО: 500"
+horizontal_alignment = 2

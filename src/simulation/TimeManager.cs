@@ -29,6 +29,21 @@ public partial class TimeManager : Node
 		Instance = this;
 	}
 
+	private GameSpeed _prePauseSpeed = GameSpeed.Normal;
+
+	public void TogglePause()
+	{
+		if (IsPaused)
+		{
+			SetSpeed(_prePauseSpeed == GameSpeed.Paused ? GameSpeed.Normal : _prePauseSpeed);
+		}
+		else
+		{
+			_prePauseSpeed = CurrentSpeed;
+			SetSpeed(GameSpeed.Paused);
+		}
+	}
+
 	public void SetSpeed(GameSpeed speed)
 	{
 		// F71: границы режимов на графике — старая → новая.

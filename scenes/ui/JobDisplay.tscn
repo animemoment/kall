@@ -1,72 +1,139 @@
 [gd_scene format=3 uid="uid://k3dm6gqvslrt"]
 
-[ext_resource type="Texture2D" uid="uid://buw3nohde55eb" path="res://ui/assets/textures/icons/no.png" id="1_qo4mp"]
-[ext_resource type="Texture2D" uid="uid://bwtxffukyyje0" path="res://ui/assets/textures/icons/Wheat.png" id="2_ioexg"]
-[ext_resource type="Texture2D" uid="uid://yvagabo1xd7m" path="res://ui/assets/textures/icons/CheckMark.png" id="3_fa5b7"]
-[ext_resource type="Texture2D" uid="uid://dwnuonti5n42d" path="res://ui/assets/textures/icons/info.png" id="4_if0ky"]
+[ext_resource type="FontFile" uid="uid://dtxjeqjsb5eii" path="res://assets/fonts/Handjet-VariableFont_ELGR,ELSH,wght.ttf" id="1_font"]
+[ext_resource type="Texture2D" uid="uid://buw3nohde55eb" path="res://ui/assets/textures/icons/no.png" id="2_no"]
+[ext_resource type="Texture2D" uid="uid://bwtxffukyyje0" path="res://ui/assets/textures/icons/Wheat.png" id="3_wheat"]
+[ext_resource type="Texture2D" uid="uid://yvagabo1xd7m" path="res://ui/assets/textures/icons/CheckMark.png" id="4_check"]
+[ext_resource type="Texture2D" uid="uid://dwnuonti5n42d" path="res://ui/assets/textures/icons/info.png" id="5_info"]
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_4pfqy"]
-bg_color = Color(0.019925633, 0.019925632, 0.019925632, 1)
+[sub_resource type="Theme" id="Theme_main"]
+default_font = ExtResource("1_font")
+default_font_size = 20
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_v3bb6"]
-bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
+[sub_resource type="StyleBoxFlat" id="SB_panel"]
+bg_color = Color(0.0156863, 0.0156863, 0.0196078, 0.985)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.196078, 0.196078, 0.211765, 1)
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_2n86q"]
-bg_color = Color(0.08391171, 0.083911665, 0.08391165, 1)
+[sub_resource type="StyleBoxFlat" id="SB_header"]
+bg_color = Color(0.027451, 0.027451, 0.0313726, 1)
+border_width_bottom = 1
+border_color = Color(0.196078, 0.196078, 0.211765, 1)
+content_margin_left = 18.0
+content_margin_top = 12.0
+content_margin_right = 18.0
+content_margin_bottom = 12.0
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_raoyc"]
-bg_color = Color(0.54471636, 0.10887573, 1.4439226e-07, 0.4)
+[sub_resource type="StyleBoxFlat" id="SB_stat"]
+bg_color = Color(0.0392157, 0.0392157, 0.0431373, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.133333, 0.133333, 0.145098, 1)
+content_margin_left = 14.0
+content_margin_top = 12.0
+content_margin_right = 14.0
+content_margin_bottom = 12.0
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_wnirq"]
-bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
+[sub_resource type="StyleBoxFlat" id="SB_button"]
+bg_color = Color(0.0431373, 0.0431373, 0.0470588, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.211765, 0.211765, 0.223529, 1)
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_kw3fi"]
-bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
+[sub_resource type="StyleBoxFlat" id="SB_button_hover"]
+bg_color = Color(0.101961, 0.101961, 0.113725, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.501961, 0.501961, 0.533333, 1)
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
 
-[node name="Control" type="Control" unique_id=1693226911]
+[sub_resource type="StyleBoxFlat" id="SB_button_pressed"]
+bg_color = Color(0.0117647, 0.0117647, 0.0156863, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.909804, 0.909804, 0.909804, 1)
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
+
+[sub_resource type="StyleBoxFlat" id="SB_icon"]
+bg_color = Color(0, 0, 0, 0)
+content_margin_left = 4.0
+content_margin_top = 4.0
+content_margin_right = 4.0
+content_margin_bottom = 4.0
+
+[node name="Control" type="Control"]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+theme = SubResource("Theme_main")
 
-[node name="VScrollBar" type="VScrollBar" parent="." unique_id=1856414733]
-layout_mode = 0
+[node name="VScrollBar" type="VScrollBar" parent="."]
+layout_mode = 1
+anchors_preset = 9
+anchor_bottom = 1.0
 offset_right = 748.0
-offset_bottom = 1073.0
+grow_vertical = 2
 
-[node name="MainWindow" type="Panel" parent="VScrollBar" unique_id=962857276]
-layout_mode = 0
-offset_right = 748.0
-offset_bottom = 1073.0
-theme_override_styles/panel = SubResource("StyleBoxFlat_4pfqy")
+[node name="MainWindow" type="Panel" parent="VScrollBar"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("SB_panel")
 
-[node name="NameWork" type="Label" parent="VScrollBar/MainWindow" unique_id=387422537]
+[node name="NameWork" type="Label" parent="VScrollBar/MainWindow"]
 layout_mode = 1
 anchors_preset = 10
 anchor_right = 1.0
 offset_top = 1.0
 offset_bottom = 78.0
 grow_horizontal = 2
-theme_override_font_sizes/font_size = 52
-theme_override_styles/normal = SubResource("StyleBoxFlat_v3bb6")
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 30
+theme_override_styles/normal = SubResource("SB_header")
 text = "Name"
 horizontal_alignment = 1
 
-[node name="Tiles" type="Label" parent="VScrollBar/MainWindow/NameWork" unique_id=834775893]
+[node name="Tiles" type="Label" parent="VScrollBar/MainWindow/NameWork"]
 layout_mode = 0
 offset_left = 15.0
 offset_top = 139.0
 offset_right = 181.0
 offset_bottom = 191.0
-theme_override_font_sizes/font_size = 25
-theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+theme_override_colors/font_color = Color(0.8, 0.8, 0.823529, 1)
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("SB_stat")
 text = "(N) радиус"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="HSlider" type="HSlider" parent="VScrollBar/MainWindow/NameWork/Tiles" unique_id=694177665]
+[node name="HSlider" type="HSlider" parent="VScrollBar/MainWindow/NameWork/Tiles"]
 layout_mode = 0
 offset_left = 185.0
 offset_right = 463.0
@@ -75,30 +142,32 @@ min_value = 64.0
 max_value = 512.0
 step = 1.0
 
-[node name="Number" type="Label" parent="VScrollBar/MainWindow/NameWork/Tiles" unique_id=576123047]
+[node name="Number" type="Label" parent="VScrollBar/MainWindow/NameWork/Tiles"]
 layout_mode = 0
 offset_left = 481.0
 offset_right = 647.0
 offset_bottom = 52.0
-theme_override_font_sizes/font_size = 25
-theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("SB_stat")
 text = "число"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="Worker" type="Label" parent="VScrollBar/MainWindow/NameWork" unique_id=1261497992]
+[node name="Worker" type="Label" parent="VScrollBar/MainWindow/NameWork"]
 layout_mode = 0
 offset_left = 15.0
 offset_top = 233.0
 offset_right = 181.0
 offset_bottom = 285.0
-theme_override_font_sizes/font_size = 25
-theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+theme_override_colors/font_color = Color(0.8, 0.8, 0.823529, 1)
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("SB_stat")
 text = "(N) рабочих"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="HSlider" type="HSlider" parent="VScrollBar/MainWindow/NameWork/Worker" unique_id=1449598679]
+[node name="HSlider" type="HSlider" parent="VScrollBar/MainWindow/NameWork/Worker"]
 layout_mode = 0
 offset_left = 185.0
 offset_right = 463.0
@@ -106,41 +175,44 @@ offset_bottom = 52.0
 max_value = 999.0
 step = 1.0
 
-[node name="Number" type="Label" parent="VScrollBar/MainWindow/NameWork/Worker" unique_id=588472518]
+[node name="Number" type="Label" parent="VScrollBar/MainWindow/NameWork/Worker"]
 layout_mode = 0
 offset_left = 481.0
 offset_right = 647.0
 offset_bottom = 52.0
-theme_override_font_sizes/font_size = 25
-theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("SB_stat")
 text = "число"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="Prioritet" type="Label" parent="VScrollBar/MainWindow/NameWork" unique_id=1862151127]
+[node name="Prioritet" type="Label" parent="VScrollBar/MainWindow/NameWork"]
 layout_mode = 0
 offset_left = 15.0
 offset_top = 330.0
 offset_right = 181.0
 offset_bottom = 382.0
-theme_override_font_sizes/font_size = 25
-theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+theme_override_colors/font_color = Color(0.8, 0.8, 0.823529, 1)
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("SB_stat")
 text = "приоритет"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="Number" type="Label" parent="VScrollBar/MainWindow/NameWork/Prioritet" unique_id=1712357498]
+[node name="Number" type="Label" parent="VScrollBar/MainWindow/NameWork/Prioritet"]
 layout_mode = 0
 offset_left = 185.0
 offset_right = 351.0
 offset_bottom = 52.0
-theme_override_font_sizes/font_size = 25
-theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("SB_stat")
 text = "число"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="HSlider" type="HSlider" parent="VScrollBar/MainWindow/NameWork/Prioritet" unique_id=275310040]
+[node name="HSlider" type="HSlider" parent="VScrollBar/MainWindow/NameWork/Prioritet"]
 layout_mode = 0
 offset_left = 370.0
 offset_right = 463.0
@@ -149,82 +221,100 @@ min_value = 1.0
 max_value = 10.0
 step = 1.0
 
-[node name="EnabledToggle" type="Button" parent="VScrollBar/MainWindow" unique_id=275310041]
+[node name="EnabledToggle" type="Button" parent="VScrollBar/MainWindow"]
 layout_mode = 0
 offset_left = 380.0
 offset_top = 940.0
 offset_right = 730.0
 offset_bottom = 1000.0
-theme_override_font_sizes/font_size = 25
-theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_colors/font_pressed_color = Color(0.560784, 0.878431, 0.560784, 1)
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 toggle_mode = true
 button_pressed = true
 text = "вкл/выкл"
 
-[node name="esc" type="Button" parent="VScrollBar/MainWindow" unique_id=1175255156]
+[node name="esc" type="Button" parent="VScrollBar/MainWindow"]
 layout_mode = 0
 offset_left = 4.0
 offset_top = 4.0
 offset_right = 44.0
 offset_bottom = 44.0
-theme_override_styles/normal = SubResource("StyleBoxFlat_raoyc")
-icon = ExtResource("1_qo4mp")
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+icon = ExtResource("2_no")
 expand_icon = true
 
-[node name="Information" type="Label" parent="VScrollBar/MainWindow" unique_id=187422538]
+[node name="Information" type="Label" parent="VScrollBar/MainWindow"]
 layout_mode = 0
 offset_left = 15.0
 offset_top = 420.0
 offset_right = 730.0
 offset_bottom = 482.0
-theme_override_font_sizes/font_size = 20
-theme_override_styles/normal = SubResource("StyleBoxFlat_2n86q")
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("SB_stat")
 text = "Информация о зоне"
 horizontal_alignment = 1
 vertical_alignment = 1
 autowrap_mode = 2
 
-[node name="TextForInformation" type="Label" parent="VScrollBar/MainWindow/Information" unique_id=379499306]
+[node name="TextForInformation" type="Label" parent="VScrollBar/MainWindow/Information"]
 layout_mode = 0
 offset_top = 62.0
 offset_right = 715.0
 offset_bottom = 500.0
+theme_override_colors/font_color = Color(0.8, 0.8, 0.823529, 1)
+theme_override_font_sizes/font_size = 14
 autowrap_mode = 2
 
-[node name="RemoveZone" type="Button" parent="VScrollBar/MainWindow" unique_id=275310042]
+[node name="RemoveZone" type="Button" parent="VScrollBar/MainWindow"]
 layout_mode = 0
 offset_left = 15.0
 offset_top = 940.0
-offset_right = 730.0
+offset_right = 360.0
 offset_bottom = 1000.0
-theme_override_font_sizes/font_size = 25
-theme_override_styles/normal = SubResource("StyleBoxFlat_wnirq")
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
+theme_override_font_sizes/font_size = 16
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 text = "Снести зону"
 
-[node name="ButtonForFarm" type="Button" parent="." unique_id=1876710184]
+[node name="ButtonForFarm" type="Button" parent="."]
 visible = false
 layout_mode = 0
 offset_left = 748.0
 offset_top = 146.0
 offset_right = 821.0
 offset_bottom = 219.0
-theme_override_styles/normal = SubResource("StyleBoxFlat_wnirq")
-icon = ExtResource("2_ioexg")
+theme_override_styles/normal = SubResource("SB_icon")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+icon = ExtResource("3_wheat")
 expand_icon = true
 
-[node name="CheckMark" type="Button" parent="." unique_id=1019952105]
+[node name="CheckMark" type="Button" parent="."]
 layout_mode = 0
 offset_left = 748.0
 offset_right = 821.0
 offset_bottom = 73.0
-theme_override_styles/normal = SubResource("StyleBoxFlat_kw3fi")
-icon = ExtResource("3_fa5b7")
+theme_override_styles/normal = SubResource("SB_icon")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+icon = ExtResource("4_check")
 
-[node name="Infoormation" type="Button" parent="." unique_id=890844874]
+[node name="Infoormation" type="Button" parent="."]
 layout_mode = 0
 offset_left = 748.0
 offset_top = 73.0
 offset_right = 821.0
 offset_bottom = 146.0
-theme_override_styles/normal = SubResource("StyleBoxFlat_kw3fi")
-icon = ExtResource("4_if0ky")
+theme_override_styles/normal = SubResource("SB_icon")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+icon = ExtResource("5_info")

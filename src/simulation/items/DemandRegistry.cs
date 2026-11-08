@@ -72,6 +72,31 @@ public sealed class DemandRegistry
         }
     }
 
+    /// <summary>
+    /// Снять ВСЕ заявки клетки (task-19: у площадки теперь несколько материалов —
+    /// старый код снимал только ItemId.Log и оставлял «фантомный» спрос на камень).
+    /// </summary>
+    public void UnregisterAllDemandsAt(int targetX, int targetY)
+    {
+        lock (_lock)
+        {
+            List<(int X, int Y, ItemId Item)> toRemove = null;
+            foreach (var key in _demands.Keys)
+            {
+                if (key.X != targetX || key.Y != targetY)
+                    continue;
+                (toRemove ??= new List<(int, int, ItemId)>(2)).Add(key);
+            }
+            if (toRemove == null)
+                return;
+            for (int i = 0; i < toRemove.Count; i++)
+            {
+                var key = toRemove[i];
+                _demands.Remove((key.X, key.Y, key.Item));
+            }
+        }
+    }
+
     public void UpdateDelivered(int targetX, int targetY, ItemId item, int deliveredCount)
     {
         lock (_lock)

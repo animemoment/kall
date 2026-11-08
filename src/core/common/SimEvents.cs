@@ -86,9 +86,30 @@ public static class SimEvents
     {
         if (!Capture.Enabled) return; // A13: триггер записи
         int i = (int)((uint)Interlocked.Increment(ref _ringHead) % RingCap);
-        var e = _ring[i] ??= new Ev();
-        e.TsReal = NowSec(); e.TsGame = _gameTime; e.Speed = _speed;
-        e.Kind = kind; e.Name = name; e.V1 = v1; e.V2 = v2; e.V3 = v3; e.Meta = meta;
+
+        // C-10: слот кольца публикуется ДВУХФАЗНО. Раньше запись была
+        // check-then-act (`_ring[i] ??= new Ev()`) + 7 несвязанных присваиваний на
+        // ОБЩЕМ слоте: два потока-писателя (sim-поток и главный) могли получить один
+        // и тот же индекс, второй перезаписывал ссылку первого, а читатель
+        // (экспорт CSV/Chrome-trace на главном потоке) видел смешанную запись —
+        // `Kind` от одного события, `Name`/`V1` от другого. Диагностика по трейсу
+        // («какой scope дал 120 мс») становилась неверной.
+        // Теперь заполняется НОВЫЙ экземпляр, и только целиком готовый объект
+        // публикуется одной Volatile-записью ссылки. Читатель уже терпит null,
+        // поэтому промежуточного состояния он не увидит вообще.
+        var e = new Ev
+        {
+            TsReal = NowSec(),
+            TsGame = _gameTime,
+            Speed = _speed,
+            Kind = kind,
+            Name = name,
+            V1 = v1,
+            V2 = v2,
+            V3 = v3,
+            Meta = meta
+        };
+        Volatile.Write(ref _ring[i], e);
     }
     // A3: instant-метки (регистрация/завершение/stuck/кулдаун) — тем же каналом.
     public static void Mark(string name, string meta = null) => Record("mark", name, 0, 0, 0, meta);

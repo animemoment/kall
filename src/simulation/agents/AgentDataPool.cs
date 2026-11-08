@@ -102,6 +102,8 @@ public sealed class AgentDataPool
     // Базовые потребности (SoA-расширение): все в диапазоне 0–100.
     /// <summary>Голод: 0 = сыт, 100 = голоден. Растёт +0.5/игровую минуту.</summary>
     public readonly float[] Hunger;
+    /// <summary>GD-12: Таймер смертельного истощения при 100% голода (секунды).</summary>
+    public readonly float[] StarvationTimer;
     /// <summary>Сонливость: 0 = отдохнул, 100 = хочет спать. Растёт +0.3/мин (пока нет состояния сна — всегда).</summary>
     public readonly float[] Sleep;
     /// <summary>Усталость: накапливается от работы (+0.2/мин в Working), восстанавливается в Idle.</summary>
@@ -110,7 +112,8 @@ public sealed class AgentDataPool
     public readonly float[] EnvironmentSatisfaction;
     /// <summary>Общее настроение: вычисляется из всех факторов, 0 = депрессия, 100 = счастлив.</summary>
     public readonly float[] Mood;
-    /// <summary>
+    /// <summary>Алиас морали/настроения для совместимости с поведенческими реакциями.</summary>
+    public float[] Morale => Mood;
     /// <summary>
     /// Текущая поведенческая реакция на потребности (лёгкий NeedsJobSystem).
     /// None = обычное поведение (работа/блуждание). Остальное — агент занят нуждой
@@ -185,6 +188,7 @@ public sealed class AgentDataPool
 
         // Базовые потребности: старт сытый/отдохнувший, окружение нейтрально-хорошее.
         Hunger = new float[capacity];
+        StarvationTimer = new float[capacity];
         Sleep = new float[capacity];
         Fatigue = new float[capacity];
         EnvironmentSatisfaction = new float[capacity];

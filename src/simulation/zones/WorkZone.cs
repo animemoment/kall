@@ -23,6 +23,17 @@ public sealed class WorkZone
 
     public int Id { get; }
     public string Name { get; set; }
+
+    /// <summary>
+    /// task-12: ОТРАСЛЬ зоны (Farm/…/Housing). Легаси-значение Work сюда не
+    /// попадает — фасад нормализует его в отрасль. UI (окно зоны) показывает
+    /// название отрасли и её объекты.
+    /// </summary>
+    public ZoneKind Kind { get; }
+
+    /// <summary>Название отрасли для подписи в окне зоны («Станкостроение»).</summary>
+    public string IndustryTitle => ZoneIndustryRegistry.TitleFor(Kind);
+
     public int CenterX { get; }
     public int CenterY { get; }
 
@@ -83,10 +94,12 @@ public sealed class WorkZone
     public List<int> ChunkIndices { get; set; }
 
     public WorkZone(int id, string name, int centerX, int centerY, int radiusTiles,
-        int desiredWorkers, ulong jobMask, List<int> chunkIndices = null)
+        int desiredWorkers, ulong jobMask, List<int> chunkIndices = null,
+        ZoneKind kind = ZoneKind.Warehouse)
     {
         Id = id;
         Name = name;
+        Kind = kind.NormalizeLegacy();
         CenterX = centerX;
         CenterY = centerY;
         RadiusTiles = radiusTiles;          // сеттер клампит 64..512

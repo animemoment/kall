@@ -21,6 +21,20 @@ public sealed class TerrainTileLayer
     private readonly int _terrainId;
     private readonly HashSet<Vector2I> _dirty = new();
 
+    /// <summary>
+    /// C-09: бюджет клеток, пересчитываемых за один кадр. Массовая разметка (500×500
+    /// фермы, рельеф после смены региона) ставила в очередь десятки тысяч клеток, и
+    /// Flush обрабатывал их все за кадр одним SetCellsTerrainConnect — заметный спайк.
+    /// Остаток остаётся в _dirty и доедет следующими кадрами.
+    /// </summary>
+    private const int MaxCellsPerFlush = 8192;
+
+    /// <summary>C-09: переиспользуемый массив для SetCellsTerrainConnect (был new на каждый Flush).</summary>
+    private readonly Godot.Collections.Array<Vector2I> _flushArray = new();
+
+    /// <summary>C-09: буфер пачки, когда грязных клеток больше бюджета.</summary>
+    private readonly List<Vector2I> _flushBatch = new(MaxCellsPerFlush);
+
     public TerrainTileLayer(TileMapLayer layer, int terrainSetId = 0, int terrainId = 0)
     {
         _layer = layer;
@@ -51,20 +65,45 @@ public sealed class TerrainTileLayer
         if (_dirty.Count == 0) return;
         if (_layer?.TileSet == null) { _dirty.Clear(); return; }
 
-        foreach (var c in _dirty)
+        // C-09: один проход вместо двух и один вызов exists() на клетку.
+        // Раньше было два прохода (стереть отсутствующие, затем собрать существующие),
+        // то есть exists(c) вызывался ДВАЖДЫ на каждую грязную клетку, плюс каждый
+        // Flush аллоцировал новый Godot-массив.
+        _flushArray.Clear();
+
+        if (_dirty.Count <= MaxCellsPerFlush)
         {
-            if (!exists(c))
-                _layer.EraseCell(c);
+            foreach (var c in _dirty)
+            {
+                if (exists(c))
+                    _flushArray.Add(c);
+                else
+                    _layer.EraseCell(c);
+            }
+            _dirty.Clear();
         }
-        var cells = new Godot.Collections.Array<Vector2I>();
-        foreach (var c in _dirty)
+        else
         {
-            if (exists(c))
-                cells.Add(c);
+            // C-09: пачка по бюджету; остаток остаётся грязным до следующего кадра.
+            _flushBatch.Clear();
+            foreach (var c in _dirty)
+            {
+                _flushBatch.Add(c);
+                if (_flushBatch.Count >= MaxCellsPerFlush) break;
+            }
+            for (int i = 0; i < _flushBatch.Count; i++)
+            {
+                var c = _flushBatch[i];
+                _dirty.Remove(c);
+                if (exists(c))
+                    _flushArray.Add(c);
+                else
+                    _layer.EraseCell(c);
+            }
         }
-        _dirty.Clear();
-        if (cells.Count > 0)
-            _layer.SetCellsTerrainConnect(cells, _terrainSetId, _terrainId, true);
+
+        if (_flushArray.Count > 0)
+            _layer.SetCellsTerrainConnect(_flushArray, _terrainSetId, _terrainId, true);
     }
 
     /// <summary>Полная перестройка слоя: стереть всё и залить terrain'ом набор клеток.</summary>

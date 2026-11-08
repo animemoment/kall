@@ -26,6 +26,13 @@ public static class LatitudeBands
     /// <summary>Полуширина экваториального влажного пояса в Q16 единицах широты.</summary>
     private const int EquatorialWetHalfWidth = 13000;
 
+    // Границы поясов из шапки класса: |lat| 0.15 / 0.45 / 0.70 в Q16.
+    // FIX (bughunt 03-7): Zone() использовал 12000/24000/46000, что расходилось
+    // с задокументированными границами; теперь код и XML-doc совпадают.
+    private const int TropicalBandEndQ16 = Q16.One * 15 / 100;      // 9830  (0.15)
+    private const int SubtropicalBandEndQ16 = Q16.One * 45 / 100;   // 29490 (0.45)
+    private const int TemperateBandEndQ16 = Q16.One * 70 / 100;     // 45874 (0.70)
+
     /// <summary>Широта региона: 0 = экватор, 65535 = полюс.</summary>
     public static ushort LatitudeQ16(long regionY)
     {
@@ -38,10 +45,12 @@ public static class LatitudeBands
     /// <summary>0 = полярный, 1 = умеренный, 2 = субтропический, 3 = тропический/экваториальный.</summary>
     public static int Zone(ushort latitudeQ16)
     {
-        if (latitudeQ16 >= 46000) return 0;  // |lat| >= ~0.70 — полярный
-        if (latitudeQ16 >= 24000) return 1;  // умеренный
-        if (latitudeQ16 >= 12000) return 2;  // субтропический
-        return 3;                            // тропический/экваториальный
+        // FIX (bughunt 03-7): пороги = задокументированные границы поясов
+        // (0.15 / 0.45 / 0.70), а не прежние 12000 / 24000 / 46000.
+        if (latitudeQ16 >= TemperateBandEndQ16) return 0;    // |lat| >= 0.70 — полярный
+        if (latitudeQ16 >= SubtropicalBandEndQ16) return 1;  // 0.45..0.70 — умеренный
+        if (latitudeQ16 >= TropicalBandEndQ16) return 2;     // 0.15..0.45 — субтропический
+        return 3;                                            // < 0.15 — тропический/экваториальный
     }
 
     /// <summary>
@@ -88,20 +97,27 @@ public static class LatitudeBands
     }
 
     /// <summary>
-    /// Зональный ветер: &gt; Half — восточный перенос (пассаты/западные ветры),
-    /// &lt; Half — западный. Возвращает Q16 с центром Half = штиль.
-    /// Пояса: пассаты 0..0.30, западные 0.30..0.60, полярные восточные 0.60..1.0.
+    /// Зональный ветер в Q16 вокруг <see cref="Q16.Half"/>: ниже Half — восточный
+    /// ветер (пассаты / полярные восточные: дует с востока на запад), выше Half —
+    /// западный перенос (с запада на восток). Half — штиль (в этой упрощённой
+    /// модели сила внутри пояса постоянна, поэтому Half не достигается).
+    /// Пояса (как в шапке класса): пассаты 0..0.30, западный перенос 0.30..0.60,
+    /// полярные восточные 0.60..1.0.
     /// </summary>
     public static ushort WindZonalQ16(ushort latitudeQ16)
     {
+        // FIX (bughunt 03-7): ветвь 42000..62000 дублировала 22000..42000 (обе +1),
+        // из-за чего западный перенос тянулся до 0.946, а полярные восточные
+        // начинались с 0.946 вместо задокументированных 0.60. Границы взяты из
+        // XML-doc метода (три ячейки циркуляции Земли): 0.30 и 0.60.
+        const int TradeWindEndQ16 = Q16.One * 30 / 100;       // 19660 (0.30)
+        const int PolarEasterlyStartQ16 = Q16.One * 60 / 100; // 39321 (0.60)
         int lat = latitudeQ16;
-        int signal;
-        if (lat < 22000) signal = -1;              // пассаты: восток → запад
-        else if (lat < 42000) signal = 1;          // западный перенос
-        else if (lat < 62000) signal = 1;          // ещё западные (умеренный)
-        else signal = -1;                           // полярные восточные
+        int signal = lat < TradeWindEndQ16 ? -1             // пассаты: с востока на запад
+            : lat < PolarEasterlyStartQ16 ? 1               // западный перенос
+            : -1;                                           // полярные восточные
 
-        // Сила максимальна в середине пояса.
+        // Сила постоянна внутри пояса (упрощение: без плавного усиления к середине).
         int strength = Q16.One / 2;
         return (ushort)Math.Clamp(Q16.Half + signal * strength / 2, 0, Q16.One);
     }

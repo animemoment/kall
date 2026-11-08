@@ -20,57 +20,69 @@ public partial class GroundItemRenderer : Node2D
     {
         ZIndex = 5;
 
+        // Базовые типы создаём сразу (горячие: рубка/ферма/камень). Остальные —
+        // лениво по первому появлению на земле (task-4: руда и 87 сырьевых id):
+        // жадный MultiMesh на каждый из 91 типов — 16384 инстанса × буфер каждому.
+        EnsureRenderer(ItemId.Log);
+        EnsureRenderer(ItemId.Grain);
+        EnsureRenderer(ItemId.Stone);
+    }
+
+    /// <summary>
+    /// Создать MultiMesh-слой одного предмета. Текстура: камень режется из атласа
+    /// 2×2, остальное — готовый спрайт дропа (<see cref="ItemTextureLoader"/>).
+    /// Нет арта — слой не создаём (warning один раз внутри загрузчика).
+    /// </summary>
+    private void EnsureRenderer(ItemId id)
+    {
+        if (_renderers.ContainsKey(id))
+            return;
+        if (!ItemRegistry.TryGet(id, out ItemDefinition def))
+            return;
+
         var quadMesh = new QuadMesh { Size = new Vector2(DefaultItemSize, DefaultItemSize) };
-        float mapSizePx = MapRenderer.MapWidth * MapRenderer.TileSizePx;
-        var mapAabb = new Aabb(Godot.Vector3.Zero, new Godot.Vector3(mapSizePx, mapSizePx, 1000f));
+        // R2-02: AABB охватывает мир с запасом (-262144..+262144 px = ±4096 тайлов), чтобы предметы за кромкой 1024 не отсекались.
+        var mapAabb = new Aabb(new Godot.Vector3(-262144f, -262144f, -1000f), new Godot.Vector3(524288f, 524288f, 2000f));
 
-        ItemId[] itemTypes = { ItemId.Log, ItemId.Grain, ItemId.Stone };
-
-        foreach (var id in itemTypes)
+        Texture2D texture;
+        if (id == ItemId.Stone)
         {
-            var def = ItemRegistry.Get(id);
-            Texture2D texture;
-            if (id == ItemId.Stone)
+            // Камень лежит на земле первым квадрантом атласа (верх-лево).
+            // Вариант россыпи уже не важен: это сыпучий ресурс, не декор.
+            var atlas = ResourceLoader.Load<Texture2D>(def.TextureUid);
+            texture = atlas == null ? null : new AtlasTexture
             {
-                // Камень лежит на земле первым квадрантом атласа (верх-лево).
-                // Вариант россыпи уже не важен: это сыпучий ресурс, не декор.
-                var atlas = ResourceLoader.Load<Texture2D>(def.TextureUid);
-                texture = atlas == null ? null : new AtlasTexture
-                {
-                    Atlas = atlas,
-                    Region = new Rect2(0, 0, MapRenderer.TileSizePx, MapRenderer.TileSizePx)
-                };
-            }
-            else
-            {
-                texture = ResourceLoader.Load<Texture2D>(def.TextureUid);
-            }
-            if (texture == null)
-            {
-                GD.PrintErr($"[GroundItemRenderer] Внимание: текстура '{def.TextureUid}' для {def.Name} не найдена!");
-            }
-
-            var multiMesh = new MultiMesh
-            {
-                Mesh = quadMesh,
-                TransformFormat = MultiMesh.TransformFormatEnum.Transform2D,
-                UseColors = false,
-                UseCustomData = false,
-                InstanceCount = MaxRenderedInstances,
-                VisibleInstanceCount = 0,
-                CustomAabb = mapAabb
+                Atlas = atlas,
+                Region = new Rect2(0, 0, MapRenderer.TileSizePx, MapRenderer.TileSizePx)
             };
-
-            var instance = new MultiMeshInstance2D
-            {
-                Name = $"GroundItems_{def.Name}",
-                Multimesh = multiMesh,
-                Texture = texture
-            };
-            AddChild(instance);
-
-            _renderers[id] = (multiMesh, instance, new float[MaxRenderedInstances * 8]);
         }
+        else
+        {
+            texture = ItemTextureLoader.Load(def);
+        }
+        if (texture == null)
+            return;
+
+        var multiMesh = new MultiMesh
+        {
+            Mesh = quadMesh,
+            TransformFormat = MultiMesh.TransformFormatEnum.Transform2D,
+            UseColors = false,
+            UseCustomData = false,
+            InstanceCount = MaxRenderedInstances,
+            VisibleInstanceCount = 0,
+            CustomAabb = mapAabb
+        };
+
+        var instance = new MultiMeshInstance2D
+        {
+            Name = $"GroundItems_{def.Name}",
+            Multimesh = multiMesh,
+            Texture = texture
+        };
+        AddChild(instance);
+
+        _renderers[id] = (multiMesh, instance, new float[MaxRenderedInstances * 8]);
     }
 
     public override void _Process(double delta)
@@ -85,13 +97,20 @@ public partial class GroundItemRenderer : Node2D
             latestSnapshot = newerSnapshot;
             dropped++;
         }
-        // P0-1: рендер — главный поток, но Series/Count на каждый _Process
-        // (60/с × типы) всё равно жмут тот же _cLock, что и sim-поток.
-        // Оставляем только суммарный замер прохода (один Record).
-        var swR = System.Diagnostics.Stopwatch.StartNew();
-
         if (latestSnapshot.PositionsByItem == null || latestSnapshot.Counts == null)
             return;
+
+        // task-4: новые типы (руда/сырьё) получают свой слой при первом появлении.
+        for (int t = 1; t < latestSnapshot.Counts.Length; t++)
+        {
+            if (latestSnapshot.Counts[t] > 0 && !_renderers.ContainsKey((ItemId)t))
+                EnsureRenderer((ItemId)t);
+        }
+
+        // C-06: Stopwatch — ссылочный тип, StartNew() аллоцировал объект в _Process
+        // каждый кадр. Замеряем по timestamp (struct-long), без аллокации; и только
+        // после null-гейта снапшота.
+        long swStart = System.Diagnostics.Stopwatch.GetTimestamp();
 
         ItemShadows?.ClearSourceSpots(ItemShadowRenderer.ShadowSource.Ground);
         foreach (var (id, (mesh, _, buffer)) in _renderers)
@@ -127,7 +146,7 @@ public partial class GroundItemRenderer : Node2D
                 ItemShadows?.AddSourceSpots(ItemShadowRenderer.ShadowSource.Ground, positions, count, DefaultItemSize);
             }
         }
-        swR.Stop();
-        SimEvents.Record("render", "GroundItemRenderer", (float)swR.Elapsed.TotalMilliseconds);
+        SimEvents.Record("render", "GroundItemRenderer",
+            (float)System.Diagnostics.Stopwatch.GetElapsedTime(swStart).TotalMilliseconds);
     }
 }

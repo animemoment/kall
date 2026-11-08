@@ -10,9 +10,6 @@ public interface IToolWorldPlacement
     /// <summary>Клетка вне острова и её чанк загружен — можно ставить/снимать.</summary>
     bool IsWorldCell(long cellX, long cellY);
 
-    /// <summary>Единая граница колонии, используемая адаптером и инструментами.</summary>
-    bool IsIslandCell(long cellX, long cellY);
-
     /// <summary>
     /// Пройдёт ли зона склада на этой клетке мира. Нужен черновику зон: ghost показывает
     /// ровно то, что встанет на Commit (иначе превью обещает клетки, которые молча отсеются).
@@ -38,7 +35,14 @@ public interface IToolWorldPlacement
 
     bool TryRemoveFarmPlot(long cellX, long cellY);
 
-    bool TryPlaceBuilding(long cellX, long cellY, Game.Core.BuildingType buildingType);
+    bool TryPlaceBuilding(long cellX, long cellY);
+
+    /// <summary>
+    /// Перегрузка с типом здания (§120.8): кладёт в payload мирового чертежа байт
+    /// BuildingType. По умолчанию (реализация может не переопределять) — дефолтное.
+    /// </summary>
+    bool TryPlaceBuilding(long cellX, long cellY, Game.Core.BuildingType buildingType)
+        => TryPlaceBuilding(cellX, cellY);
 
     /// <summary>Пройдёт ли мебель/здание гейт мира (трава, чанк загружен, клетка свободна) — для ghost.</summary>
     bool CanPlaceBuilding(long cellX, long cellY);

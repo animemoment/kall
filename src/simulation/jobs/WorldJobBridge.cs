@@ -5,6 +5,10 @@ using Game.Core.WorldStreaming;
 using Game.Core.WorldStreaming.Integration;
 using Game.UI.Streaming;
 
+// L-02: МЁРТВЫЙ КОД (2026-11-05). мост к мёртвой WorldJobBoard: создаётся только тестами, в игровом коде `new WorldJobBridge(` отсутствует.
+
+// Удаление — отдельная задача чистки (см. _plan/DEFECTS_MASTER.md). Не подключать без решения владельца.
+
 namespace Game.Simulation;
 
 /// <summary>

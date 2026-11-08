@@ -1,33 +1,87 @@
 [gd_scene format=3 uid="uid://coy1wcm3a47uo"]
 
-[ext_resource type="Texture2D" uid="uid://cj4xotk0mcyx4" path="res://ui/assets/textures/icons/ZonesIcon.png" id="1_3m0vb"]
-[ext_resource type="Texture2D" uid="uid://cla88bco32h8t" path="res://ui/assets/textures/icons/BuildIcon/maerialVariant.png" id="1_7y32b"]
-[ext_resource type="Texture2D" uid="uid://dsiddo1lt1scb" path="res://ui/assets/textures/objects/central.png" id="1_central"]
-[ext_resource type="Texture2D" uid="uid://bvpkdy03fk5sw" path="res://ui/assets/textures/icons/BuildIcon/door.png" id="1_ukacn"]
-[ext_resource type="Texture2D" uid="uid://buw3nohde55eb" path="res://ui/assets/textures/icons/no.png" id="2_4ascc"]
-[ext_resource type="Texture2D" uid="uid://yvagabo1xd7m" path="res://ui/assets/textures/icons/CheckMark.png" id="3_5g1wv"]
+[ext_resource type="FontFile" uid="uid://dtxjeqjsb5eii" path="res://assets/fonts/Handjet-VariableFont_ELGR,ELSH,wght.ttf" id="1_font"]
+[ext_resource type="Texture2D" uid="uid://cj4xotk0mcyx4" path="res://ui/assets/textures/icons/ZonesIcon.png" id="2_zones"]
+[ext_resource type="Texture2D" uid="uid://cla88bco32h8t" path="res://ui/assets/textures/icons/BuildIcon/maerialVariant.png" id="3_material"]
+[ext_resource type="Texture2D" uid="uid://dsiddo1lt1scb" path="res://ui/assets/textures/objects/central.png" id="4_central"]
+[ext_resource type="Texture2D" uid="uid://bvpkdy03fk5sw" path="res://ui/assets/textures/icons/BuildIcon/door.png" id="5_door"]
+[ext_resource type="Texture2D" uid="uid://buw3nohde55eb" path="res://ui/assets/textures/icons/no.png" id="6_no"]
+[ext_resource type="Texture2D" uid="uid://yvagabo1xd7m" path="res://ui/assets/textures/icons/CheckMark.png" id="7_check"]
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_4ascc"]
-bg_color = Color(0, 0, 0, 1)
+[sub_resource type="Theme" id="Theme_main"]
+default_font = ExtResource("1_font")
+default_font_size = 20
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_olvik"]
-bg_color = Color(0.047557652, 0.047557652, 0.047557607, 1)
+[sub_resource type="StyleBoxFlat" id="SB_panel"]
+bg_color = Color(0.0156863, 0.0156863, 0.0196078, 0.985)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.196078, 0.196078, 0.211765, 1)
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_5g1wv"]
-bg_color = Color(0.54471636, 0.10887573, 1.4439226e-07, 0.4)
+[sub_resource type="StyleBoxFlat" id="SB_header"]
+bg_color = Color(0.027451, 0.027451, 0.0313726, 1)
+border_width_bottom = 1
+border_color = Color(0.196078, 0.196078, 0.211765, 1)
+content_margin_left = 18.0
+content_margin_top = 12.0
+content_margin_right = 18.0
+content_margin_bottom = 12.0
 
-[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_g8rbv"]
-bg_color = Color(0.047058824, 0.047058824, 0.047058824, 1)
+[sub_resource type="StyleBoxFlat" id="SB_button"]
+bg_color = Color(0.0431373, 0.0431373, 0.0470588, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.211765, 0.211765, 0.223529, 1)
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
 
-[node name="Control2" type="Control" unique_id=193924575]
+[sub_resource type="StyleBoxFlat" id="SB_button_hover"]
+bg_color = Color(0.101961, 0.101961, 0.113725, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.501961, 0.501961, 0.533333, 1)
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
+
+[sub_resource type="StyleBoxFlat" id="SB_button_pressed"]
+bg_color = Color(0.0117647, 0.0117647, 0.0156863, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.909804, 0.909804, 0.909804, 1)
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
+
+[sub_resource type="StyleBoxFlat" id="SB_icon"]
+bg_color = Color(0, 0, 0, 0)
+content_margin_left = 4.0
+content_margin_top = 4.0
+content_margin_right = 4.0
+content_margin_bottom = 4.0
+
+[node name="Control2" type="Control"]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+theme = SubResource("Theme_main")
 
-[node name="ScrollContainer" type="ScrollContainer" parent="." unique_id=1239572011]
+[node name="ScrollContainer" type="ScrollContainer" parent="."]
 layout_mode = 1
 anchors_preset = 9
 anchor_bottom = 1.0
@@ -35,131 +89,197 @@ offset_top = 73.0
 offset_right = 542.0
 grow_vertical = 2
 
-[node name="PanelContainer" type="PanelContainer" parent="ScrollContainer" unique_id=735098447]
+[node name="PanelContainer" type="PanelContainer" parent="ScrollContainer"]
 layout_mode = 2
-theme_override_styles/panel = SubResource("StyleBoxFlat_4ascc")
+theme_override_styles/panel = SubResource("SB_panel")
 
-[node name="VBoxContainer" type="VBoxContainer" parent="ScrollContainer/PanelContainer" unique_id=1686993654]
+[node name="VBoxContainer" type="VBoxContainer" parent="ScrollContainer/PanelContainer"]
 layout_mode = 2
-theme_override_constants/separation = 60
+theme_override_constants/separation = 36
 
-[node name="HBoxContainer" type="HBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=997990025]
+[node name="HBoxContainer" type="HBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer"]
 layout_mode = 2
-theme_override_constants/separation = 50
+theme_override_constants/separation = 40
 
-[node name="CentralBlockButton" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer" unique_id=2013165887]
+[node name="CentralBlockButton" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer"]
 layout_mode = 2
-icon = ExtResource("1_central")
+theme_override_styles/normal = SubResource("SB_icon")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+icon = ExtResource("4_central")
+expand_icon = false
 
-[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer/CentralBlockButton" unique_id=2013165888]
+[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer/CentralBlockButton"]
 layout_mode = 0
 offset_top = 69.0
 offset_right = 108.0
 offset_bottom = 92.0
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 14
 text = "Центральный
 блок (10 дерева)"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="DoorButton" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer" unique_id=1831715510]
+[node name="DoorButton" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer"]
 layout_mode = 2
-icon = ExtResource("1_ukacn")
+theme_override_styles/normal = SubResource("SB_icon")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+icon = ExtResource("5_door")
 
-[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer/DoorButton" unique_id=1331986032]
+[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer/DoorButton"]
 layout_mode = 0
 offset_top = 69.0
 offset_right = 58.0
 offset_bottom = 92.0
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 14
 text = "Дверь"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="WallMaterialButton" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer" unique_id=780160551]
+[node name="WallMaterialButton" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer"]
 layout_mode = 2
-icon = ExtResource("1_7y32b")
+theme_override_styles/normal = SubResource("SB_icon")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+icon = ExtResource("3_material")
 
-[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer/WallMaterialButton" unique_id=1385468371]
+[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer/WallMaterialButton"]
 layout_mode = 0
 offset_left = -14.0
 offset_top = 69.0
 offset_right = 79.0
 offset_bottom = 118.0
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 14
 text = "Материал
 стены"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="ZoneButton" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer" unique_id=321630253]
+[node name="ZoneButton" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer"]
 custom_minimum_size = Vector2(64, 64)
 layout_mode = 2
-icon = ExtResource("1_3m0vb")
+theme_override_styles/normal = SubResource("SB_icon")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+icon = ExtResource("2_zones")
 
-[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer/ZoneButton" unique_id=131844693]
+[node name="Label" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer/ZoneButton"]
 layout_mode = 0
 offset_top = 69.0
 offset_right = 58.0
 offset_bottom = 92.0
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 14
 text = "Зона"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="Name2" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=556073215]
+[node name="Name2" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer"]
 layout_mode = 2
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
 theme_override_font_sizes/font_size = 30
-theme_override_styles/normal = SubResource("StyleBoxFlat_olvik")
+theme_override_styles/normal = SubResource("SB_header")
 text = "Строительные объекты"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="HBoxContainer2" type="HBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer" unique_id=1143051463]
+[node name="IndustryBar" type="HBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="IndustryLabel" type="Label" parent="ScrollContainer/PanelContainer/VBoxContainer/IndustryBar"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.501961, 0.501961, 0.521569, 1)
+theme_override_font_sizes/font_size = 16
+text = "Отрасль"
+vertical_alignment = 1
+
+[node name="IndustryOption" type="OptionButton" parent="ScrollContainer/PanelContainer/VBoxContainer/IndustryBar"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 18
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+theme_override_styles/focus = SubResource("SB_button")
+
+[node name="ItemsRoot" type="VBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer"]
+layout_mode = 2
+theme_override_constants/separation = 18
+
+[node name="HBoxContainer2" type="HBoxContainer" parent="ScrollContainer/PanelContainer/VBoxContainer"]
 visible = false
 layout_mode = 2
 theme_override_constants/separation = 63
 
-[node name="Button" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=391276167]
+[node name="Button" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2"]
 custom_minimum_size = Vector2(50, 50)
 layout_mode = 2
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 
-[node name="Button2" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=473383483]
+[node name="Button2" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2"]
 custom_minimum_size = Vector2(50, 50)
 layout_mode = 2
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 
-[node name="Button3" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=1642110371]
+[node name="Button3" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2"]
 custom_minimum_size = Vector2(50, 50)
 layout_mode = 2
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 
-[node name="Button4" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=1547243963]
+[node name="Button4" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2"]
 custom_minimum_size = Vector2(50, 50)
 layout_mode = 2
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 
-[node name="Button5" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2" unique_id=194924075]
+[node name="Button5" type="Button" parent="ScrollContainer/PanelContainer/VBoxContainer/HBoxContainer2"]
 custom_minimum_size = Vector2(50, 50)
 layout_mode = 2
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
 
-[node name="Name" type="Label" parent="." unique_id=46160512]
+[node name="Name" type="Label" parent="."]
 layout_mode = 0
 offset_right = 542.0
 offset_bottom = 73.0
+theme_override_colors/font_color = Color(0.94902, 0.94902, 0.94902, 1)
 theme_override_font_sizes/font_size = 30
-theme_override_styles/normal = SubResource("StyleBoxFlat_olvik")
+theme_override_styles/normal = SubResource("SB_header")
 text = "Строительство"
 horizontal_alignment = 1
 vertical_alignment = 1
 
-[node name="esc" type="Button" parent="." unique_id=1578370279]
+[node name="esc" type="Button" parent="."]
 layout_mode = 0
 offset_left = 4.0
 offset_top = 4.0
 offset_right = 44.0
 offset_bottom = 44.0
-theme_override_styles/normal = SubResource("StyleBoxFlat_5g1wv")
-icon = ExtResource("2_4ascc")
+theme_override_styles/normal = SubResource("SB_button")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+icon = ExtResource("6_no")
 expand_icon = true
 
-[node name="CheckMark" type="Button" parent="." unique_id=419955259]
+[node name="CheckMark" type="Button" parent="."]
 layout_mode = 0
 offset_left = 542.0
 offset_right = 615.0
 offset_bottom = 73.0
-theme_override_styles/normal = SubResource("StyleBoxFlat_g8rbv")
-icon = ExtResource("3_5g1wv")
+theme_override_styles/normal = SubResource("SB_icon")
+theme_override_styles/hover = SubResource("SB_button_hover")
+theme_override_styles/pressed = SubResource("SB_button_pressed")
+icon = ExtResource("7_check")

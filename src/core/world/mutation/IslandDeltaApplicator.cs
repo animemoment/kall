@@ -140,8 +140,20 @@ public static class IslandDeltaApplicator
                             skipped++;
                             break;
                         default:
-                            (domainCells ??= new List<(byte, long, long)>()).Add((kind, wx, wy));
+                        {
+                            // P0 (bughunt 04-1): доменные менеджеры работают в ЛОКАЛЬНЫХ
+                            // координатах зоны 0..Size-1, а wx/wy — мировые. Раньше сюда
+                            // уезжали мировые: постройки восстанавливались за островом.
+                            long lx = wx - minX;
+                            long ly = wy - minY;
+                            if (lx < 0 || ly < 0 || lx >= ActiveArea.Size || ly >= ActiveArea.Size)
+                            {
+                                skipped++;
+                                break;
+                            }
+                            (domainCells ??= new List<(byte, long, long)>()).Add((kind, lx, ly));
                             break;
+                        }
                     }
                     break;
                 }

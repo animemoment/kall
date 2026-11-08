@@ -17,16 +17,16 @@ public sealed class StockpileHaulingJobHandler : IJobHandler
 
     public bool CanAgentExecute(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
     {
-        // Haul везёт любой тип (Log/Grain), а не только брёвна: иначе работы
-        // по зерну создавались Sweep'ом, но вечно фейлились в OnStart.
+        // Haul везёт ЛЮБОЙ тип (Log/Grain/камень/руда/сырьё): иначе работы по
+        // руде и 87 сырьевым ItemId создавались Sweep'ом, но вечно фейлились в
+        // OnStart — предмет лежал на земле, счётчик склада не рос (task-4).
+        // task-4: HasAnyAvailableItems — lock-free агрегат по всем типам.
         // ЖЁСТКИЙ ЭТАП 1: расчистка стройки — только стадия Clearing.
         // Обычный мусор (вне стройки) IsStageAllowed пропускает всегда.
         if (!ConstructionManager.Instance.IsStageAllowed(job.SourceX, job.SourceY, JobTypeId.StockpileHauling))
             return false;
-        return (GroundItemManager.Instance.HasAvailableLogs ||
-                GroundItemManager.Instance.HasAvailableItemsOfType(ItemId.Grain) ||
-                GroundItemManager.Instance.HasAvailableItemsOfType(ItemId.Stone)) &&
-                StockpileManager.Instance.HasFreeSpace;
+        return GroundItemManager.Instance.HasAnyAvailableItems &&
+               StockpileManager.Instance.HasFreeSpace;
     }
 
     public void OnStart(int agentIndex, in JobData job, AgentDataPool pool, SimulationContext ctx)
@@ -67,6 +67,14 @@ public sealed class StockpileHaulingJobHandler : IJobHandler
                     GroundItemManager.Instance.TrySpillItemsAdjacent(job.SourceX, job.SourceY, ctx.MapWidth, ctx.MapHeight, ctx.SolidWalls);
                 }
             }
+        }
+
+        // GD-21: если задача привязана к конкретной клетке (стройка/расчистка),
+        // не подменяем её на чужую кучу, иначе исходная площадка зависнет с предметами.
+        if (job.SourceX >= 0 && job.SourceY >= 0)
+        {
+            JobDispatcher.Instance.ReleaseJobWorkerForStuck(agentIndex, pool, ctx);
+            return;
         }
 
         Vector2 pos = pool.GetPosition(agentIndex);
@@ -110,7 +118,7 @@ public sealed class StockpileHaulingJobHandler : IJobHandler
         }
         pool.States[agentIndex] = AgentState.Idle;
         pool.JobSearchTimer[agentIndex] = 4.0f + (float)ParallelRng.NextDouble() * 4.0f;
-        JobDispatcher.Instance.IdleWorkers.AddIdleWorker(agentIndex, pool);
+        JobDispatcher.ReturnAgentAfterJob(agentIndex, pool); // J-10: Worker зоны не уходит в общий пул
     }
 
     public void ExecuteParallel(int agentIndex, float deltaTime, AgentDataPool pool, SimulationContext ctx)

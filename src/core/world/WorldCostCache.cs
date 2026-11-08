@@ -34,6 +34,7 @@ public static class WorldCostCache
     private const int MaxChunks = 8192;
 
     private static readonly ConcurrentDictionary<long, byte[]> Chunks = new();
+    private static readonly ConcurrentDictionary<long, ulong[]> ChunkBitmasks = new();
 
     /// <summary>
     /// Блокировки МИРА (§29, 2026-10-25): клетки, непроходимые поверх генератора —
@@ -50,38 +51,20 @@ public static class WorldCostCache
     public static int BlockedCellsCount => BlockedCells.Count;
 
     /// <summary>
-    /// Проходимость клетки изменилась поверх генератора (стена построена/снесена).
-    /// Зачем: окна мирового HPA (<see cref="Game.Simulation.Pathfinding.WorldPathfinder"/>)
-    /// держат СКОПИРОВАННУЮ стоимость. Без этого уведомления они держали старую
-    /// сетку и агенты шли сквозь свежепостроенную стену (или обходили снесённую).
-    /// Событие живёт в core, подписчик — в simulation: обратной зависимости нет.
-    /// </summary>
-    public static event Action CellChanged;
-
-    /// <summary>
     /// Сделать клетку непроходимой для мирового поиска пути (стена построена).
     /// Идемпотентен; true — состояние РЕАЛЬНО изменилось (гвард от шторма
     /// инвалидаций: помпа-синк перерегистрирует стены каждый тик).
     /// </summary>
     public static bool MarkBlocked(long x, long y)
     {
-        if (!BlockedCells.TryAdd(PackCell(x, y), 1))
-            return false;
-        CellChanged?.Invoke();
-        return true;
+        return BlockedCells.TryAdd(PackCell(x, y), 1);
     }
 
     /// <summary>
     /// Снять блокировку клетки (стена снесена). true — блок была.
     /// Кэш чанков трогать не нужно: оверлей читается поверх, генератор отвечает сам.
     /// </summary>
-    public static bool MarkUnblocked(long x, long y)
-    {
-        if (!BlockedCells.TryRemove(PackCell(x, y), out _))
-            return false;
-        CellChanged?.Invoke();
-        return true;
-    }
+    public static bool MarkUnblocked(long x, long y) => BlockedCells.TryRemove(PackCell(x, y), out _);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static long PackCell(long x, long y) => ((long)(uint)x << 32) | (uint)y;
@@ -92,19 +75,14 @@ public static class WorldCostCache
         if (!BlockedCells.IsEmpty && BlockedCells.ContainsKey(PackCell(x, y)))
             return CostBlocked;
 
-        // Каноническое знаковое деление (WorldCoordinates.FloorDiv), не каст long→int:
-        // (int)(x >> 6) усекал координаты дальше 2^31 и СВЕЛ два разных чанка в один
-        // ключ (стоимость неправильного куска карты). Дельта x>>6 влезает в int всегда.
-        long cxLong = WorldCoordinates.FloorDiv(x, ChunkSize);
-        long cyLong = WorldCoordinates.FloorDiv(y, ChunkSize);
-        int cx = (int)cxLong;
-        int cy = (int)cyLong;
+        int cx = (int)(x >> ChunkShift);
+        int cy = (int)(y >> ChunkShift);
         long key = PackChunk(cx, cy);
 
         byte[] chunk = Chunks.TryGetValue(key, out byte[] found) ? found : BuildChunk(cx, cy, key);
 
-        int lx = WorldCoordinates.FloorMod(x, ChunkSize);
-        int ly = WorldCoordinates.FloorMod(y, ChunkSize);
+        int lx = (int)(x & ChunkMask);
+        int ly = (int)(y & ChunkMask);
         return chunk[(ly << ChunkShift) | lx];
     }
 
@@ -143,7 +121,67 @@ public static class WorldCostCache
     public static void Clear()
     {
         Chunks.Clear();
+        ChunkBitmasks.Clear();
         BlockedCells.Clear();
+    }
+
+    /// <summary>
+    /// Извлечь 64-строчную битовую маску проходимости чанка (cx, cy) в буфер ulong[64].
+    /// Бит 1 = клетка свободна, Бит 0 = препятствие (вода, гора или построенная стена).
+    /// </summary>
+    public static unsafe void CopyChunkBitmask(long cx, long cy, ulong* pDest64)
+    {
+        long key = PackChunk((int)cx, (int)cy);
+        if (!ChunkBitmasks.TryGetValue(key, out ulong[] mask))
+        {
+            mask = BuildChunkBitmask((int)cx, (int)cy, key);
+        }
+
+        for (int i = 0; i < 64; i++)
+            pDest64[i] = mask[i];
+
+        if (!BlockedCells.IsEmpty)
+        {
+            long baseX = cx << ChunkShift;
+            long baseY = cy << ChunkShift;
+            for (int ly = 0; ly < 64; ly++)
+            {
+                long wy = baseY + ly;
+                for (int lx = 0; lx < 64; lx++)
+                {
+                    if (BlockedCells.ContainsKey(PackCell(baseX + lx, wy)))
+                    {
+                        pDest64[ly] &= ~(1UL << lx);
+                    }
+                }
+            }
+        }
+    }
+
+    private static ulong[] BuildChunkBitmask(int cx, int cy, long key)
+    {
+        if (ChunkBitmasks.Count >= MaxChunks) ChunkBitmasks.Clear();
+
+        var mask = new ulong[ChunkSize];
+        long baseX = (long)cx << ChunkShift;
+        long baseY = (long)cy << ChunkShift;
+
+        for (int ly = 0; ly < ChunkSize; ly++)
+        {
+            long wy = baseY + ly;
+            ulong row = 0UL;
+            for (int lx = 0; lx < ChunkSize; lx++)
+            {
+                BaseTerrainKind terrain = WorldModel.TerrainAt(baseX + lx, wy);
+                if (terrain != BaseTerrainKind.Water && terrain != BaseTerrainKind.Mountain)
+                {
+                    row |= (1UL << lx);
+                }
+            }
+            mask[ly] = row;
+        }
+
+        return ChunkBitmasks.GetOrAdd(key, mask);
     }
 
     private static byte[] BuildChunk(int cx, int cy, long key)

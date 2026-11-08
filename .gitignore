@@ -1,5 +1,6 @@
 # Godot 4 engine cache
 .godot/
+build/
 
 # C# / .NET build artifacts
 bin/
@@ -39,6 +40,3 @@ build_history.jsonl
 dependency_graph_visualizer/__pycache__/
 shots/live/
 .live_bridge.json
-
-# check_all logs
-_reports/check/

@@ -55,16 +55,20 @@ public class WarehouseTool : ITool
         int minY = Mathf.Min(startTile.Y, endTile.Y);
         int maxY = Mathf.Max(startTile.Y, endTile.Y);
 
-        long cellCount = ((long)maxX - minX + 1) * ((long)maxY - minY + 1);
-        if (cellCount <= 0 || cellCount > WorldPlacementPass.MaxScannedCells) return;
+        long cellCount = (long)(maxX - minX + 1) * (maxY - minY + 1);
+        if (cellCount > 250_000) return;
 
         var islandTiles = new List<(int X, int Y)>();
         for (int x = minX; x <= maxX; x++)
         {
             for (int y = minY; y <= maxY; y++)
             {
-                if (WorldPlacementPass.IsOnIsland(x, y, WorldPlacement))
+                if (WorldPlacementPass.IsIslandCell(x, y))
                 {
+                    // task-21: зону склада на руде не размечаем (жила сохраняется).
+                    Game.Core.MapData md = Game.UI.MapRenderer.Instance?.MapData;
+                    if (md != null && md.HasOre(x, y))
+                        continue;
                     islandTiles.Add((x, y));
                 }
                 else if (WorldPlacement != null)

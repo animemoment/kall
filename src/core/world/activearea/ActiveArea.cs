@@ -80,6 +80,15 @@ public sealed class ActiveArea
     /// <summary>Сид, которым зона была сгенерирована, (uint)worldSeed (контракт MapData.Seed).</summary>
     public uint Seed { get; private set; }
 
+    /// <summary>
+    /// Полный 64-битный сид мира (task-5): рудный пасс детерминирован от него,
+    /// а <see cref="Seed"/> хранит только нижние 32 бита (контракт MapData).
+    /// </summary>
+    public ulong WorldSeedFull { get; private set; }
+
+    /// <summary>Версия генератора мира (task-5): нужна рудному пассу для детерминизма.</summary>
+    public uint GeneratorVersion { get; private set; }
+
     /// <summary>Пустая незаполненная зона с данным мировым origin (так создаёт ActiveAreaRegistry).</summary>
     public ActiveArea(long zoneOriginX, long zoneOriginY)
     {
@@ -105,16 +114,10 @@ public sealed class ActiveArea
 
     private void FillCore(ulong worldSeed, uint generatorVersion)
     {
-        WorldGenV2.Area area = WorldGenV2.GenerateArea(
-            worldSeed, generatorVersion, ZoneOriginX, ZoneOriginY, Size, Size);
-        ReadOnlySpan<GeneratedCell> cells = area.Cells.Span;
-        ReadOnlySpan<bool> trees = area.TreeOnGrass.Span;
-        ReadOnlySpan<bool> stones = area.StoneOnGrass.Span;
-        ReadOnlySpan<byte> treeVariants = area.TreeVariant.Span;
+        var rawBuffer = new PureWorldTileData[Size * Size];
+        PureWorldGenerator.GenerateArea(
+            worldSeed, ZoneOriginX, ZoneOriginY, Size, Size, PureWorldGenConfig.Default, rawBuffer);
 
-        // Временные 2D-снимки: Initialize динамических слоёв (Humidity/Fertility)
-        // принимает [,]-массивы. 2+4+4 МБ, живут только внутри Fill (ре-центр —
-        // редкое событие, порог 25%, §118.1).
         var ground2D = new TileType[Size, Size];
         var moist2D = new float[Size, Size];
         var height2D = new float[Size, Size];
@@ -125,33 +128,30 @@ public sealed class ActiveArea
             for (int lx = 0; lx < Size; lx++)
             {
                 int i = row + lx;
-                GeneratedCell cell = cells[i];
+                PureWorldTileData tile = rawBuffer[i];
+                GeneratedCell cell = tile.ToGeneratedCell();
                 TileType ground = TerrainToTileType(cell.Terrain);
                 Ground[i] = ground;
                 ground2D[lx, ly] = ground;
-                TreeOnGrass[i] = trees[i];
-                TreeVariant[i] = treeVariants[i];
-                StoneOnGrass[i] = stones[i];
+                TreeOnGrass[i] = tile.TreeVariant != 0xFF;
+                TreeVariant[i] = tile.TreeVariant != 0xFF ? tile.TreeVariant : (byte)0;
+                StoneOnGrass[i] = tile.StoneVariant != 0xFF;
                 Biome[i] = cell.Biome;
                 Variant[i] = cell.Variant;
-                // Как окно (строки 567-568): влага/высота клетки → float-шумы Initialize.
-                moist2D[lx, ly] = cell.MoistureQ16 / 65535f;
-                height2D[lx, ly] = cell.ElevationQ16 / 65535f;
+                moist2D[lx, ly] = tile.Moisture / 65535f;
+                height2D[lx, ly] = tile.Elevation / 65535f;
             }
         }
 
         ApplyStartClearance(ground2D);
 
-        // Динамические слои — в точности финал окна GenerateColonyWindow
-        // (строки 592-593): Fertility.Initialize получает moistNoise, а НЕ
-        // SoilFertilityQ16 — канон поведения окна (гейт фазы 3).
         Humidity.Initialize(ground2D, moist2D, height2D);
         Fertility.Initialize(ground2D, moist2D, height2D, null, Humidity.WaterFeedAt);
 
-        // Климат центра зоны — как окно: SampleBlendedCell(origin + size/2).
-        Climate = WorldClimateGenerator.SampleBlendedCell(
-            worldSeed, generatorVersion, ZoneOriginX + Size / 2, ZoneOriginY + Size / 2);
+        Climate = WorldClimateParams.DefaultTemperate;
         Seed = unchecked((uint)worldSeed);
+        WorldSeedFull = worldSeed;
+        GeneratorVersion = generatorVersion;
         IsFilled = true;
     }
 

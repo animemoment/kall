@@ -26,56 +26,63 @@ public partial class StockpileItemRenderer : Node2D
     {
         ZIndex = 6;
 
+        // Базовые типы — сразу; руда/сырьё (task-4) — лениво по первому появлению
+        // на складе: каждый слой = MultiMesh на 16384 инстанса.
+        EnsureRenderer(ItemId.Log);
+        EnsureRenderer(ItemId.Grain);
+        EnsureRenderer(ItemId.Stone);
+    }
+
+    /// <summary>Создать слой одного предмета склада (текстура — спрайт дропа).</summary>
+    private void EnsureRenderer(ItemId id)
+    {
+        if (_renderers.ContainsKey(id))
+            return;
+        if (!ItemRegistry.TryGet(id, out ItemDefinition def))
+            return;
+
         var quadMesh = new QuadMesh { Size = new Vector2(DefaultItemSize, DefaultItemSize) };
-        float mapSizePx = MapRenderer.MapWidth * MapRenderer.TileSizePx;
-        var mapAabb = new Aabb(Godot.Vector3.Zero, new Godot.Vector3(mapSizePx, mapSizePx, 1000f));
+        // R2-02: AABB охватывает мир с запасом (-262144..+262144 px = ±4096 тайлов), чтобы предметы склада за кромкой 1024 не отсекались.
+        var mapAabb = new Aabb(new Godot.Vector3(-262144f, -262144f, -1000f), new Godot.Vector3(524288f, 524288f, 2000f));
 
-        ItemId[] itemTypes = { ItemId.Log, ItemId.Grain, ItemId.Stone };
-
-        foreach (var id in itemTypes)
+        Texture2D texture;
+        if (id == ItemId.Stone)
         {
-            var def = ItemRegistry.Get(id);
-            Texture2D texture;
-            if (id == ItemId.Stone)
+            // Тот же первый квадрант, что на земле. Маленькая иконка 28px.
+            var atlas = ResourceLoader.Load<Texture2D>(def.TextureUid);
+            texture = atlas == null ? null : new AtlasTexture
             {
-                // Тот же первый квадрант, что на земле. Маленькая иконка 28px.
-                var atlas = ResourceLoader.Load<Texture2D>(def.TextureUid);
-                texture = atlas == null ? null : new AtlasTexture
-                {
-                    Atlas = atlas,
-                    Region = new Rect2(0, 0, MapRenderer.TileSizePx, MapRenderer.TileSizePx)
-                };
-            }
-            else
-            {
-                texture = ResourceLoader.Load<Texture2D>(def.TextureUid);
-            }
-            if (texture == null)
-            {
-                GD.PrintErr($"[StockpileItemRenderer] Внимание: текстура '{def.TextureUid}' для {def.Name} не найдена!");
-            }
-
-            var multiMesh = new MultiMesh
-            {
-                Mesh = quadMesh,
-                TransformFormat = MultiMesh.TransformFormatEnum.Transform2D,
-                UseColors = false,
-                UseCustomData = false,
-                InstanceCount = MaxRenderedInstances,
-                VisibleInstanceCount = 0,
-                CustomAabb = mapAabb
+                Atlas = atlas,
+                Region = new Rect2(0, 0, MapRenderer.TileSizePx, MapRenderer.TileSizePx)
             };
-
-            var instance = new MultiMeshInstance2D
-            {
-                Name = $"StockpileItems_{def.Name}",
-                Multimesh = multiMesh,
-                Texture = texture
-            };
-            AddChild(instance);
-
-            _renderers[id] = (multiMesh, instance, new float[MaxRenderedInstances * 8]);
         }
+        else
+        {
+            texture = ItemTextureLoader.Load(def);
+        }
+        if (texture == null)
+            return;
+
+        var multiMesh = new MultiMesh
+        {
+            Mesh = quadMesh,
+            TransformFormat = MultiMesh.TransformFormatEnum.Transform2D,
+            UseColors = false,
+            UseCustomData = false,
+            InstanceCount = MaxRenderedInstances,
+            VisibleInstanceCount = 0,
+            CustomAabb = mapAabb
+        };
+
+        var instance = new MultiMeshInstance2D
+        {
+            Name = $"StockpileItems_{def.Name}",
+            Multimesh = multiMesh,
+            Texture = texture
+        };
+        AddChild(instance);
+
+        _renderers[id] = (multiMesh, instance, new float[MaxRenderedInstances * 8]);
     }
 
     public override void _Process(double delta)
@@ -90,6 +97,13 @@ public partial class StockpileItemRenderer : Node2D
 
         if (latestSnapshot.PositionsByItem == null || latestSnapshot.Counts == null)
             return;
+
+        // task-4: руда/сырьё на складе — слой создаётся при первом появлении.
+        for (int t = 1; t < latestSnapshot.Counts.Length; t++)
+        {
+            if (latestSnapshot.Counts[t] > 0 && !_renderers.ContainsKey((ItemId)t))
+                EnsureRenderer((ItemId)t);
+        }
 
         ItemShadows?.ClearSourceSpots(ItemShadowRenderer.ShadowSource.Stockpile);
 

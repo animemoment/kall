@@ -52,6 +52,7 @@ public class TreeFellingTool : ITool
         if (!_isDragging) return;
         _isDragging = false;
 
+        GD.Print($"[TREE-TOOL] release start=({startTile.X},{startTile.Y}) end=({endTile.X},{endTile.Y}) left={isLeftClick} worldPlacement={WorldPlacement != null} mapData={_mapData?.Width ?? -1}x{_mapData?.Height ?? -1}");
 
         _selectionBox?.EndSelection();
         _selectionBox?.ResetDefaultStyle();
@@ -61,8 +62,12 @@ public class TreeFellingTool : ITool
         int minY = Mathf.Min(startTile.Y, endTile.Y);
         int maxY = Mathf.Max(startTile.Y, endTile.Y);
 
-        long cellCount = ((long)maxX - minX + 1) * ((long)maxY - minY + 1);
-        if (cellCount > WorldPlacementPass.MaxScannedCells) return;
+        long cellCount = (long)(maxX - minX + 1) * (maxY - minY + 1);
+        if (cellCount > 250_000)
+        {
+            HUDController.ShowFloatingWarning("Выделенная область слишком велика");
+            return;
+        }
 
         _cellBuffer.Clear();
 
@@ -72,13 +77,11 @@ public class TreeFellingTool : ITool
             {
                 for (int y = minY; y <= maxY; y++)
                 {
-                    bool islandCell = WorldPlacementPass.IsOnIsland(x, y, WorldPlacement);
-                    if (islandCell)
+                    if (_mapData != null && (uint)x < (uint)_mapData.Width && (uint)y < (uint)_mapData.Height && _mapData.TreeOnGrass[x, y])
                     {
-                        if (_mapData != null && (uint)x < (uint)_mapData.Width && (uint)y < (uint)_mapData.Height && _mapData.TreeOnGrass[x, y])
-                            _cellBuffer.Add((x, y));
+                        _cellBuffer.Add((x, y));
                     }
-                    else if (WorldPlacement != null)
+                    else if (WorldPlacement != null && !WorldPlacementPass.IsIslandCell(x, y))
                     {
                         WorldPlacement.TryCutTree(x, y);
                     }
@@ -89,6 +92,24 @@ public class TreeFellingTool : ITool
             {
                 TreeJobManager.Instance.MarkTreesBatch(_cellBuffer);
             }
+            else
+            {
+                // UI-15: оповещение при попытке рубки там, где нет деревьев или на препятствиях
+                string warning = "Нельзя рубить: здесь нет деревьев";
+                if (_mapData != null && (uint)startTile.X < (uint)_mapData.Width && (uint)startTile.Y < (uint)_mapData.Height)
+                {
+                    TileType ground = _mapData.Ground[startTile.X, startTile.Y];
+                    if (ground == TileType.Water)
+                        warning = "Нельзя рубить: вода";
+                    else if (ground == TileType.Mountain)
+                        warning = "Нельзя рубить: скала / горы";
+                    else if (_mapData.HasStone(startTile.X, startTile.Y))
+                        warning = "Нельзя рубить: препятствие (валун / камень)";
+                    else if (_mapData.HasOre(startTile.X, startTile.Y))
+                        warning = "Нельзя рубить: месторождение руды";
+                }
+                HUDController.ShowFloatingWarning(warning);
+            }
         }
         else
         {
@@ -96,8 +117,10 @@ public class TreeFellingTool : ITool
             {
                 for (int y = minY; y <= maxY; y++)
                 {
-                    if (WorldPlacementPass.IsOnIsland(x, y, WorldPlacement))
+                    if (WorldPlacementPass.IsIslandCell(x, y))
+                    {
                         _cellBuffer.Add((x, y));
+                    }
                     else if (WorldPlacement != null)
                     {
                         WorldPlacement.TryCancelCutTree(x, y);

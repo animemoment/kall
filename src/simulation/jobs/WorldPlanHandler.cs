@@ -6,6 +6,10 @@ using Game.Core.WorldStreaming;
 using Game.Core.WorldStreaming.Integration;
 using Game.UI.Streaming;
 
+// L-02: МЁРТВЫЙ КОД (2026-11-05). хендлер планов мира не регистрируется в JobRegistry и не создаётся в игре — мёртвая ветка.
+
+// Удаление — отдельная задача чистки (см. _plan/DEFECTS_MASTER.md). Не подключать без решения владельца.
+
 namespace Game.Simulation;
 
 /// <summary>
@@ -120,15 +124,25 @@ public sealed class WorldPlanHandler : IJobHandler
             // Раньше агент навсегда пропадал из выдачи: каждый выполненный
             // мировой план «съедал» одного Laborer'а → работа шла всё медленнее.
             if (pool.Classes[agentIndex] != AgentClass.Worker)
-                JobDispatcher.Instance.IdleWorkers.AddIdleWorker(agentIndex, pool);
+                JobDispatcher.ReturnAgentAfterJob(agentIndex, pool); // J-10: Worker зоны не уходит в общий пул
         }
     }
 
     public void OnCancel(int agentIndex, AgentDataPool pool, SimulationContext ctx)
     {
-        // Прерывание (нужды, watchdog): план остаётся, агент освобождается.
+        // §07-03 / R-017: 0 — валидный id работы, а не «пусто»! Ставить только -1.
+        // Работу снимаем с агента, прогресс НЕ обнуляем — D-05: следующий агент
+        // продолжит с накопленной долей (иначе каждый провал мира «съедал» бы прогресс).
+        // Стадию — Idle: иначе агент застревает в MovingToSource/Working без jobType
+        // (Commit по jobType == None не прогоняется), диспетчер не выдаст ему новую
+        // работу (CAS только с -1) — агент навсегда пропадает из выдачи (R-017).
+        // Возврат в пул бездельников — как в Commit: job уже снят из JobIndex
+        // (вызывается при отказе Claim / при отмене), агент снова доступен.
+        pool.States[agentIndex] = AgentState.Idle;
         pool.WorkProgress[agentIndex] = 0f;
-        pool.CurrentJobId[agentIndex] = 0;
+        pool.CurrentJobId[agentIndex] = -1;
         pool.CurrentJobType[agentIndex] = JobTypeId.None;
+        if (pool.Classes[agentIndex] != AgentClass.Worker)
+            JobDispatcher.ReturnAgentAfterJob(agentIndex, pool); // J-10: Worker зоны не уходит в общий пул
     }
 }

@@ -20,7 +20,12 @@ namespace Game.Core.WorldStreaming;
 //  * GenerateArea(worldSeed, generatorVersion, originX, originY, width, height)
 //    — ЕДИНСТВЕННЫЙ путь генерации области: плоские row-major массивы (конвенция
 //    WorldChunk: индекс = y*Width + x), Q0.16-фикспоинт, ноль аллокаций на клетку
-//    (5 плоских массивов на область + сетка климата). Чанк 64×64 =
+//    (5 плоских массивов на область + сетка климата). FIX (bughunt 03-4): по
+//    умолчанию это thread-local переиспользуемые буферы (AreaBuffers), поэтому
+//    ре-центр области 1024² больше не аллоцирует ~20 МБ LOH на каждый Fill.
+//    Возвращённый Area — ВИД на буфер: действителен до следующего GenerateArea в
+//    этом потоке; нужно хранить — Area.Clone() либо перегрузка с ЯВНЫМИ
+//    AreaBuffers (владение остаётся у вызывающего). Чанк 64×64 =
 //    GenerateArea(..., 64, 64): отдельной ветки «колони-окно» НЕТ. Стартовая
 //    расчистка НЕ выполняется (§118.1: станет дельтой GroundOverride в фазе 3).
 //
@@ -109,27 +114,43 @@ public static class WorldGenV2
         private readonly bool[] _treeOnGrass;
         private readonly bool[] _stoneOnGrass;
         private readonly byte[] _treeVariant;
+        private readonly int _count;
 
         public long OriginX { get; }
         public long OriginY { get; }
         public int Width { get; }
         public int Height { get; }
 
-        /// <summary>Клетки области, row-major. Длина = Width*Height.</summary>
-        public ReadOnlyMemory<GeneratedCell> Cells => _cells;
+        /// <summary>
+        /// Клетки области, row-major. Длина = Width*Height.
+        /// FIX (bughunt 03-4): массив может быть переиспользуемым буфером
+        /// (GenerateArea без своих AreaBuffers) — тогда срез валиден только до
+        /// следующего GenerateArea в этом потоке; для хранения — <see cref="Clone"/>.
+        /// </summary>
+        public ReadOnlyMemory<GeneratedCell> Cells => new(_cells, 0, _count);
 
-        /// <summary>Дерево на клетке (только на траве), row-major.</summary>
-        public ReadOnlyMemory<bool> TreeOnGrass => _treeOnGrass;
+        /// <summary>
+        /// Дерево на клетке (только на траве), row-major. См. оговорку о владении
+        /// памятью у <see cref="Cells"/> (FIX bughunt 03-4).
+        /// </summary>
+        public ReadOnlyMemory<bool> TreeOnGrass => new(_treeOnGrass, 0, _count);
 
-        /// <summary>Каменная россыпь на клетке (только на траве без дерева), row-major.</summary>
-        public ReadOnlyMemory<bool> StoneOnGrass => _stoneOnGrass;
+        /// <summary>
+        /// Каменная россыпь на клетке (только на траве без дерева), row-major.
+        /// См. оговорку о владении памятью у <see cref="Cells"/> (FIX bughunt 03-4).
+        /// </summary>
+        public ReadOnlyMemory<bool> StoneOnGrass => new(_stoneOnGrass, 0, _count);
 
-        /// <summary>Вариант спрайта дерева 0..3 (хэш мировых координат+сида), row-major.</summary>
-        public ReadOnlyMemory<byte> TreeVariant => _treeVariant;
+        /// <summary>
+        /// Вариант спрайта дерева 0..3 (хэш мировых координат+сида), row-major.
+        /// См. оговорку о владении памятью у <see cref="Cells"/> (FIX bughunt 03-4).
+        /// </summary>
+        public ReadOnlyMemory<byte> TreeVariant => new(_treeVariant, 0, _count);
 
         internal Area(
             long originX, long originY, int width, int height,
-            GeneratedCell[] cells, bool[] treeOnGrass, bool[] stoneOnGrass, byte[] treeVariant)
+            GeneratedCell[] cells, bool[] treeOnGrass, bool[] stoneOnGrass, byte[] treeVariant,
+            int count)
         {
             OriginX = originX;
             OriginY = originY;
@@ -139,6 +160,25 @@ public static class WorldGenV2
             _treeOnGrass = treeOnGrass;
             _stoneOnGrass = stoneOnGrass;
             _treeVariant = treeVariant;
+            _count = count;
+        }
+
+        /// <summary>
+        /// Глубокая копия с собственными массивами: не перезаписывается следующими
+        /// GenerateArea (FIX bughunt 03-4). Нужна тем, кто хранит Area дольше одного
+        /// вызова, — переиспользуемый буфер живёт до следующей генерации в потоке.
+        /// </summary>
+        public Area Clone()
+        {
+            var cells = new GeneratedCell[_count];
+            var trees = new bool[_count];
+            var stones = new bool[_count];
+            var variants = new byte[_count];
+            Array.Copy(_cells, cells, _count);
+            Array.Copy(_treeOnGrass, trees, _count);
+            Array.Copy(_stoneOnGrass, stones, _count);
+            Array.Copy(_treeVariant, variants, _count);
+            return new Area(OriginX, OriginY, Width, Height, cells, trees, stones, variants, _count);
         }
 
         /// <summary>Клетка по локальным координатам. Bounds-safe (как WorldChunk).</summary>
@@ -175,7 +215,7 @@ public static class WorldGenV2
     }
 
     // ------------------------------------------------------------------ //
-    //  Публичный API (ровно два метода)                                   //
+    //  Публичный API (SampleCell / GenerateArea / DecorPass)               //
     // ------------------------------------------------------------------ //
 
     /// <summary>
@@ -195,12 +235,81 @@ public static class WorldGenV2
     }
 
     /// <summary>
+    /// Владеемые буферы заполнения области: 4 плоских массива результата + опорная
+    /// сетка климата. FIX (bughunt 03-4): чтобы ре-центр области 1024² не аллоцировал
+    /// ~20 МБ в LOH на каждый Fill, вызывающий может держать один экземпляр и
+    /// передавать его в <see cref="GenerateArea(ulong, uint, long, long, int, int, AreaBuffers)"/>.
+    /// Массивы только растут (до максимального запрошенного размера) и не
+    /// уменьшаются; повторный вызов с меньшей областью переиспользует префикс.
+    /// </summary>
+    public sealed class AreaBuffers
+    {
+        /// <summary>Клетки области, row-major (ёмкость ≥ Width*Height последней области).</summary>
+        public GeneratedCell[] Cells { get; private set; } = Array.Empty<GeneratedCell>();
+        /// <summary>Деревья, row-major.</summary>
+        public bool[] TreeOnGrass { get; private set; } = Array.Empty<bool>();
+        /// <summary>Камни, row-major.</summary>
+        public bool[] StoneOnGrass { get; private set; } = Array.Empty<bool>();
+        /// <summary>Варианты деревьев, row-major.</summary>
+        public byte[] TreeVariant { get; private set; } = Array.Empty<byte>();
+        /// <summary>Опорная сетка климата (внутренняя: наружу не отдаётся).</summary>
+        internal WorldClimateParams[] Grid { get; private set; } = Array.Empty<WorldClimateParams>();
+
+        /// <summary>Ёмкость массива клеток (не число клеток последней области).</summary>
+        public int CellCapacity => Cells.Length;
+
+        /// <summary>
+        /// Гарантировать ёмкость под область width×height (и её сетку климата).
+        /// Выделяет новые массивы только при росте; старые Area-виды продолжают
+        /// смотреть в прежние массивы (они не освобождаются, пока живы ссылки).
+        /// </summary>
+        public void EnsureCapacity(int width, int height)
+        {
+            if (width <= 0)
+                throw new ArgumentOutOfRangeException(nameof(width), "Ширина области должна быть больше 0.");
+            if (height <= 0)
+                throw new ArgumentOutOfRangeException(nameof(height), "Высота области должна быть больше 0.");
+
+            int cellCount = width * height;
+            if (Cells.Length < cellCount)
+            {
+                Cells = new GeneratedCell[cellCount];
+                TreeOnGrass = new bool[cellCount];
+                StoneOnGrass = new bool[cellCount];
+                TreeVariant = new byte[cellCount];
+            }
+
+            int gridW = Math.Max(1, width / 16) + 1;
+            int gridH = Math.Max(1, height / 16) + 1;
+            int gridCount = gridW * gridH;
+            if (Grid.Length < gridCount)
+                Grid = new WorldClimateParams[gridCount];
+        }
+    }
+
+    /// <summary>
+    /// Thread-local scratch по умолчанию. FIX (bughunt 03-4): 1024² ≈ 20 МБ LOH
+    /// (GeneratedCell[1M] + 2×bool[1M] + byte[1M] + сетка 65×65) раньше выделялись
+    /// на каждый ре-центр ActiveArea. ThreadStatic — как кэши ContinentShaper:
+    /// отдельный буфер на поток, гонок нет, lock не нужен. Минус: буфер живёт на
+    /// потоке до конца процесса (максимум, что понадобился).
+    /// </summary>
+    [ThreadStatic]
+    private static AreaBuffers _threadScratch;
+
+    /// <summary>
     /// ЕДИНСТВЕННЫЙ путь генерации: область [originX, originX+width) ×
     /// [originY, originY+height) в абсолютных мировых координатах. Климат —
     /// интерполяция сетки 16×16, якоря = origin + 16·g (поведение окна
     /// GenerateColonyWindow; для сторон, кратных 16, побитово = GenerateChunk).
     /// origin НЕ обязан быть выровнен по 16: сетка заякоривается на origin, ровно
     /// как окно заякоривается на свой baseOrigin.
+    ///
+    /// FIX (bughunt 03-4): результат — ВИД на thread-local переиспользуемый буфер
+    /// (ноль крупных аллокаций после первого вызова в потоке). Поэтому Area
+    /// действителен ТОЛЬКО до следующего GenerateArea в этом потоке: если нужно
+    /// хранить — <see cref="Area.Clone"/> или перегрузка с собственными
+    /// <see cref="AreaBuffers"/> (владение остаётся у вызывающего).
     /// </summary>
     public static Area GenerateArea(
         ulong worldSeed,
@@ -209,11 +318,31 @@ public static class WorldGenV2
         long originY,
         int width,
         int height)
+        => GenerateArea(worldSeed, generatorVersion, originX, originY, width, height, buffers: null);
+
+    /// <summary>
+    /// Перегрузка с явными буферами (FIX bughunt 03-4): пишет прямо в
+    /// <paramref name="buffers"/>, не аллоцируя массивы области. Возвращённый
+    /// <see cref="Area"/> — вид на эти массивы: он перезаписывается следующим
+    /// вызовом с теми же buffers и действителен до него; для хранения — Clone().
+    /// </summary>
+    public static Area GenerateArea(
+        ulong worldSeed,
+        uint generatorVersion,
+        long originX,
+        long originY,
+        int width,
+        int height,
+        AreaBuffers buffers)
     {
         if (width <= 0)
             throw new ArgumentOutOfRangeException(nameof(width), "Ширина области должна быть больше 0.");
         if (height <= 0)
             throw new ArgumentOutOfRangeException(nameof(height), "Высота области должна быть больше 0.");
+
+        // null = thread-local переиспользуемый набор; явный buffers = владение вызывающего.
+        AreaBuffers target = buffers ?? (_threadScratch ??= new AreaBuffers());
+        target.EnsureCapacity(width, height);
 
         const int SubSize = 16;   // шаг опорной сетки климата (как в окне/чанке)
         const int Q16One = 65535;
@@ -224,7 +353,8 @@ public static class WorldGenV2
 
         // Опорная сетка климата: SampleBlendedCell в узлах origin + 16·g.
         // (Окно заполняет её Parallel.For — значения те же, порядок не важен.)
-        var grid = new WorldClimateParams[gridW * gridH];
+        // Буфер может быть длиннее gridW*gridH — используется только префикс.
+        WorldClimateParams[] grid = target.Grid;
         for (int gy = 0; gy < gridH; gy++)
         {
             long gwy = originY + gy * SubSize;
@@ -236,10 +366,11 @@ public static class WorldGenV2
             }
         }
 
-        var cells = new GeneratedCell[width * height];
-        var treeOnGrass = new bool[width * height];
-        var stoneOnGrass = new bool[width * height];
-        var treeVariant = new byte[width * height];
+        int cellCount = width * height;
+        GeneratedCell[] cells = target.Cells;
+        bool[] treeOnGrass = target.TreeOnGrass;
+        bool[] stoneOnGrass = target.StoneOnGrass;
+        byte[] treeVariant = target.TreeVariant;
 
         for (int ly = 0; ly < height; ly++)
         {
@@ -282,7 +413,8 @@ public static class WorldGenV2
             }
         }
 
-        return new Area(originX, originY, width, height, cells, treeOnGrass, stoneOnGrass, treeVariant);
+        return new Area(originX, originY, width, height,
+            cells, treeOnGrass, stoneOnGrass, treeVariant, cellCount);
     }
 
     // ------------------------------------------------------------------ //
@@ -576,8 +708,8 @@ public static class WorldGenV2
     private static ushort LerpQ16(ushort a, ushort b, uint t)
     {
         uint clampedT = Math.Min(t, (uint)65535);
-        long value = (long)a * (65535 - clampedT) + (long)b * clampedT + 32768;
-        return (ushort)Math.Clamp(value / 65535, 0, 65535);
+        ulong value = (ulong)((long)a * (65535 - clampedT) + (long)b * clampedT + 32768);
+        return (ushort)((value * 0x80008001UL) >> 47);
     }
 
     /// <summary>
@@ -592,7 +724,7 @@ public static class WorldGenV2
         const ulong OneSq = One * One;
         ulong x = Math.Min(t, (uint)One);
         ulong shaped = (x * x) * (3 * One - 2 * x) + OneSq / 2;
-        return (uint)Math.Min(One, shaped / OneSq);
+        return (uint)Math.Min(One, Math.BigMul(shaped, 4295101697UL, out _));
     }
 
     /// <summary>Линейная интерполяция 18 климатических полей — дословно из UnifiedWorldGenerator.</summary>

@@ -34,6 +34,28 @@ public static class WorldCoordinates
     public const int ChunkSize = 64;
 
     /// <summary>
+    /// S-06 (бывший W-06 AUDIT-A): максимально допустимая |координата чанка|, при
+    /// которой `chunk * ChunkSize` и последующее прибавление origin заведомо не
+    /// переполняют long. Мир адресуется абсолютными координатами (остров 1024 тайла
+    /// плюс бесшовный стриминг), поэтому «умножение без проверки» рано или поздно
+    /// даёт молчаливо неверный origin чанка — а не исключение.
+    /// </summary>
+    public const long MaxSafeChunkCoordinate = long.MaxValue / ChunkSize / 2;
+
+    /// <summary>
+    /// S-06: контракт TileOrigin — origin чанка в тайлах. Переполнение — это ошибка
+    /// вызывающего, и она обязана быть громкой, а не «мир поехал».
+    /// </summary>
+    public static long ChunkOriginTiles(long chunkCoordinate, string paramName)
+    {
+        if (chunkCoordinate > MaxSafeChunkCoordinate || chunkCoordinate < -MaxSafeChunkCoordinate)
+            throw new ArgumentOutOfRangeException(paramName, chunkCoordinate,
+                $"Координата чанка вне безопасного диапазона ±{MaxSafeChunkCoordinate}: " +
+                "умножение на ChunkSize переполнило бы long.");
+        return chunkCoordinate * ChunkSize;
+    }
+
+    /// <summary>
     /// Деление с округлением к минус бесконечности. Размер делителя обязан быть положительным.
     /// </summary>
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -127,7 +149,26 @@ public enum GenerationDomain : ulong
     /// <summary>Мелкомасштабный domain-warp береговой линии (линия прибоя, пляжи).</summary>
     CoastWarpMicro = 0x2A90F84CEB13D576ul,
     /// <summary>Особенности берега: мысы (Ridged) и защищенные бухты (Voronoi/Basin).</summary>
-    CoastFeature = 0xDF815C730A249BE8ul
+    CoastFeature = 0xDF815C730A249BE8ul,
+
+    // --- Рудная геология (task-5, _plan/ORES_GEOLOGY.md §7.7) ---
+    // ЗАРЕЗЕРВИРОВАНО: значения не менять — от них зависит рисунок залежей.
+    // Добавлены В КОНЕЦ: существующие домены выше неприкосновенны (иначе
+    // изменилась бы форма континентов и весь мир).
+    /// <summary>Провинции руд: медленные поля/структуры провинций.</summary>
+    OreProvince = 0x6C8E9CF570932BD5ul,
+    /// <summary>Разломы/хребты (ridged-шум) — «геологические пояса» внутри острова.</summary>
+    OreStructure = 0x3B5D8F1A72C46E90ul,
+    /// <summary>Кандидаты на сетке 24×24: джиттер позиции.</summary>
+    OreCandidate = 0xA1B2C3D4E5F60718ul,
+    /// <summary>Взвешенный выбор типа руды (rarity · S²).</summary>
+    OreTypePick = 0x1122334455667788ul,
+    /// <summary>Розыгрыш площади залежи (лог-нормальные квантили + хвост).</summary>
+    OreSize = 0x99AABBCCDDEEFF00ul,
+    /// <summary>Форма залежи: шаги роста блоба/жилы/пласта.</summary>
+    OreShape = 0x0F1E2D3C4B5A6978ul,
+    /// <summary>Спутники и ореолы (пирит, серебро, молибден, кобальт, ванадий).</summary>
+    OreSatellite = 0x8877665544332211ul
 }
 
 /// <summary>Стабильные целочисленные хеши/шум для world-coordinate генерации.</summary>
