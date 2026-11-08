@@ -349,6 +349,8 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 		{
 			WallCount++;
 			Game.Core.World.WorldCostCache.MarkBlocked(cellX, cellY);
+			// P3: мировая стена меняет проходимость — ленивая инвалидация HPA*-графа.
+			Game.Simulation.Pathfinding.UnifiedPathfinder.Instance?.NotifyPassabilityChanged(cellX, cellY);
 			OnWallAdded?.Invoke(cellX, cellY);
 		}
 		RepaintCell(cellX, cellY);
@@ -390,6 +392,8 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 				if (WallCount < 0)
 					WallCount = 0;
 				Game.Core.World.WorldCostCache.MarkUnblocked(cellX, cellY);
+				// P3: сняли стену — инвалидируем HPA*-граф/кэш маршрутов.
+				Game.Simulation.Pathfinding.UnifiedPathfinder.Instance?.NotifyPassabilityChanged(cellX, cellY);
 				OnWallRemoved?.Invoke(cellX, cellY);
 			}
 			RepaintCell(cellX, cellY);
@@ -653,7 +657,13 @@ public partial class StreamingWorldView : Node2D, IWallWorld, IBlockWorld, IWorl
 			try
 			{
 				byte[] payload = EncodeBlocks(pair.Key);
-				if (payload.Length == 0 && !_store.ContainsChunk(pair.Key.X, pair.Key.Y))
+				// W2-06: пустой payload — это НЕ «чанк стал пустым», а «нет загруженных
+				// блоков» (delta не прочитана: несовместимая/битая версия) либо чанк не
+				// менялся. SaveChunk(empty) удаляет файл, поэтому после подъёма
+				// GeneratorVersion один заход в зону стирал весь сохранённый мир.
+				// Не удаляем: устаревшая дельта восстановит старое состояние, но данные
+				// игрока не исчезнут. (Фаза C: отличать «прочитан»/«не прочитан».)
+				if (payload.Length == 0)
 					continue;
 				if (_store.SaveChunk(metadata, pair.Key.X, pair.Key.Y, payload))
 					saved++;

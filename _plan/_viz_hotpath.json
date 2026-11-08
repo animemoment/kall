@@ -1,0 +1,748 @@
+﻿{
+  "entry_points": [
+    {
+      "file": "addons/live_bridge/live_bridge.gd",
+      "method": "_ready",
+      "line": 30
+    },
+    {
+      "file": "addons/live_bridge/live_bridge.gd",
+      "method": "_process",
+      "line": 45
+    },
+    {
+      "file": "autoload/agent_tools.gd",
+      "method": "_ready",
+      "line": 15
+    },
+    {
+      "file": "autoload/mcp_interaction_server.gd",
+      "method": "_ready",
+      "line": 20
+    },
+    {
+      "file": "autoload/mcp_interaction_server.gd",
+      "method": "_process",
+      "line": 43
+    },
+    {
+      "file": "autoload/mcp_interaction_server.gd",
+      "method": "_draw",
+      "line": 4002
+    },
+    {
+      "file": "autoload/perf_probe.gd",
+      "method": "_ready",
+      "line": 79
+    },
+    {
+      "file": "autoload/perf_probe.gd",
+      "method": "_process",
+      "line": 257
+    },
+    {
+      "file": "scenes/main/Main.cs",
+      "method": "_Ready",
+      "line": 173
+    },
+    {
+      "file": "scenes/main/Main.cs",
+      "method": "_Process",
+      "line": 569
+    },
+    {
+      "file": "scenes/main/Main.cs",
+      "method": "_UnhandledInput",
+      "line": 631
+    },
+    {
+      "file": "scenes/main/Main.cs",
+      "method": "_ExitTree",
+      "line": 683
+    },
+    {
+      "file": "src/core/common/SimulationWatchService.cs",
+      "method": "Tick",
+      "line": 113
+    },
+    {
+      "file": "src/core/world/FertilityMap.cs",
+      "method": "Tick",
+      "line": 170
+    },
+    {
+      "file": "src/core/world/HumidityMap.cs",
+      "method": "Tick",
+      "line": 233
+    },
+    {
+      "file": "src/core/world/HumidityMap.cs",
+      "method": "Tick",
+      "line": 344
+    },
+    {
+      "file": "src/core/world/streaming/runtime/ChunkWindowPlanner.cs",
+      "method": "Update",
+      "line": 110
+    },
+    {
+      "file": "src/core/world/streaming/runtime/WorldChunkStreamer.cs",
+      "method": "Update",
+      "line": 131
+    },
+    {
+      "file": "src/simulation/TimeManager.cs",
+      "method": "_Ready",
+      "line": 27
+    },
+    {
+      "file": "src/simulation/jobs/JobValidator.cs",
+      "method": "Tick",
+      "line": 37
+    },
+    {
+      "file": "src/ui/CameraController.cs",
+      "method": "_Ready",
+      "line": 55
+    },
+    {
+      "file": "src/ui/CameraController.cs",
+      "method": "_Process",
+      "line": 87
+    },
+    {
+      "file": "src/ui/CameraController.cs",
+      "method": "_UnhandledInput",
+      "line": 118
+    },
+    {
+      "file": "src/ui/DayNightCycle.cs",
+      "method": "_ExitTree",
+      "line": 57
+    },
+    {
+      "file": "src/ui/DayNightCycle.cs",
+      "method": "Tick",
+      "line": 66
+    },
+    {
+      "file": "src/ui/PerformanceOverlay.cs",
+      "method": "_Ready",
+      "line": 87
+    },
+    {
+      "file": "src/ui/PerformanceOverlay.cs",
+      "method": "_Input",
+      "line": 336
+    },
+    {
+      "file": "src/ui/PerformanceOverlay.cs",
+      "method": "_Process",
+      "line": 403
+    },
+    {
+      "file": "src/ui/PerformanceOverlay.cs",
+      "method": "_ExitTree",
+      "line": 890
+    },
+    {
+      "file": "src/ui/PlayerInteractionManager.cs",
+      "method": "_Ready",
+      "line": 38
+    },
+    {
+      "file": "src/ui/PlayerInteractionManager.cs",
+      "method": "_UnhandledInput",
+      "line": 77
+    },
+    {
+      "file": "src/ui/SelectionBox.cs",
+      "method": "_Ready",
+      "line": 20
+    },
+    {
+      "file": "src/ui/SelectionBox.cs",
+      "method": "_Draw",
+      "line": 85
+    },
+    {
+      "file": "src/ui/controllers/BuildMenuController.cs",
+      "method": "_Ready",
+      "line": 77
+    },
+    {
+      "file": "src/ui/controllers/BuildMenuController.cs",
+      "method": "_UnhandledInput",
+      "line": 242
+    },
+    {
+      "file": "src/ui/controllers/BuildMenuController.cs",
+      "method": "_ExitTree",
+      "line": 509
+    },
+    {
+      "file": "src/ui/controllers/FarmController.cs",
+      "method": "_Ready",
+      "line": 42
+    },
+    {
+      "file": "src/ui/controllers/FarmController.cs",
+      "method": "_Process",
+      "line": 265
+    },
+    {
+      "file": "src/ui/controllers/FarmController.cs",
+      "method": "_ExitTree",
+      "line": 412
+    },
+    {
+      "file": "src/ui/controllers/HUDController.cs",
+      "method": "_Ready",
+      "line": 76
+    },
+    {
+      "file": "src/ui/controllers/HUDController.cs",
+      "method": "_Process",
+      "line": 742
+    },
+    {
+      "file": "src/ui/controllers/HUDController.cs",
+      "method": "_UnhandledInput",
+      "line": 859
+    },
+    {
+      "file": "src/ui/controllers/HUDController.cs",
+      "method": "_ExitTree",
+      "line": 1537
+    },
+    {
+      "file": "src/ui/controllers/MainMenuController.cs",
+      "method": "_Ready",
+      "line": 11
+    },
+    {
+      "file": "src/ui/controllers/PriorityBoardController.cs",
+      "method": "_Ready",
+      "line": 30
+    },
+    {
+      "file": "src/ui/controllers/WorkZoneController.cs",
+      "method": "_Ready",
+      "line": 67
+    },
+    {
+      "file": "src/ui/controllers/WorkZoneController.cs",
+      "method": "_Process",
+      "line": 645
+    },
+    {
+      "file": "src/ui/controllers/WorkZoneController.cs",
+      "method": "_ExitTree",
+      "line": 699
+    },
+    {
+      "file": "src/ui/renderers/AgentRenderer.cs",
+      "method": "_Process",
+      "line": 410
+    },
+    {
+      "file": "src/ui/renderers/AgentRenderer.cs",
+      "method": "_ExitTree",
+      "line": 622
+    },
+    {
+      "file": "src/ui/renderers/CropRenderer.cs",
+      "method": "_Ready",
+      "line": 41
+    },
+    {
+      "file": "src/ui/renderers/CropRenderer.cs",
+      "method": "_Process",
+      "line": 96
+    },
+    {
+      "file": "src/ui/renderers/DesignationRenderer.cs",
+      "method": "_Ready",
+      "line": 28
+    },
+    {
+      "file": "src/ui/renderers/DesignationRenderer.cs",
+      "method": "_Process",
+      "line": 106
+    },
+    {
+      "file": "src/ui/renderers/DesignationRenderer.cs",
+      "method": "_ExitTree",
+      "line": 186
+    },
+    {
+      "file": "src/ui/renderers/FarmZoneRenderer.cs",
+      "method": "_Ready",
+      "line": 33
+    },
+    {
+      "file": "src/ui/renderers/FarmZoneRenderer.cs",
+      "method": "_Process",
+      "line": 39
+    },
+    {
+      "file": "src/ui/renderers/FarmZoneRenderer.cs",
+      "method": "_Draw",
+      "line": 54
+    },
+    {
+      "file": "src/ui/renderers/FarmZoneRenderer.cs",
+      "method": "_ExitTree",
+      "line": 157
+    },
+    {
+      "file": "src/ui/renderers/FertilityOverlayRenderer.cs",
+      "method": "_Ready",
+      "line": 25
+    }
+  ],
+  "reachable_files": 182,
+  "hot_methods": [
+    {
+      "file": "src/ui/streaming/StreamingWorldView.cs",
+      "method": "AddIndices",
+      "line": 1074,
+      "depth": 0,
+      "loops": 24,
+      "allocs": 58,
+      "size": 35699,
+      "cost_estimate": 127440,
+      "layer": "ui"
+    },
+    {
+      "file": "src/ui/streaming/StreamingWorldView.cs",
+      "method": "ProcessEraseWork",
+      "line": 1084,
+      "depth": 0,
+      "loops": 23,
+      "allocs": 58,
+      "size": 35531,
+      "cost_estimate": 124790,
+      "layer": "ui"
+    },
+    {
+      "file": "tests/TestJobRaceStress.cs",
+      "method": "OnCancel",
+      "line": 42,
+      "depth": 0,
+      "loops": 23,
+      "allocs": 41,
+      "size": 19516,
+      "cost_estimate": 100890,
+      "layer": "tests"
+    },
+    {
+      "file": "tests/TestJobRaceStress.cs",
+      "method": "Run",
+      "line": 45,
+      "depth": 0,
+      "loops": 23,
+      "allocs": 41,
+      "size": 19094,
+      "cost_estimate": 100590,
+      "layer": "tests"
+    },
+    {
+      "file": "src/simulation/scheduling/DynamicWorkScheduler.cs",
+      "method": "ResetTickBalance",
+      "line": 156,
+      "depth": 1,
+      "loops": 16,
+      "allocs": 13,
+      "size": 16533,
+      "cost_estimate": 61540,
+      "layer": "simulation"
+    },
+    {
+      "file": "tests/TestDestroyerStreaming.cs",
+      "method": "TestWorldJobBoardAdversarial",
+      "line": 415,
+      "depth": 0,
+      "loops": 9,
+      "allocs": 41,
+      "size": 8344,
+      "cost_estimate": 57490,
+      "layer": "tests"
+    },
+    {
+      "file": "src/simulation/AgentSimulationThread.cs",
+      "method": "Phase2_ParallelUpdate",
+      "line": 713,
+      "depth": 1,
+      "loops": 12,
+      "allocs": 8,
+      "size": 27685,
+      "cost_estimate": 56440,
+      "layer": "simulation"
+    },
+    {
+      "file": "src/simulation/zones/ZoneJobRouter.cs",
+      "method": "ClearQueuedAt",
+      "line": 152,
+      "depth": 1,
+      "loops": 11,
+      "allocs": 10,
+      "size": 9225,
+      "cost_estimate": 41540,
+      "layer": "simulation"
+    },
+    {
+      "file": "src/simulation/zones/ZoneJobRouter.cs",
+      "method": "GateOrNew",
+      "line": 163,
+      "depth": 1,
+      "loops": 11,
+      "allocs": 10,
+      "size": 9225,
+      "cost_estimate": 41540,
+      "layer": "simulation"
+    },
+    {
+      "file": "src/simulation/zones/ZoneJobRouter.cs",
+      "method": "Push",
+      "line": 175,
+      "depth": 1,
+      "loops": 11,
+      "allocs": 10,
+      "size": 8883,
+      "cost_estimate": 41240,
+      "layer": "simulation"
+    },
+    {
+      "file": "src/simulation/scheduling/DynamicWorkScheduler.cs",
+      "method": "EffectiveQuantumMs",
+      "line": 130,
+      "depth": 1,
+      "loops": 11,
+      "allocs": 3,
+      "size": 8655,
+      "cost_estimate": 36190,
+      "layer": "simulation"
+    },
+    {
+      "file": "src/simulation/zones/ZoneManager.cs",
+      "method": "RemoveTiles",
+      "line": 158,
+      "depth": 1,
+      "loops": 10,
+      "allocs": 7,
+      "size": 3475,
+      "cost_estimate": 32590,
+      "layer": "simulation"
+    },
+    {
+      "file": "tests/TestWorldGen.cs",
+      "method": "TestMainMenuAndSpawnSelectionFlow",
+      "line": 558,
+      "depth": 0,
+      "loops": 9,
+      "allocs": 4,
+      "size": 4107,
+      "cost_estimate": 28440,
+      "layer": "tests"
+    },
+    {
+      "file": "src/core/common/ProfilerLogService.cs",
+      "method": "BuildReport",
+      "line": 706,
+      "depth": 1,
+      "loops": 9,
+      "allocs": 2,
+      "size": 5912,
+      "cost_estimate": 28390,
+      "layer": "core"
+    },
+    {
+      "file": "src/ui/renderers/AgentRenderer.cs",
+      "method": "ApplyShadow",
+      "line": 403,
+      "depth": 0,
+      "loops": 5,
+      "allocs": 10,
+      "size": 10558,
+      "cost_estimate": 27440,
+      "layer": "ui"
+    },
+    {
+      "file": "src/ui/renderers/AgentRenderer.cs",
+      "method": "_Process",
+      "line": 410,
+      "depth": 0,
+      "loops": 5,
+      "allocs": 10,
+      "size": 10403,
+      "cost_estimate": 27440,
+      "layer": "ui"
+    },
+    {
+      "file": "src/simulation/simd/SimdNeedsBatch.cs",
+      "method": "ValidatePoolRange",
+      "line": 103,
+      "depth": 2,
+      "loops": 4,
+      "allocs": 19,
+      "size": 5248,
+      "cost_estimate": 27340,
+      "layer": "simulation"
+    },
+    {
+      "file": "src/ui/streaming/StreamingWorldView.cs",
+      "method": "BlitTile",
+      "line": 1509,
+      "depth": 0,
+      "loops": 3,
+      "allocs": 23,
+      "size": 3025,
+      "cost_estimate": 25990,
+      "layer": "ui"
+    },
+    {
+      "file": "src/simulation/zones/ZoneJobRouter.cs",
+      "method": "Unassign",
+      "line": 278,
+      "depth": 1,
+      "loops": 8,
+      "allocs": 4,
+      "size": 2839,
+      "cost_estimate": 25040,
+      "layer": "simulation"
+    },
+    {
+      "file": "autoload/mcp_interaction_server.gd",
+      "method": "_variant_to_json",
+      "line": 1067,
+      "depth": 0,
+      "loops": 9,
+      "allocs": 0,
+      "size": 2978,
+      "cost_estimate": 24740,
+      "layer": "autoload"
+    },
+    {
+      "file": "src/ui/tools/ZoneDraftTool.cs",
+      "method": "PaintZoneGhostCell",
+      "line": 433,
+      "depth": 1,
+      "loops": 8,
+      "allocs": 1,
+      "size": 3917,
+      "cost_estimate": 23690,
+      "layer": "ui"
+    },
+    {
+      "file": "tests/TestAdversarialConstruction.cs",
+      "method": "TestReactiveResourceBrokerAndDemandPush",
+      "line": 410,
+      "depth": 0,
+      "loops": 5,
+      "allocs": 14,
+      "size": 1763,
+      "cost_estimate": 23640,
+      "layer": "tests"
+    },
+    {
+      "file": "src/core/common/ProfilerLogService.cs",
+      "method": "SaveAiReportToFile",
+      "line": 559,
+      "depth": 1,
+      "loops": 7,
+      "allocs": 1,
+      "size": 6992,
+      "cost_estimate": 23440,
+      "layer": "core"
+    },
+    {
+      "file": "src/core/common/ProfilerLogService.cs",
+      "method": "BuildAiReport",
+      "line": 571,
+      "depth": 1,
+      "loops": 7,
+      "allocs": 1,
+      "size": 6955,
+      "cost_estimate": 23440,
+      "layer": "core"
+    },
+    {
+      "file": "tests/TestIslandMirror.cs",
+      "method": "TestMirrorMapping",
+      "line": 299,
+      "depth": 0,
+      "loops": 0,
+      "allocs": 27,
+      "size": 4473,
+      "cost_estimate": 22340,
+      "layer": "tests"
+    },
+    {
+      "file": "src/simulation/AgentSimulationThread.cs",
+      "method": "GetMinSnapInterval",
+      "line": 157,
+      "depth": 1,
+      "loops": 3,
+      "allocs": 16,
+      "size": 4637,
+      "cost_estimate": 22290,
+      "layer": "simulation"
+    },
+    {
+      "file": "src/simulation/AgentSimulationThread.cs",
+      "method": "RouterNowMs",
+      "line": 177,
+      "depth": 1,
+      "loops": 3,
+      "allocs": 16,
+      "size": 4637,
+      "cost_estimate": 22290,
+      "layer": "simulation"
+    },
+    {
+      "file": "src/simulation/AgentSimulationThread.cs",
+      "method": "Start",
+      "line": 188,
+      "depth": 1,
+      "loops": 3,
+      "allocs": 16,
+      "size": 4494,
+      "cost_estimate": 22140,
+      "layer": "simulation"
+    },
+    {
+      "file": "scenes/main/Main.cs",
+      "method": "OnRegionSelected",
+      "line": 406,
+      "depth": 0,
+      "loops": 3,
+      "allocs": 7,
+      "size": 12524,
+      "cost_estimate": 21840,
+      "layer": "scenes"
+    },
+    {
+      "file": "tests/TestIslandMirror.cs",
+      "method": "TestMirrorLifecycle",
+      "line": 410,
+      "depth": 0,
+      "loops": 2,
+      "allocs": 19,
+      "size": 3884,
+      "cost_estimate": 21290,
+      "layer": "tests"
+    },
+    {
+      "file": "autoload/agent_tools.gd",
+      "method": "_jsonify",
+      "line": 252,
+      "depth": 0,
+      "loops": 8,
+      "allocs": 0,
+      "size": 1438,
+      "cost_estimate": 21190,
+      "layer": "autoload"
+    },
+    {
+      "file": "src/simulation/jobs/JobSpatialPyramid.cs",
+      "method": "GetAffinityPenalty",
+      "line": 1049,
+      "depth": 1,
+      "loops": 5,
+      "allocs": 0,
+      "size": 11350,
+      "cost_estimate": 21040,
+      "layer": "simulation"
+    },
+    {
+      "file": "tests/TestWorldGenV2.cs",
+      "method": "FoldCell",
+      "line": 157,
+      "depth": 0,
+      "loops": 6,
+      "allocs": 5,
+      "size": 3126,
+      "cost_estimate": 20890,
+      "layer": "tests"
+    },
+    {
+      "file": "tests/TestWorldGenV2.cs",
+      "method": "Fold",
+      "line": 172,
+      "depth": 0,
+      "loops": 6,
+      "allocs": 5,
+      "size": 3126,
+      "cost_estimate": 20890,
+      "layer": "tests"
+    },
+    {
+      "file": "src/core/world/climate/PlanetaryHydrology.cs",
+      "method": "SimulateGlobalHydrology",
+      "line": 25,
+      "depth": 1,
+      "loops": 6,
+      "allocs": 0,
+      "size": 6700,
+      "cost_estimate": 20090,
+      "layer": "core"
+    },
+    {
+      "file": "src/simulation/structures/ConstructionManager.cs",
+      "method": "StartSitesBatch",
+      "line": 114,
+      "depth": 1,
+      "loops": 4,
+      "allocs": 8,
+      "size": 5150,
+      "cost_estimate": 19490,
+      "layer": "simulation"
+    },
+    {
+      "file": "tests/TestDestroyerStreaming.cs",
+      "method": "TestNegativeChunkKeyAndDeltaRoundTrip",
+      "line": 276,
+      "depth": 0,
+      "loops": 1,
+      "allocs": 19,
+      "size": 3452,
+      "cost_estimate": 18490,
+      "layer": "tests"
+    },
+    {
+      "file": "tests/TestDestroyerStreaming.cs",
+      "method": "TestRegionEdgeStreamingNoCrash",
+      "line": 199,
+      "depth": 0,
+      "loops": 3,
+      "allocs": 12,
+      "size": 3208,
+      "cost_estimate": 18440,
+      "layer": "tests"
+    },
+    {
+      "file": "src/core/world/streaming/runtime/ChunkWindowPlanner.cs",
+      "method": "SetWindowSide",
+      "line": 88,
+      "depth": 0,
+      "loops": 4,
+      "allocs": 7,
+      "size": 4428,
+      "cost_estimate": 18340,
+      "layer": "core"
+    },
+    {
+      "file": "src/core/world/generation/WorldGenV2.cs",
+      "method": "SampleCell",
+      "line": 190,
+      "depth": 1,
+      "loops": 4,
+      "allocs": 8,
+      "size": 3503,
+      "cost_estimate": 18290,
+      "layer": "core"
+    }
+  ],
+  "hot_count": 715
+}

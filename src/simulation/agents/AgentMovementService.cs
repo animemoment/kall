@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Numerics;
 using System.Threading;
 using System.Runtime.CompilerServices;
@@ -188,6 +189,35 @@ public sealed class AgentMovementService
     }
 
     /// <summary>
+    /// P5: бюджет поиска пути на суб-степ. Кадр = 16,6 мс; поиск не имеет права
+    /// съесть больше PathBudgetMs. При исчерпании запрос откладывается на ~1 кадр
+    /// (кулдаун 0.05 с), а агент продолжает идти по текущим waypoint-ам.
+    /// </summary>
+    public const double PathBudgetMs = 2.0;
+    private static long _stepBudgetStartTicks;
+    private static double _stepBudgetSpentMs;
+    private static long _ticksToMsDiv = Stopwatch.Frequency / 1000;
+
+    /// <summary>Сбросить бюджет поиска на новом суб-степе (зовёт AgentSimulationThread).</summary>
+    public static void BeginPathBudgetStep()
+    {
+        _stepBudgetStartTicks = Stopwatch.GetTimestamp();
+        _stepBudgetSpentMs = 0.0;
+    }
+
+    /// <summary>Сколько мс поиска уже потрачено на этом суб-степе (диагностика).</summary>
+    public static double PathBudgetSpentMs => _stepBudgetSpentMs;
+    /// <summary>Сколько запросов отложено из-за бюджета (диагностика).</summary>
+    public static long PathBudgetDeferred { get; private set; }
+
+    private static bool PathBudgetExhausted(out double spentMs)
+    {
+        spentMs = _stepBudgetSpentMs +
+            (Stopwatch.GetTimestamp() - _stepBudgetStartTicks) * (1000.0 / Stopwatch.Frequency);
+        return spentMs >= PathBudgetMs;
+    }
+
+    /// <summary>
     /// Запрашивает иерархический путь и кладёт waypoints в пул агента.
     /// Частота — не чаще раза в 0.8-1.5 игровых секунды.
     /// B21/B22: счётчики запросов/успехов + отдельный замер A* (не движения).
@@ -197,6 +227,14 @@ public sealed class AgentMovementService
         // P0-1: без счётчика — кулдаун-хит случается на каждого агента каждый тик.
         if (pool.PathRequestCooldown[agentIndex] > 0f)
         {
+            return;
+        }
+
+        // P5: бюджет исчерпан — не ищем «здесь и сейчас», повторим через ~1 кадр.
+        if (PathBudgetExhausted(out _))
+        {
+            PathBudgetDeferred++;
+            pool.PathRequestCooldown[agentIndex] = 0.05f;
             return;
         }
 
@@ -217,7 +255,11 @@ public sealed class AgentMovementService
         long wty = originY + ty;
 
         Span<Game.Simulation.Pathfinding.Long2> waypoints = stackalloc Game.Simulation.Pathfinding.Long2[AgentPathConfig.MaxWaypoints];
-        if (Game.Simulation.Pathfinding.UnifiedPathfinder.Instance.TryFindPath(wsx, wsy, wtx, wty, waypoints, out int count) && count > 0)
+        long searchStart = Stopwatch.GetTimestamp();
+        bool pathOk = Game.Simulation.Pathfinding.UnifiedPathfinder.Instance.TryFindPath(wsx, wsy, wtx, wty, waypoints, out int count);
+        // Учитываем стоимость поиска в бюджете суб-степа (P5).
+        _stepBudgetSpentMs += (Stopwatch.GetTimestamp() - searchStart) * (1000.0 / Stopwatch.Frequency);
+        if (pathOk && count > 0)
         {
             int cap = Math.Min(count, AgentPathConfig.MaxWaypoints);
             int wpBase = agentIndex * AgentPathConfig.MaxWaypoints;

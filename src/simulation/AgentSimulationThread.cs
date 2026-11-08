@@ -332,9 +332,33 @@ public sealed class AgentSimulationThread : IDisposable
 
 			var spatialGrid = new AgentSpatialGrid(width, height);
 			var movement = new AgentMovementService();
+			var soilEngine = new Game.Core.Soil.HybridSoilEngine(width, height);
+			// A3: вторая модель почвы раньше НИКОГДА не инициализировалась — WildSoil
+			// оставался нулевым, Farms пустым, поэтому Tick был полным no-op. Заполняем
+			// шум из готовых карт влаги/плодородия (шкала 0..255 → 0..1), один раз на старт.
+			try
+			{
+				var moistNoise = new float[width, height];
+				var fertNoise = new float[width, height];
+				int hw = humidity?.Width ?? 0, hh = humidity?.Height ?? 0;
+				int fw = fertility?.Width ?? 0, fh = fertility?.Height ?? 0;
+				for (int y = 0; y < height; y++)
+				{
+					for (int x = 0; x < width; x++)
+					{
+						moistNoise[x, y] = (x < hw && y < hh) ? humidity.Get(x, y) / 255f : 0.5f;
+						fertNoise[x, y] = (x < fw && y < fh) ? fertility.Get(x, y) / 255f : 0.5f;
+					}
+				}
+				soilEngine.Initialize(ground, moistNoise, fertNoise);
+			}
+			catch (Exception soilEx)
+			{
+				GD.PrintErr($"[Soil] Initialize failed: {soilEx.Message}");
+			}
 
 			_ctx = new SimulationContext(ground, humidity, treeOnGrass, solidWalls, walkableTiles, spatialGrid, movement, random, 64, stoneOnGrass, fertility,
-				oreType, oreState, oreReserve, oreReserveInitial);
+				oreType, oreState, oreReserve, oreReserveInitial, soilEngine);
 			HierarchicalPathfinder.Instance.Initialize(_ctx);
 			// R-09: бюджет поиска пути (SearchesPerFrame/TryReserveSearch) был объявлен,
 			// но не вызывался нигде — при массовой постановке дальних работ A* запускали
@@ -449,6 +473,17 @@ public sealed class AgentSimulationThread : IDisposable
 			if (ThreadPool.SetMinThreads(dop, dop))
 				_minThreadsAdjusted = true;
 
+			// JIT-прогрев фаз симуляции ДО старта игрового цикла (устраняет пик 56 мс на первом тике)
+			try
+			{
+				Warmup();
+				GD.Print("[AgentSimulationThread] JIT Warmup завершён успешно (0 спайков на старте).");
+			}
+			catch (Exception ex)
+			{
+				GD.PrintErr($"[AgentSimulationThread] Ошибка во время JIT Warmup: {ex.Message}");
+			}
+
 			// Поколение инкрементируем ДО Task.Run: любая предыдущая петля увидит новое
 			// значение на своей границе тика и завершится, не тронув новый _pool/_ctx.
 			int generation = ++_loopGeneration;
@@ -461,6 +496,22 @@ public sealed class AgentSimulationThread : IDisposable
 		{
 			GD.PrintErr($"[AgentSimulationThread] Ошибка старта симуляции: {ex.Message}\n{ex.StackTrace}");
 		}
+	}
+
+	/// <summary>
+	/// Предварительный синхронный прогрев .NET JIT для параллельных воркеров и структур симуляции.
+	/// Выполняется во время загрузки сцены, устраняя спайк компиляции (56+ мс) на первом тике кадра.
+	/// </summary>
+	private void Warmup()
+	{
+		float dt = 0.01f;
+		Phase2_ParallelUpdate(dt);
+		Phase3a_ParallelBookkeeping(dt, rebuildSpatialGrid: true, updateNeedsEnv: true);
+		Phase3b_SequentialCommit(dt, rebuildSpatialGrid: true);
+		GroundItemManager.Instance.GenerateSnapshot();
+		StockpileManager.Instance.GenerateSnapshot();
+		CropGrowthManager.Instance.GenerateSnapshot();
+		PushSnapshot();
 	}
 
 	private void SimulationLoop(int generation)
@@ -561,6 +612,8 @@ public sealed class AgentSimulationThread : IDisposable
 							// (AgentMovementService читает AgentSimTickGate.Current
 							// из Phase2-воркеров — volatile write, дёшево).
 							AgentSimTickGate.Current = _tickCounter;
+							// P5: новый бюджет поиска пути на суб-степ (≤2 мс в AgentMovementService).
+							AgentMovementService.BeginPathBudgetStep();
 							_dispatchTimer += currentStepDt;
 							_cropGrowthTimer += currentStepDt;
 							_stockpileSweepTimer += currentStepDt;
@@ -662,8 +715,7 @@ public sealed class AgentSimulationThread : IDisposable
 								// было 360 часов = 15 суток на цикл сезона вместо 360.
 								double dayOfYear = (_gameTimeSecondsAccum / WorldTime.SecondsPerDay) % 360.0;
 								float season = MathF.Sin((float)(dayOfYear / 360.0 * Math.PI * 2.0) - MathF.PI / 2f);
-								for (int r = 0; r < humidityRepeats; r++)
-									humidityMap.Tick(ground, _staticMountainMask, _reusableForestMask, _reusableFarmMask, _staticMountainMask, season);
+								humidityMap.Tick(ground, _staticMountainMask, _reusableForestMask, _reusableFarmMask, _staticMountainMask, season, humidityRepeats);
 								}
 							}
 
@@ -672,10 +724,7 @@ public sealed class AgentSimulationThread : IDisposable
 							// Маски леса/грядок переиспользуем с humidity-тика выше.
 							_fertilityTimer += currentStepDt;
 							// FIX (bughunt 07-06): интервал плодородия — тоже ИГРОВОЙ, без
-							// масштаба скоростью. FertilityMap.Tick не трогаем (его сигнатура
-							// без dt и файл не в этой задаче) — догоняем прошедшие интервалы
-							// повторами, как и у влаги; за игровой день число тиков одинаково
-							// при любой скорости.
+							// масштаба скоростью.
 							float fertilityInterval = FertilityMap.TickIntervalGameSec;
 							if (_fertilityTimer >= fertilityInterval && _ctx?.Fertility != null)
 							{
@@ -693,9 +742,19 @@ public sealed class AgentSimulationThread : IDisposable
 								int fw = fertilityMap.Width;
 								int fh = fertilityMap.Height;
 								EnsureEnvironmentalMasks(fw, fh, ground);
-								for (int r = 0; r < fertilityRepeats; r++)
-									fertilityMap.Tick(ground, _reusableForestMask, _reusableFarmMask);
+								fertilityMap.Tick(ground, _reusableForestMask, _reusableFarmMask, fertilityRepeats);
 								}
+							}
+
+							if (_ctx?.SoilEngine != null)
+							{
+								// A3: сезон считаем тем же выражением, что и для HumidityMap
+								// (раньше сюда передавался литерал 0f, поэтому в SparseFarmDomain
+								// испарение всегда было «межсезонным», а дождь — никогда).
+								// Дождя как события пока нет (GD-30) — isRaining остаётся false.
+								double soilDayOfYear = (_gameTimeSecondsAccum / WorldTime.SecondsPerDay) % 360.0;
+								float soilSeason = MathF.Sin((float)(soilDayOfYear / 360.0 * Math.PI * 2.0) - MathF.PI / 2f);
+								_ctx.SoilEngine.Tick(soilSeason, isRaining: false, stepMultiplier: 1);
 							}
 
 							if (_dispatchTimer >= dispatchInterval)

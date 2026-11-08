@@ -26,17 +26,16 @@ public sealed class FertilityMap
     public int Width { get; }
     public int Height { get; }
 
-    // Пинг-понг буферы плодородия 0..200.
-    // 512² × 4 байта × 2 буфера = 2МБ, тик раз в час игрового — не критично.
-    private int[] _cur;
-    private int[] _nxt;
+    // Пинг-понг буферы плодородия 0..200 (byte[] 256 КБ на 512², целиком в L2-кэше).
+    private byte[] _cur;
+    private byte[] _nxt;
 
     public FertilityMap(int width, int height)
     {
         Width = width;
         Height = height;
-        _cur = new int[width * height];
-        _nxt = new int[width * height];
+        _cur = new byte[width * height];
+        _nxt = new byte[width * height];
     }
 
     /// <summary>Плодородие клетки (0..200). OOB → 0.</summary>
@@ -53,11 +52,7 @@ public sealed class FertilityMap
         if ((uint)x >= (uint)Width || (uint)y >= (uint)Height)
             return;
         int i = y * Width + x;
-        int v = Math.Clamp(value, 0, MaxFertility);
-        // S-09 (бывший W-09 AUDIT-A): пишем в ОБА буфера. Tick работает по схеме
-        // двойной буферизации (cur → nxt, затем swap), и точечная запись только в
-        // _cur могла попасть в массив, который сразу после swap становится _nxt и
-        // целиком перезаписывается следующим тиком — правка терялась молча.
+        byte v = (byte)Math.Clamp(value, 0, MaxFertility);
         _cur[i] = v;
         _nxt[i] = v;
     }
@@ -66,23 +61,16 @@ public sealed class FertilityMap
     /// Истощение после сбора урожая (§20.4): значение × 0.8
     /// (100 → 80 → 64 → 51...). Кламп 0..200. _base НЕ трогаем —
     /// восстановление под паром идёт к начальному значению.
-    /// S-09 (бывший W-09 AUDIT-A): истощение применяется к ОБОИМ буферам, поэтому
-    /// swap в Tick его больше не «съедает». Раньше запись шла только в _cur, и если
-    /// сбор урожая совпадал с тиком, правка попадала в массив, который после swap
-    /// становился целевым буфером следующего тика и перезаписывался целиком.
-    /// Зовётся из CropGrowthManager.HarvestCrop (параллельный Commit).
-    /// L-03: нарушение слоёв (core → simulation/ui) — правило и список см. docs/ARCHITECTURE.md §7.1
     /// </summary>
     public void DrainAfterHarvest(int x, int y)
     {
         if ((uint)x >= (uint)Width || (uint)y >= (uint)Height)
             return;
         int i = y * Width + x;
-        int v = (int)(_cur[i] * 0.8f);
-        if (v < 0) v = 0;
-        else if (v > MaxFertility) v = MaxFertility;
-        _cur[i] = v;
-        _nxt[i] = v;
+        int v = (_cur[i] * 819) >> 10; // * 0.8 без float
+        byte b = (byte)Math.Clamp(v, 0, MaxFertility);
+        _cur[i] = b;
+        _nxt[i] = b;
     }
 
     // Базовое значение для восстановления под паром (п.19.6-П3): клетка без
@@ -178,13 +166,13 @@ public sealed class FertilityMap
                         v = (int)(v * 0.9f); // застой воды в низине
                 }
 
-                _cur[idx] = Math.Clamp(v, 0, MaxFertility);
+                _cur[idx] = (byte)Math.Clamp(v, 0, MaxFertility);
             }
 
         // Якорь восстановления под паром (п.19.6-П3).
         _base = new byte[_cur.Length];
         for (int i = 0; i < _cur.Length; i++)
-            _base[i] = (byte)Math.Clamp(_cur[i], 0, 255);
+            _base[i] = _cur[i];
         Array.Copy(_cur, _nxt, _cur.Length);
     }
 
@@ -198,14 +186,16 @@ public sealed class FertilityMap
     /// <param name="ground">Типы поверхности (для сброса воды/гор в 0).</param>
     /// <param name="forestMask">Лес удерживает/удобряет. Может быть null.</param>
     /// <param name="farmMask">Огород истощает. Может быть null.</param>
-    public void Tick(TileType[,] ground, bool[] forestMask, bool[] farmMask)
+    /// <param name="stepMultiplier">Множитель шага при перемотке времени (устраняет 8-кратные циклы).</param>
+    public void Tick(TileType[,] ground, bool[] forestMask, bool[] farmMask, int stepMultiplier = 1)
     {
         int w = Width;
         int h = Height;
-        int[] cur = _cur;
-        int[] nxt = _nxt;
+        byte[] cur = _cur;
+        byte[] nxt = _nxt;
         int gw = ground != null ? ground.GetLength(0) : 0;
         int gh = ground != null ? ground.GetLength(1) : 0;
+        int diffShift = Math.Max(3, 6 - (stepMultiplier > 1 ? 1 : 0));
 
         Parallel.For(0, h, y =>
         {
@@ -231,25 +221,24 @@ public sealed class FertilityMap
                 int avg = (left + right + up + down) >> 2;
 
                 // Диффузия /64: почти геология, выравнивание за дни.
-                int v = me + ((avg - me) >> 6);
+                int v = me + (((avg - me) * stepMultiplier) >> diffShift);
 
                 // Лес слегка удобряет: ~1/8 клеток +1 за тик (органика).
                 if (forestMask != null && forestMask[i]
                     && (((x * 73856093) ^ (y * 19349663)) & 7) == 0)
-                    v += 1;
+                    v += 1 * stepMultiplier;
                 // Огород истощает: −1 за тик (вынос питательных веществ).
                 if (farmMask != null && farmMask[i])
-                    v -= 1;
+                    v -= 1 * stepMultiplier;
                 // Пар (п.19.6-П3): без огорода — медленное восстановление
                 // к базовому (+1 раз в 8 тиков, только вверх, не выше базы).
-                // ST-31: 32-битный хеш без деления idiv на 1 млн клеток
                 else if (_base != null && me < _base[i]
                     && (((x * 83492791) ^ (int)((uint)(y * 83492791) >>> 16)) & 7) == 0)
-                    v = Math.Min(v + 1, _base[i]);
+                    v = Math.Min(v + 1 * stepMultiplier, (int)_base[i]);
 
                 if (v < 0) v = 0;
                 else if (v > MaxFertility) v = MaxFertility;
-                nxt[i] = v;
+                nxt[i] = (byte)v;
             }
         });
 

@@ -1,0 +1,9 @@
+{
+  "magic_1024": 22,
+  "coverage_512": 3,
+  "is_island_cell_defs": 2,
+  "decor_pass_defs": 2,
+  "core_to_ui": 0,
+  "bypass_generator_sim": 0,
+  "bypass_generator_ui": 0
+}

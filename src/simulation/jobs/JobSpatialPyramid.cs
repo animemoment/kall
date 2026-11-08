@@ -112,6 +112,11 @@ public sealed class JobSpatialPyramid
     // Клампы отката самого клейма (_assignedWorkers): в норме 0 — откат идёт 1→0.
     private int _claimClampHits;
 
+    // J2-01/S-08: сколько раз регистрация отклонена, потому что цель вне острова 1024.
+    // Пирамида индексирует только остров; раньше такие цели давали chunkIndex >= 4096
+    // (IndexOutOfRangeException) либо тихо попадали в чужой чанк (алиасинг).
+    private int _outOfIslandJobs;
+
     // Индекс позиции внутри чанка (для O(1) удаления из чанка)
     private int[] _chunkJobIndex;
 
@@ -174,6 +179,9 @@ public sealed class JobSpatialPyramid
     private int _cdFlagInFlight;  // CD-мутации флага «в полёте»
 
     public int UnclaimedCount => Volatile.Read(ref _unclaimedCount);
+
+    /// <summary>J2-01/S-08: регистрации с целью вне острова 1024 (отклонены, диагностика).</summary>
+    public int OutOfIslandRejectedJobs => Volatile.Read(ref _outOfIslandJobs);
     public int TotalCount => Volatile.Read(ref _totalCount);
 
     /// <summary>
@@ -261,13 +269,20 @@ public sealed class JobSpatialPyramid
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int GetChunkIndexStatic(int tileX, int tileY)
     {
-        // Индексы валидны (0..1023): JobValidator.IsTargetWalkable отбрасывает
-        // работы c TargetX/TargetY >= MapWidth. Кламп больше не нужен — он
-        // схлопывал всё, что >= 512, в последний чанк (баг J-05).
+        // Индексы валидны (0..1023). J2-01/S-08: при цели вне острова возвращаем -1.
+        // Раньше `cy * ChunkDim + cx` давал >= ChunkCount (IndexOutOfRangeException)
+        // либо тихо попадал в чужой чанк (алиасинг). Вызывающие обязаны проверить -1.
         int cx = tileX >> ChunkShift;
         int cy = tileY >> ChunkShift;
+        if ((uint)cx >= (uint)ChunkDim || (uint)cy >= (uint)ChunkDim)
+            return -1;
         return cy * ChunkDim + cx;
     }
+
+    /// <summary>J2-01/S-08: цель внутри острова 1024×1024 (иначе пирамида её не индексирует).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool IsIslandTarget(int tileX, int tileY) =>
+        (uint)tileX < (uint)(ChunkDim << ChunkShift) && (uint)tileY < (uint)(ChunkDim << ChunkShift);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int GetMacroIndex(int tileX, int tileY)
@@ -393,6 +408,14 @@ public sealed class JobSpatialPyramid
 
     public int RegisterJob(JobData job)
     {
+        // J2-01/S-08: цель вне острова 1024 в эту пирамиду не индексируется.
+        // Пока исполнителя мира (S-07) нет, отказываем явно (-1), а не падаем.
+        if (!IsIslandTarget(job.TargetX, job.TargetY))
+        {
+            Interlocked.Increment(ref _outOfIslandJobs);
+            return -1;
+        }
+
         lock (_registerLock)
         {
             var key = (job.TargetX, job.TargetY, job.TypeId);
@@ -519,6 +542,12 @@ public sealed class JobSpatialPyramid
 
     private void RegisterJobLocked(JobData job)
     {
+        // J2-01/S-08: то же, что в RegisterJob, для батч-пути.
+        if (!IsIslandTarget(job.TargetX, job.TargetY))
+        {
+            Interlocked.Increment(ref _outOfIslandJobs);
+            return;
+        }
         var key = (job.TargetX, job.TargetY, job.TypeId);
         if (_posMap.ContainsKey(key))
             return;

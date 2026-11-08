@@ -1,0 +1,1575 @@
+﻿{
+  "files": [
+    {
+      "file": "src/ui/renderers/MapRenderer.cs",
+      "layer": "ui",
+      "markers": {
+        "static_singleton": 1,
+        "interlocked": 1,
+        "concurrent_collection": 2,
+        "thread": 2,
+        "volatile": 3,
+        "jobsystem": 3
+      },
+      "shared_field_writes": 31,
+      "types": [
+        "MapMode",
+        "MapRenderer",
+        "PendingCell"
+      ],
+      "risk": 4
+    },
+    {
+      "file": "src/simulation/jobs/JobDispatcher.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "interlocked": 2,
+        "volatile": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "JobDispatcher"
+      ],
+      "risk": 4
+    },
+    {
+      "file": "src/ui/controllers/WorkZoneController.cs",
+      "layer": "ui",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 6,
+      "types": [
+        "WorkZoneController"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/building/BlueprintManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 5,
+      "types": [
+        "BlueprintManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/ui/controllers/FarmController.cs",
+      "layer": "ui",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 4,
+      "types": [
+        "FarmController"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/ui/controllers/HUDController.cs",
+      "layer": "ui",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 4,
+      "types": [
+        "HUDController"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/building/BuildingManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 2,
+      "types": [
+        "BuildingManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "scenes/main/Main.cs",
+      "layer": "scenes",
+      "markers": {
+        "interlocked": 2,
+        "thread": 3
+      },
+      "shared_field_writes": 1,
+      "types": [
+        "Main"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/core/common/GameProfiler.cs",
+      "layer": "core",
+      "markers": {
+        "interlocked": 9,
+        "concurrent_collection": 3
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "GameProfiler",
+        "MetricSnapshot",
+        "MetricEntry",
+        "BalanceSnapshot",
+        "BalanceEntry",
+        "ProfileScope"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/core/common/ProfilerLogService.cs",
+      "layer": "core",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 29
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "AiReportContext",
+        "SpikeRecord",
+        "ProfilerLogService",
+        "SecondEntry",
+        "ScriptSummary",
+        "InputEntry"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/core/common/SimulationWatchService.cs",
+      "layer": "core",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 6
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "SimulationWatchService",
+        "Record"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/core/world/streaming/storage/WorldChunkDeltaCodec.cs",
+      "layer": "core",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorldChunkDeltaRecord",
+        "WorldChunkDelta",
+        "in",
+        "WorldChunkDeltaCodec",
+        "is",
+        "SortEntry",
+        "SortEntryComparer"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/TimeManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "volatile": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "TimeManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/agents/AgentSpatialGrid.cs",
+      "layer": "simulation",
+      "markers": {
+        "interlocked": 3,
+        "jobsystem": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "AgentSpatialGrid"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/agents/FlowFieldManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "concurrent_collection": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "FlowFieldManager",
+        "SearchBuffers"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/agents/WorkerAssignmentSystem.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorkerAssignmentSystem"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/agents/WorkerZoneJobSystem.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorkerZoneJobSystem"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/building/ConstructionPipeline.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "ConstructionPipeline"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/building/WorkProgressTracker.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "concurrent_collection": 4
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorkProgressTracker",
+        "Entry"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/farming/CropGrowthManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 12,
+        "concurrent_collection": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "CropGrowthManager",
+        "enumerator"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/farming/FarmJobManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 16,
+        "jobsystem": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "FarmJobManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/farming/FarmZoneManagerFacade.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 6
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "FarmZoneManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/gpu/GpuAgentTransformSimulator.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "GpuAgentTransformSimulator"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/gpu/GpuFlowFieldSimulator.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "GpuFlowFieldSimulator"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/gpu/GpuHumiditySimulator.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "jobsystem": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "GpuHumiditySimulator"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/items/DemandRegistry.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 6
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "DemandType",
+        "DemandTicket",
+        "DemandRegistry"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/items/GroundItemManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 16,
+        "interlocked": 4,
+        "concurrent_collection": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "GroundItemManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/items/ResourceBroker.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "ResourceBroker"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/items/StockpileManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 24,
+        "interlocked": 5,
+        "concurrent_collection": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "StockpileManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/jobs/JobBroker.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "JobBroker"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/jobs/JobPriorityManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "JobPriorityManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/jobs/JobValidator.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "JobValidator"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/pathfinding/HierarchicalPathfinder.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 5,
+        "interlocked": 34,
+        "concurrent_collection": 4,
+        "volatile": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "HierarchicalPathfinder",
+        "SearchBuffers",
+        "Dir"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/scheduling/AdaptivePartitioner.cs",
+      "layer": "simulation",
+      "markers": {
+        "interlocked": 3,
+        "jobsystem": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "AdaptivePartitioner"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/scheduling/DynamicWorkScheduler.cs",
+      "layer": "simulation",
+      "markers": {
+        "interlocked": 13,
+        "concurrent_collection": 9,
+        "jobsystem": 4
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "DynamicWorkScheduler",
+        "IRangeBody",
+        "TwoArgBody",
+        "ThreeArgBody"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/scheduling/WorkStealingQueue.cs",
+      "layer": "simulation",
+      "markers": {
+        "interlocked": 7,
+        "volatile": 2
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorkStealingQueue"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/simd/SimdMovementBatch.cs",
+      "layer": "simulation",
+      "markers": {
+        "interlocked": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "SimdMovementBatch"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/stones/StoneJobManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 8
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "StoneJobManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/structures/ConstructionManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 16
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "ConstructionManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/structures/StructureManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 11
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "StructureManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/trees/TreeJobManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 8
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "TreeJobManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/zones/WorkZone.cs",
+      "layer": "simulation",
+      "markers": {
+        "interlocked": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorkZone"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/zones/WorkZoneManagerFacade.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 2
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorkZoneManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/zones/Zone.cs",
+      "layer": "simulation",
+      "markers": {
+        "interlocked": 1,
+        "volatile": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "ZoneKind",
+        "Zone"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/zones/ZoneJobRouter.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 4,
+        "interlocked": 3,
+        "concurrent_collection": 8
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "ZoneJobRouter",
+        "ZoneJob",
+        "QueuedJob",
+        "UncoveredEntry",
+        "ZoneGate"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/zones/ZoneManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 16,
+        "interlocked": 3,
+        "volatile": 4
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "ZoneManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/ui/PlayerInteractionManager.cs",
+      "layer": "ui",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "PlayerInteractionManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/ui/controllers/BuildMenuController.cs",
+      "layer": "ui",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "BuildMenuController",
+        "BuildMenuItem"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/ui/streaming/WorldMapOverlay.cs",
+      "layer": "ui",
+      "markers": {
+        "interlocked": 2,
+        "thread": 1,
+        "volatile": 1,
+        "jobsystem": 2
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorldMapOverlay",
+        "GenResult"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "tests/BenchJobAssignment.cs",
+      "layer": "tests",
+      "markers": {
+        "interlocked": 2
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "BenchJobAssignment",
+        "CountingTreeHandler"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "tests/TestJobRaceStress.cs",
+      "layer": "tests",
+      "markers": {
+        "interlocked": 4,
+        "concurrent_collection": 3,
+        "thread": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "TestJobRaceStress",
+        "AlwaysYesHandler"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/core/common/SimEvents.cs",
+      "layer": "core",
+      "markers": {
+        "lock": 5,
+        "interlocked": 2
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "SimEvents",
+        "ScopeSample",
+        "Ev",
+        "Capture"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/core/world/FertilityMap.cs",
+      "layer": "core",
+      "markers": {
+        "jobsystem": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "FertilityMap"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/core/world/HumidityMap.cs",
+      "layer": "core",
+      "markers": {
+        "jobsystem": 2
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "HumidityMap"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/core/world/climate/WorldClimateProvider.cs",
+      "layer": "core",
+      "markers": {
+        "concurrent_collection": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorldClimateProvider"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/core/world/generation/UnifiedWorldGenerator.cs",
+      "layer": "core",
+      "markers": {
+        "jobsystem": 3
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "UnifiedWorldGenerator"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/core/world/generation/WorldGenV2.cs",
+      "layer": "core",
+      "markers": {
+        "jobsystem": 2
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorldGenV2",
+        "struct",
+        "Area"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/core/world/mutation/IslandOverrideStore.cs",
+      "layer": "core",
+      "markers": {
+        "lock": 13
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "IslandOverrideStore",
+        "CellKey"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/core/world/mutation/IslandStateReplay.cs",
+      "layer": "core",
+      "markers": {
+        "thread": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "IslandStateReplayResult",
+        "IslandStateReplay"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/core/world/streaming/coordinator/WorldSaveCoordinator.cs",
+      "layer": "core",
+      "markers": {
+        "lock": 2
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "struct",
+        "WorldSaveCoordinator"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/core/world/streaming/generation/WorldChunkGeneratorTiming.cs",
+      "layer": "core",
+      "markers": {
+        "lock": 5
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorldChunkGeneratorTiming",
+        "struct",
+        "struct"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/core/world/streaming/integration/WorldCellQuery.cs",
+      "layer": "core",
+      "markers": {
+        "jobsystem": 2
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorldCellQuery",
+        "BulkCellSampler"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/core/world/streaming/runtime/WorldChunkStreamer.cs",
+      "layer": "core",
+      "markers": {
+        "lock": 21,
+        "interlocked": 1,
+        "thread": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "struct",
+        "struct",
+        "WorldChunkStreamer",
+        "UnloadWork",
+        "struct"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/core/world/streaming/storage/WorldChunkStore.cs",
+      "layer": "core",
+      "markers": {
+        "lock": 4
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorldChunkStore"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/simulation/AgentSimulationThread.cs",
+      "layer": "simulation",
+      "markers": {
+        "lock": 2,
+        "interlocked": 2,
+        "concurrent_collection": 2,
+        "thread": 6,
+        "volatile": 9
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "AgentSimTickGate",
+        "AgentSimulationThread",
+        "SimulationBackend",
+        "Phase3aWorkerSlot"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/simulation/CellProgressStore.cs",
+      "layer": "simulation",
+      "markers": {
+        "lock": 5
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "CellProgressStore"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/simulation/ParallelRng.cs",
+      "layer": "simulation",
+      "markers": {
+        "lock": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "ParallelRng"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/simulation/agents/AgentMovementService.cs",
+      "layer": "simulation",
+      "markers": {
+        "lock": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "AgentMovementService"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/simulation/agents/FlatIdleWorkerPool.cs",
+      "layer": "simulation",
+      "markers": {
+        "lock": 4
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "FlatIdleWorkerPool"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/simulation/agents/IdleWorkerSpatialGrid.cs",
+      "layer": "simulation",
+      "markers": {
+        "lock": 11,
+        "interlocked": 5
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "IdleWorkerSpatialGrid"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/simulation/jobs/GenericJobSpatialIndex.cs",
+      "layer": "simulation",
+      "markers": {
+        "lock": 12,
+        "interlocked": 13,
+        "volatile": 2
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "GenericJobSpatialIndex"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/simulation/jobs/JobSpatialPyramid.cs",
+      "layer": "simulation",
+      "markers": {
+        "lock": 17,
+        "interlocked": 34,
+        "concurrent_collection": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "JobSpatialPyramid"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/simulation/scheduling/IDynamicWorkScheduler.cs",
+      "layer": "simulation",
+      "markers": {
+        "concurrent_collection": 3
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "SchedulerStats",
+        "IDynamicWorkScheduler"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/simulation/zones/ZoneCoverageMap.cs",
+      "layer": "simulation",
+      "markers": {
+        "lock": 3,
+        "volatile": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "ZoneCoverageMap"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "src/ui/controllers/MainMenuController.cs",
+      "layer": "ui",
+      "markers": {
+        "thread": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "MainMenuController"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "tests/Phase1StressTestRunner.cs",
+      "layer": "tests",
+      "markers": {
+        "thread": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "Phase1StressTestRunner"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "tests/Phase5StressTestRunner.cs",
+      "layer": "tests",
+      "markers": {
+        "thread": 2
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "Phase5StressTestRunner",
+        "MockBlockWorld",
+        "MockResidentWorld"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "tests/TerrainWindowBench.cs",
+      "layer": "tests",
+      "markers": {
+        "jobsystem": 3
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "TerrainWindowBench"
+      ],
+      "risk": 2
+    },
+    {
+      "file": "tests/test_zone_router.cs",
+      "layer": "tests",
+      "markers": {
+        "concurrent_collection": 2,
+        "thread": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "test_zone_router"
+      ],
+      "risk": 2
+    }
+  ],
+  "count": 79,
+  "top": [
+    {
+      "file": "src/ui/renderers/MapRenderer.cs",
+      "layer": "ui",
+      "markers": {
+        "static_singleton": 1,
+        "interlocked": 1,
+        "concurrent_collection": 2,
+        "thread": 2,
+        "volatile": 3,
+        "jobsystem": 3
+      },
+      "shared_field_writes": 31,
+      "types": [
+        "MapMode",
+        "MapRenderer",
+        "PendingCell"
+      ],
+      "risk": 4
+    },
+    {
+      "file": "src/simulation/jobs/JobDispatcher.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "interlocked": 2,
+        "volatile": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "JobDispatcher"
+      ],
+      "risk": 4
+    },
+    {
+      "file": "src/ui/controllers/WorkZoneController.cs",
+      "layer": "ui",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 6,
+      "types": [
+        "WorkZoneController"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/building/BlueprintManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 5,
+      "types": [
+        "BlueprintManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/ui/controllers/FarmController.cs",
+      "layer": "ui",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 4,
+      "types": [
+        "FarmController"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/ui/controllers/HUDController.cs",
+      "layer": "ui",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 4,
+      "types": [
+        "HUDController"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/building/BuildingManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 2,
+      "types": [
+        "BuildingManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "scenes/main/Main.cs",
+      "layer": "scenes",
+      "markers": {
+        "interlocked": 2,
+        "thread": 3
+      },
+      "shared_field_writes": 1,
+      "types": [
+        "Main"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/core/common/GameProfiler.cs",
+      "layer": "core",
+      "markers": {
+        "interlocked": 9,
+        "concurrent_collection": 3
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "GameProfiler",
+        "MetricSnapshot",
+        "MetricEntry",
+        "BalanceSnapshot",
+        "BalanceEntry",
+        "ProfileScope"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/core/common/ProfilerLogService.cs",
+      "layer": "core",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 29
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "AiReportContext",
+        "SpikeRecord",
+        "ProfilerLogService",
+        "SecondEntry",
+        "ScriptSummary",
+        "InputEntry"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/core/common/SimulationWatchService.cs",
+      "layer": "core",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 6
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "SimulationWatchService",
+        "Record"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/core/world/streaming/storage/WorldChunkDeltaCodec.cs",
+      "layer": "core",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorldChunkDeltaRecord",
+        "WorldChunkDelta",
+        "in",
+        "WorldChunkDeltaCodec",
+        "is",
+        "SortEntry",
+        "SortEntryComparer"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/TimeManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "volatile": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "TimeManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/agents/AgentSpatialGrid.cs",
+      "layer": "simulation",
+      "markers": {
+        "interlocked": 3,
+        "jobsystem": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "AgentSpatialGrid"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/agents/FlowFieldManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "concurrent_collection": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "FlowFieldManager",
+        "SearchBuffers"
+      ],
+      "risk": 3
+    }
+  ],
+  "global_state_mutators": [
+    {
+      "file": "src/ui/renderers/MapRenderer.cs",
+      "layer": "ui",
+      "markers": {
+        "static_singleton": 1,
+        "interlocked": 1,
+        "concurrent_collection": 2,
+        "thread": 2,
+        "volatile": 3,
+        "jobsystem": 3
+      },
+      "shared_field_writes": 31,
+      "types": [
+        "MapMode",
+        "MapRenderer",
+        "PendingCell"
+      ],
+      "risk": 4
+    },
+    {
+      "file": "src/simulation/jobs/JobDispatcher.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "interlocked": 2,
+        "volatile": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "JobDispatcher"
+      ],
+      "risk": 4
+    },
+    {
+      "file": "src/ui/controllers/WorkZoneController.cs",
+      "layer": "ui",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 6,
+      "types": [
+        "WorkZoneController"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/building/BlueprintManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 5,
+      "types": [
+        "BlueprintManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/ui/controllers/FarmController.cs",
+      "layer": "ui",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 4,
+      "types": [
+        "FarmController"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/ui/controllers/HUDController.cs",
+      "layer": "ui",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 4,
+      "types": [
+        "HUDController"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/building/BuildingManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 2,
+      "types": [
+        "BuildingManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/core/common/ProfilerLogService.cs",
+      "layer": "core",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 29
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "AiReportContext",
+        "SpikeRecord",
+        "ProfilerLogService",
+        "SecondEntry",
+        "ScriptSummary",
+        "InputEntry"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/core/common/SimulationWatchService.cs",
+      "layer": "core",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 6
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "SimulationWatchService",
+        "Record"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/core/world/streaming/storage/WorldChunkDeltaCodec.cs",
+      "layer": "core",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorldChunkDeltaRecord",
+        "WorldChunkDelta",
+        "in",
+        "WorldChunkDeltaCodec",
+        "is",
+        "SortEntry",
+        "SortEntryComparer"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/TimeManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "volatile": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "TimeManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/agents/FlowFieldManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "concurrent_collection": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "FlowFieldManager",
+        "SearchBuffers"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/agents/WorkerAssignmentSystem.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorkerAssignmentSystem"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/agents/WorkerZoneJobSystem.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorkerZoneJobSystem"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/building/ConstructionPipeline.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "ConstructionPipeline"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/building/WorkProgressTracker.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "concurrent_collection": 4
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "WorkProgressTracker",
+        "Entry"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/farming/CropGrowthManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 12,
+        "concurrent_collection": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "CropGrowthManager",
+        "enumerator"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/farming/FarmJobManager.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 16,
+        "jobsystem": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "FarmJobManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/farming/FarmZoneManagerFacade.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 6
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "FarmZoneManager"
+      ],
+      "risk": 3
+    },
+    {
+      "file": "src/simulation/gpu/GpuAgentTransformSimulator.cs",
+      "layer": "simulation",
+      "markers": {
+        "static_singleton": 1,
+        "lock": 1
+      },
+      "shared_field_writes": 0,
+      "types": [
+        "GpuAgentTransformSimulator"
+      ],
+      "risk": 3
+    }
+  ]
+}

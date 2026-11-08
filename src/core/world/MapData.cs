@@ -22,6 +22,8 @@ public sealed class MapData
     public HumidityMap Humidity { get; }
     /// <summary>Плодородие почвы 0..200. СВОЙ слой шума (сид +4242), живёт тиками.</summary>
     public FertilityMap Fertility { get; }
+    /// <summary>Гибридный двухконтурный движок почвы (Sparse Farm Domain + Event-Driven Wild Soil).</summary>
+    public Game.Core.Soil.HybridSoilEngine SoilEngine { get; }
     /// <summary>
     /// Визуальный биом клетки (<see cref="WorldStreaming.BiomeType"/>), выведенный из
     /// климата мировой карты. ГЕЙМПЛЕЙ определяется только <see cref="Ground"/>
@@ -80,6 +82,7 @@ public sealed class MapData
         Variant = new byte[width, height];
         Humidity = new HumidityMap(width, height);
         Fertility = new FertilityMap(width, height);
+        SoilEngine = new Game.Core.Soil.HybridSoilEngine(width, height);
         // Руда: плоские row-major массивы (индекс = y*Width + x). 6 МБ на 1024² —
         // плата за O(1) доступ в горячем пути добычи/рендера.
         int cells = width * height;

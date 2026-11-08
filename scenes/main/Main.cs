@@ -183,6 +183,21 @@ public partial class Main : Node2D
 		catch (Exception ex)
 		{
 			GD.PrintErr($"[World] {zoneId}: островные дельты не загружены — {ex.Message}");
+			// N-02: битый/несовместимый файл нельзя молча затирать следующим сохранением
+			// (Save перезапишет его пустым). Уводим в карантин, чтобы данные можно было спасти.
+			try
+			{
+				if (System.IO.File.Exists(path))
+				{
+					string quarantine = path + $".corrupt-{DateTime.UtcNow:yyyyMMdd-HHmmss}";
+					System.IO.File.Move(path, quarantine, overwrite: true);
+					GD.PrintErr($"[World] {zoneId}: битый файл дельт перемещён в {quarantine}");
+				}
+			}
+			catch (Exception moveEx)
+			{
+				GD.PrintErr($"[World] {zoneId}: карантин файла дельт не удался — {moveEx.Message}");
+			}
 		}
 		return _islandDeltas;
 	}
@@ -817,6 +832,12 @@ public partial class Main : Node2D
 
 	private float _worldPlanPumpTimer;
 	private readonly List<WorldPlan> _reusableWorldPlans = new(64);
+	// S-07 / решение владельца 24.Б: полноценный исполнитель мира ещё не реализован.
+	// Островные менеджеры работают в координатах 0..1023, поэтому мировые планы
+	// до фазы C остаются планами (иначе в их коллекции попадает мусор, а пирамида
+	// работ отклоняет такие цели — J2-01). Включать здесь, когда исполнитель готов.
+	private bool _worldExecutorEnabled;
+	private bool _worldPlansDeferredLogged;
 
 	private void PumpWorldPlans(float delta)
 	{
@@ -834,6 +855,17 @@ public partial class Main : Node2D
 		int planCount = _worldView.CollectPendingPlans(_reusableWorldPlans, focusX, focusY, 64);
 		if (planCount == 0)
 			return;
+
+		// S-07 (24.Б): пока исполнителя мира нет — планы за кромкой не превращаем в работы.
+		if (!_worldExecutorEnabled)
+		{
+			if (!_worldPlansDeferredLogged)
+			{
+				_worldPlansDeferredLogged = true;
+				GD.Print("[MAIN] Мировые планы за кромкой пока не исполняются: исполнитель мира (S-07) не реализован — см. _plan/TARGETS_PLAN.md, фаза C");
+			}
+			return;
+		}
 
 		for (int i = 0; i < planCount; i++)
 		{
@@ -928,6 +960,11 @@ public partial class Main : Node2D
 		DemandRegistry.Instance.ClearAll();
 		HierarchicalPathfinder.Instance.Reset();
 		FlowFieldManager.Instance.ClearCache();
+		// P3: смена мира/колонии — полный сброс HPA*-графа порталов и кэша маршрутов.
+		Game.Simulation.Pathfinding.UnifiedPathfinder.Instance.ResetWorld();
+		// P1 (PF-02/PF-03): следы стен прошлой колонии не должны блокировать путь
+		// в новой (BlockedCells — статический оверлей, переживает смену региона).
+		Game.Core.World.WorldCostCache.Clear();
 		MapRenderer.ClearTileSetCaches();
 		Game.Core.WorldClimate.WorldClimateProvider.ClearCache();
 		JobPriorityManager.Instance.Reset();

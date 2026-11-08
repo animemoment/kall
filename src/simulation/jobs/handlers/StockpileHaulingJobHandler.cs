@@ -151,6 +151,11 @@ public sealed class StockpileHaulingJobHandler : IJobHandler
                     {
                         int diff = reserved - taken;
                         StockpileManager.Instance.CancelReservation(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex], diff);
+                        // H-01: зеркально снимаем НАЗЕМНЫЙ резерв на разницу. Раньше
+                        // снималась только складская бронь, а наземный резерв оставался
+                        // навсегда: _totalAvailableAny занижался, и haul-работы (вместе с
+                        // поиском еды) переставали выдаваться при непустых кучах.
+                        GroundItemManager.Instance.ReleaseReservation(sx, sy, diff);
                     }
                     pool.ReservedItemCount[agentIndex] = 0;
                     // Тип берём из факта кучи, а не захардкоженный Log:
@@ -164,6 +169,8 @@ public sealed class StockpileHaulingJobHandler : IJobHandler
                 else
                 {
                     StockpileManager.Instance.CancelReservation(pool.TargetCellX[agentIndex], pool.TargetCellY[agentIndex], reserved);
+                    // H-01: куча исчезла/пуста — снять и наземный резерв (иначе он висит вечно).
+                    GroundItemManager.Instance.ReleaseReservation(sx, sy, reserved);
                     pool.ReservedItemCount[agentIndex] = 0;
                     // Куча разобрана/пуста — транзиентно: работу оставляем,
                     // Sweep/Spawn пересоздадут при появлении предметов.

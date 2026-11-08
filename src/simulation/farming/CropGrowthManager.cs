@@ -272,6 +272,7 @@ public sealed class CropGrowthManager
 
         // §20.4: сбор истощает клетку — плодородие × 0.8.
         ctx?.Fertility?.DrainAfterHarvest(x, y);
+        ctx?.SoilEngine?.DrainAfterHarvest(x, y, cropType);
 
         // Если автопосадка включена — ставим задачу на новую посадку
         FarmZone currentZone = null;

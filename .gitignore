@@ -1,6 +1,5 @@
 # Godot 4 engine cache
 .godot/
-build/
 
 # C# / .NET build artifacts
 bin/

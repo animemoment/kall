@@ -10,6 +10,10 @@ public sealed class SimulationContext
     public HumidityMap Humidity { get; }
     /// <summary>Плодородие почвы 0..200. Может быть null (старые вызовы) — рост тогда без множителя.</summary>
     public FertilityMap Fertility { get; }
+    /// <summary>Гибридный двухконтурный движок почвы (Sparse Farm Domain + Event-Driven Wild Soil).</summary>
+    public Game.Core.Soil.HybridSoilEngine SoilEngine { get; }
+    /// <summary>Next-Gen Dual-Domain Pull Job System (Workplaces + Spatial Grid).</summary>
+    public Game.Simulation.NextGenJobs.NextGenJobSystem JobsNextGen { get; }
     public bool[,] TreeOnGrass { get; }
     /// <summary>Каменные россыпи (добыча, Mining). Может быть null в старых тестах.</summary>
     public bool[,] StoneOnGrass { get; }
@@ -50,11 +54,15 @@ public sealed class SimulationContext
         byte[] oreType = null,
         byte[] oreState = null,
         ushort[] oreReserve = null,
-        ushort[] oreReserveInitial = null)
+        ushort[] oreReserveInitial = null,
+        Game.Core.Soil.HybridSoilEngine soilEngine = null,
+        Game.Simulation.NextGenJobs.NextGenJobSystem jobsNextGen = null)
     {
         Ground = ground ?? throw new ArgumentNullException(nameof(ground));
         Humidity = humidity; // может быть null (старые вызовы) — рост тогда без множителя
         Fertility = fertility; // может быть null — рост тогда без множителя плодородия
+        SoilEngine = soilEngine;
+        JobsNextGen = jobsNextGen ?? Game.Simulation.NextGenJobs.NextGenJobSystem.Instance;
         TreeOnGrass = treeOnGrass ?? throw new ArgumentNullException(nameof(treeOnGrass));
         StoneOnGrass = stoneOnGrass; // null = карты без камня (старые сейвы/тесты)
         SolidWalls = solidWalls ?? throw new ArgumentNullException(nameof(solidWalls));

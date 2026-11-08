@@ -21,6 +21,42 @@ public sealed class UnifiedPathfinder
     private readonly LocalChunkAStar _localAStar = new();
     private readonly StreamingMacroPathfinder _macroPathfinder = new();
 
+    // P3: HPA*-слой (порталы чанков + кэш «следующий портал»).
+    // ВАЖНО: по умолчанию ВЫКЛЮЧЕН. При массовой выдаче работ (ферма/склад) 10k агентов
+    // одновременно промахиваются в кэш, и ленивая постройка чанков (FillChunkMask +
+    // внутричанковый A*) даёт пики в сотни мс (в игре это видно как «0x»/стоп симуляции).
+    // Включать только после: (а) прогрева графа в фоне, (б) версии по региону,
+    // (в) бюджета на постройку чанка. До этого — старый проверенный макропуть.
+    public static bool UseHpaLongPaths = false;
+
+    private readonly ChunkPortalGraph _portalGraph;
+    private readonly PortalPassability _portalPass = new();
+    private readonly long[] _portalXs = new long[2048];
+    private readonly long[] _portalYs = new long[2048];
+
+    public UnifiedPathfinder()
+    {
+        _portalGraph = new ChunkPortalGraph(_portalPass);
+    }
+
+    /// <summary>HPA*-граф (диагностика/тесты).</summary>
+    public ChunkPortalGraph PortalGraph => _portalGraph;
+
+    /// <summary>Изменилась проходимость клетки: ленивая инвалидация графа и кэша.</summary>
+    public void NotifyPassabilityChanged(long worldX, long worldY)
+        => _portalGraph.NoteCellChanged(worldX, worldY);
+
+    /// <summary>Смена мира/колонии: полный сброс графа и кэша маршрутов.</summary>
+    public void ResetWorld() => _portalGraph.InvalidateAll();
+
+    /// <summary>Адаптер проходимости: единый источник — <see cref="WorldCostCache"/>.</summary>
+    private sealed unsafe class PortalPassability : IPassabilitySource
+    {
+        public bool IsWalkable(long x, long y) => WorldCostCache.IsWalkable(x, y);
+        public void FillChunkMask(long cx, long cy, ulong* mask64)
+            => WorldCostCache.CopyChunkBitmask(cx, cy, mask64);
+    }
+
     private readonly ThreadLocal<LocalChunkAStar.LocalScratchpad> _scratchpad =
         new(() => new LocalChunkAStar.LocalScratchpad());
 
@@ -85,7 +121,23 @@ public sealed class UnifiedPathfinder
             // Если внутри чанка путь заблокирован (например, река режет чанк), переходим к макро-поиску
         }
 
-        // 2. СЛУЧАЙ Б: Дальний путь через несколько чанков / континент
+        // 2. P3: HPA* — дальний путь по порталам чанков (правильная топология:
+        // вода/горы/стены/двери учтены через WorldCostCache). Кэш даёт тёплый путь
+        // за десятки мкс; при промахе — A* по порталам (~мс), затем локальная доработка
+        // первого/последнего чанка остаётся за вызывающим.
+        int portalW = 0;
+        if (UseHpaLongPaths)
+            portalW = _portalGraph.TryFindPortalPath(fromX, fromY, toX, toY, _portalXs, _portalYs);
+        if (portalW >= 2)
+        {
+            int n = Math.Min(portalW, outWaypoints.Length);
+            for (int i = 0; i < n; i++)
+                outWaypoints[i] = new Long2(_portalXs[i], _portalYs[i]);
+            waypointCount = n;
+            return true;
+        }
+
+        // 3. Fallback: старый макро-путь (прямая + локальный шаг), если граф не дал путь.
         var macroRes = _macroPathfinder.FindMacroPath(new Long2(fromX, fromY), new Long2(toX, toY));
         if (!macroRes.Success || macroRes.WaypointCount < 2) return false;
 

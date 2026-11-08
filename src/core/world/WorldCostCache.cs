@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using Game.Core.WorldStreaming;
 
 namespace Game.Core.World;
@@ -57,14 +58,23 @@ public static class WorldCostCache
     /// </summary>
     public static bool MarkBlocked(long x, long y)
     {
-        return BlockedCells.TryAdd(PackCell(x, y), 1);
+        bool added = BlockedCells.TryAdd(PackCell(x, y), 1);
+        if (added)
+            UpdateOverlay(x, y, blocked: true);
+        return added;
     }
 
     /// <summary>
     /// Снять блокировку клетки (стена снесена). true — блок была.
     /// Кэш чанков трогать не нужно: оверлей читается поверх, генератор отвечает сам.
     /// </summary>
-    public static bool MarkUnblocked(long x, long y) => BlockedCells.TryRemove(PackCell(x, y), out _);
+    public static bool MarkUnblocked(long x, long y)
+    {
+        bool removed = BlockedCells.TryRemove(PackCell(x, y), out _);
+        if (removed)
+            UpdateOverlay(x, y, blocked: false);
+        return removed;
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static long PackCell(long x, long y) => ((long)(uint)x << 32) | (uint)y;
@@ -123,6 +133,33 @@ public static class WorldCostCache
         Chunks.Clear();
         ChunkBitmasks.Clear();
         BlockedCells.Clear();
+        OverlayMasks.Clear();
+    }
+
+    /// <summary>
+    /// P1/perf (PF-06): маска блокировок по чанкам. Раньше CopyChunkBitmask при
+    /// наличии хоть одной стены делал 4096 проб в ConcurrentDictionary на КАЖДЫЙ
+    /// запрос пути. Теперь Mark/Unmark атомарно правят одну строку маски, а копия
+    /// битмаски сводится к 64 AND-операциям. Бит 1 = клетка свободна.
+    /// </summary>
+    private static readonly ConcurrentDictionary<long, ulong[]> OverlayMasks = new();
+
+    private static void UpdateOverlay(long x, long y, bool blocked)
+    {
+        long key = PackChunk((int)(x >> ChunkShift), (int)(y >> ChunkShift));
+        ulong[] mask = OverlayMasks.GetOrAdd(key, static _ =>
+        {
+            var m = new ulong[ChunkSize];
+            for (int i = 0; i < ChunkSize; i++) m[i] = ulong.MaxValue;
+            return m;
+        });
+        int lx = (int)(x & ChunkMask);
+        int ly = (int)(y & ChunkMask);
+        ulong bit = 1UL << lx;
+        if (blocked)
+            Interlocked.And(ref mask[ly], ~bit);
+        else
+            Interlocked.Or(ref mask[ly], bit);
     }
 
     /// <summary>
@@ -140,21 +177,11 @@ public static class WorldCostCache
         for (int i = 0; i < 64; i++)
             pDest64[i] = mask[i];
 
-        if (!BlockedCells.IsEmpty)
+        if (OverlayMasks.TryGetValue(key, out ulong[] overlay))
         {
-            long baseX = cx << ChunkShift;
-            long baseY = cy << ChunkShift;
-            for (int ly = 0; ly < 64; ly++)
-            {
-                long wy = baseY + ly;
-                for (int lx = 0; lx < 64; lx++)
-                {
-                    if (BlockedCells.ContainsKey(PackCell(baseX + lx, wy)))
-                    {
-                        pDest64[ly] &= ~(1UL << lx);
-                    }
-                }
-            }
+            // P1/perf: вместо 4096 словарных проб — 64 AND-операции по строкам.
+            for (int i = 0; i < 64; i++)
+                pDest64[i] &= overlay[i];
         }
     }
 

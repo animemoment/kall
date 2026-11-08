@@ -89,6 +89,9 @@ public sealed class FarmingJobHandler : IJobHandler
         else if (state == AgentState.Working && pool.WorkProgress[agentIndex] >= TillDuration)
         {
             FarmJobManager.Instance.CompletePlot(px, py);
+            // A3: вскопанная грядка должна попасть в SparseFarmDomain, иначе ферменный
+            // контур пуст и SoilEngine.Tick — no-op. Регистрация идемпотентна.
+            ctx?.SoilEngine?.RegisterFarm(px, py);
             WorkProgressTracker.Instance.Clear(px, py);
             // RemoveJob ��� _registerLock ��� ��������� _unclaimedCount, ����
             // ������ ���� �������� (assigned < max): ��������������

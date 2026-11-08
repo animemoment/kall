@@ -24,5 +24,23 @@
   <ItemGroup>
     <Compile Remove="tests/**" />
     <None Include="tests/**" />
+    <Compile Include="tests/TestWorldPathfinder.cs" />
+    <Compile Include="tests/TestPathBounds.cs" />
+    <Compile Include="tests/TestPathCorners.cs" />
+    <Compile Include="tests/TestPathHeuristic.cs" />
+    <Compile Include="tests/TestWorldCostCache.cs" />
+    <Compile Include="tests/TestWorldWallCost.cs" />
+    <Compile Include="tests/TestPureWorldGen.cs" />
+    <Compile Remove="_test_puti/**" />
+    <None Include="_test_puti/**" />
+    <Compile Remove="_test_jobs/**" />
+    <None Include="_test_jobs/**" />
+    <Compile Remove="_test_soil/**" />
+    <None Include="_test_soil/**" />
+    <Compile Remove="_test_render/**" />
+    <None Include="_test_render/**" />
+    <!-- Стенд поиска пути (консольный, гоняет исходники из src/): в игру не компилируется. -->
+    <Compile Remove="_bench/**" />
+    <None Include="_bench/**" />
   </ItemGroup>
 </Project>

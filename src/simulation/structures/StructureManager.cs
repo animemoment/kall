@@ -294,7 +294,39 @@ public sealed class StructureManager
         }
 
         Callable.From(() => OnStructureAdded?.Invoke(instance)).CallDeferred();
+        // P1 (PF-02/PF-03): структура острова обязана попасть в мировой cost-кэш,
+        // иначе A* её не видит и ведёт агентов сквозь собственные стены.
+        MarkFootprintCost(x, y, def, blocked: true);
         return true;
+    }
+
+    /// <summary>
+    /// P1 (PF-02/PF-03): блокировка/разблокировка габарита структуры в
+    /// <see cref="WorldCostCache"/> (АБСОЛЮТНЫЕ мировые координаты = origin + локальная
+    /// клетка острова). Только для дефиниций с BlocksMovement.
+    /// </summary>
+    private static void MarkFootprintCost(int x, int y, StructureDefinition def, bool blocked)
+    {
+        if (def == null || !def.BlocksMovement)
+            return;
+        long ox = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginX;
+        long oy = Game.Core.WorldStreaming.UnifiedWorldGenerator.WorldOriginY;
+        for (int dy = 0; dy < def.Height; dy++)
+        {
+            for (int dx = 0; dx < def.Width; dx++)
+            {
+                long wx = ox + x + dx;
+                long wy = oy + y + dy;
+                if (blocked)
+                    Game.Core.World.WorldCostCache.MarkBlocked(wx, wy);
+                else
+                    Game.Core.World.WorldCostCache.MarkUnblocked(wx, wy);
+            }
+        }
+        // Кэш битмасок чанков читается поверх оверлея (CostAt), инвалидация не нужна.
+        // P3: сообщаем HPA*-графу, что проходимость изменилась (ленивая инвалидация:
+        // чанк + 8 соседей; хоп-кэш маршрутов стареет по версии мира).
+        Game.Simulation.Pathfinding.UnifiedPathfinder.Instance?.NotifyPassabilityChanged(ox + x, oy + y);
     }
 
     public bool RemoveStructure(int x, int y, SimulationContext ctx = null)
@@ -365,6 +397,8 @@ public sealed class StructureManager
         }
 
         var def = removed.Definition;
+        // P1 (PF-02/PF-03): снятая структура больше не должна блокировать мировой путь.
+        MarkFootprintCost(ox, oy, def, blocked: false);
         // Возврат 60% затраченных материалов при сносе структуры
         if (def.RequiredMaterials != null && GroundItemManager.Instance != null)
         {
@@ -437,6 +471,10 @@ public sealed class StructureManager
                 if ((uint)s.X < (uint)ctx.MapWidth && (uint)s.Y < (uint)ctx.MapHeight)
                     ctx.SolidWalls[s.X, s.Y] = false;
             }
+            // P1 (PF-02/PF-03): снимаем блокировки мирового cost-кэша независимо от ctx
+            // (ResetColonyState вызывает ClearAll() без контекста, но следы стен в
+            // WorldCostCache иначе переживут смену колонии/региона).
+            MarkFootprintCost(s.X, s.Y, s.Definition, blocked: false);
             var def = s.Definition;
             var pos = (s.X, s.Y);
             Callable.From(() => OnStructureRemoved?.Invoke(pos, def)).CallDeferred();

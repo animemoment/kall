@@ -34,10 +34,9 @@ public sealed class HumidityMap
     public int Width { get; }
     public int Height { get; }
 
-    // Пинг-понг буферы влажности. int[] — верхней границы нет (у воды 250+).
-    // 512² × 4 байта × 2 буфера = 2МБ, тик раз в 30 игровых минут — не критично.
-    private int[] _cur;
-    private int[] _nxt;
+    // Пинг-понг буферы влажности. byte[] 0..255 (целиком в L2-кэше CPU, 256 КБ на 512²).
+    private byte[] _cur;
+    private byte[] _nxt;
     // Подпитка от воды 0..R: чебышевская дистанция до ближайшей воды,
     // закодированная как сила (R-дистанция): рядом с водой = R, вдали = 0.
     // Предрасчёт при генерации/изменении карты (BFS от воды, радиус R=10).
@@ -47,12 +46,12 @@ public sealed class HumidityMap
     {
         Width = width;
         Height = height;
-        _cur = new int[width * height];
-        _nxt = new int[width * height];
+        _cur = new byte[width * height];
+        _nxt = new byte[width * height];
         _waterFeed = new byte[width * height];
     }
 
-    /// <summary>Влажность клетки (0+, верхней границы нет). OOB → 0.</summary>
+    /// <summary>Влажность клетки (0..255). OOB → 0.</summary>
     public int Get(int x, int y)
     {
         if ((uint)x >= (uint)Width || (uint)y >= (uint)Height)
@@ -66,11 +65,7 @@ public sealed class HumidityMap
         if ((uint)x >= (uint)Width || (uint)y >= (uint)Height)
             return;
         int i = y * Width + x;
-        int v = Math.Max(value, MinMoisture);
-        // S-09 (бывший W-09 AUDIT-A): пишем в оба буфера — Tick работает по схеме
-        // двойной буферизации (cur → nxt, затем swap), поэтому запись только в _cur
-        // могла попасть в массив, который сразу после swap становится _nxt и
-        // перезаписывается следующим тиком (правка терялась молча).
+        byte v = (byte)Math.Clamp(value, MinMoisture, 255);
         _cur[i] = v;
         _nxt[i] = v;
     }
@@ -110,12 +105,12 @@ public sealed class HumidityMap
                 int idx = y * Width + x;
                 if (ground[x, y] == TileType.Water)
                 {
-                    _cur[idx] = WaterMoisture;
+                    _cur[idx] = (byte)WaterMoisture;
                     continue;
                 }
                 float n = (x < nw && y < nh) ? moistureNoise[x, y] : 0.5f;
                 // Шум 0..1 → 10..110: влага есть ВЕЗДЕ (грунтовые воды/осадки).
-                _cur[idx] = MinMoisture + (int)(n * 100f);
+                _cur[idx] = (byte)(MinMoisture + (int)(n * 100f));
             }
 
         RebuildWaterNear(ground);
@@ -155,7 +150,8 @@ public sealed class HumidityMap
                 }
 
                 if (v < MinMoisture) v = MinMoisture;
-                _cur[idx] = v;
+                else if (v > 255) v = 255;
+                _cur[idx] = (byte)v;
             }
 
         Array.Copy(_cur, _nxt, _cur.Length);
@@ -243,18 +239,20 @@ public sealed class HumidityMap
         bool[] forestMask,
         bool[] farmMask,
         bool[] downhillMask = null,
-        float season = 0f)
+        float season = 0f,
+        int stepMultiplier = 1)
     {
         int w = Width;
         int h = Height;
-        int[] cur = _cur;
-        int[] nxt = _nxt;
+        byte[] cur = _cur;
+        byte[] nxt = _nxt;
         byte[] feed = _waterFeed;
         // Размеры ground — один раз, не на клетку.
         int gw = ground != null ? ground.GetLength(0) : 0;
         int gh = ground != null ? ground.GetLength(1) : 0;
         // Сезон (п.19.5-П5): −1 = лето (суше), +1 = зима (мокрее). Карта «дышит».
-        int seasonDelta = season > 0.33f ? 1 : season < -0.33f ? -1 : 0;
+        int seasonDelta = (season > 0.33f ? 1 : season < -0.33f ? -1 : 0) * stepMultiplier;
+        int diffShift = Math.Max(2, 5 - (stepMultiplier > 1 ? 1 : 0));
 
         // F-007: GPU Compute симуляция влажности отключена во избежание порчи буферов
         // из-за таймаута CallOnRenderThread (200мс), когда запоздалый колбэк потока
@@ -277,7 +275,7 @@ public sealed class HumidityMap
                 if (ground != null && (uint)x < (uint)gw && (uint)y < (uint)gh
                     && ground[x, y] == TileType.Water)
                 {
-                    nxt[i] = WaterMoisture;
+                    nxt[i] = (byte)WaterMoisture;
                     continue;
                 }
 
@@ -294,32 +292,26 @@ public sealed class HumidityMap
                     // Анизотропия (п.19.5-П3): влага стекает вниз — нижний сосед
                     // весит ×2, верхний ×0.5. Долины мокнут, хребты сохнут.
                     int avg = (left + right + (down << 1) + (up >> 1) + me) / 5;
-                    v = me + ((avg - me) >> 4);
+                    v = me + (((avg - me) * stepMultiplier) >> 4);
                 }
                 else
                 {
                     int avg = (left + right + up + down) >> 2;
                     // Диффузия /32: почти стоит, выравнивание за часы/дни.
-                    v = me + ((avg - me) >> 5);
+                    v = me + (((avg - me) * stepMultiplier) >> diffShift);
                 }
 
                 // Подпитка от воды по градиенту 10 клеток: у берега +3,
                 // дальше затухает до +1 на краю. Верха нет — у воды копится 250+.
                 int f = feed[i];
-                if (f > 7) v += 3;
-                else if (f > 0) v += 1;
+                if (f > 7) v += 3 * stepMultiplier;
+                else if (f > 0) v += 1 * stepMultiplier;
 
                 // Испарение — едва капает: база раз в несколько тиков.
-                // Через хеш клетки: ~1/4 клеток сохнет на 1 за тик, остальные стоят.
-                // R-03: здесь был литерал 2971215073 (> int.MaxValue) — выражение
-                // становилось long, и `% 100000` превращалось в 64-битное ДЕЛЕНИЕ
-                // на каждой из 1 048 576 клеток (±7–13 мс на тик только на этом).
-                // Заменено 32-битным хешем (сдвиг + маска): деления нет. Смысл
-                // сохранён — горки сохнут примерно вдвое чаще равнины.
                 int evap = 0;
-                if (((x * 73856093) ^ rowHash) % 4 == 0)
+                if ((((x * 73856093) ^ rowHash) & 3) == 0)
                     evap = 1;
-                if (high && (((x * 0x27d4eb2d) ^ rowHash2) >>> 16 & 1) == 0)
+                if (high && ((((x * 0x27d4eb2d) ^ rowHash2) >>> 16) & 1) == 0)
                     evap += 1; // горки сохнут чуть быстрее
                 if (forestMask != null && forestMask[i])
                     evap = 0; // лес держит влагу полностью
@@ -332,11 +324,11 @@ public sealed class HumidityMap
                         || (y > 0 && forestMask[i - w])
                         || (y + 1 < h && forestMask[i + w]);
                     if (nearForest && (((x * 314159) ^ (y * 271828)) & 7) == 0)
-                        v += 1;
+                        v += 1 * stepMultiplier;
                 }
                 if (farmMask != null && farmMask[i])
-                    v -= 1; // огород слегка тянет воду
-                v -= evap;
+                    v -= 1 * stepMultiplier; // огород слегка тянет воду
+                v -= evap * stepMultiplier;
                 v += seasonDelta;
 
                 // Скалы плохо проводят: тянем обратно к своему значению.
@@ -344,9 +336,9 @@ public sealed class HumidityMap
                     v = me + ((v - me) >> 2);
 
                 // Пол: ниже MinMoisture не падает (капиллярная влага всегда есть).
-                // Верха НЕТ: у воды влага копится сколько влезет (250+).
                 if (v < MinMoisture) v = MinMoisture;
-                nxt[i] = v;
+                else if (v > 255) v = 255;
+                nxt[i] = (byte)v;
             }
         });
 

@@ -1,0 +1,565 @@
+﻿{
+  "unreferenced_files": [
+    {
+      "file": "src/core/common/CpuTopology.cs",
+      "layer": "core",
+      "types": [
+        "CpuTopology"
+      ]
+    },
+    {
+      "file": "src/core/common/ToolRequirement.cs",
+      "layer": "core",
+      "types": [
+        "ToolRequirement"
+      ]
+    },
+    {
+      "file": "src/core/economy/CityState.cs",
+      "layer": "core",
+      "types": [
+        "CityState"
+      ]
+    },
+    {
+      "file": "src/core/economy/ResourceTypes.cs",
+      "layer": "core",
+      "types": [
+        "ResourceType"
+      ]
+    },
+    {
+      "file": "src/core/items/ItemDefinition.cs",
+      "layer": "core",
+      "types": [
+        "ItemId",
+        "ItemDefinition"
+      ]
+    },
+    {
+      "file": "src/core/items/ItemRegistry.cs",
+      "layer": "core",
+      "types": [
+        "ItemRegistry"
+      ]
+    },
+    {
+      "file": "src/core/jobs/JobCategory.cs",
+      "layer": "core",
+      "types": [
+        "JobCategory"
+      ]
+    },
+    {
+      "file": "src/core/jobs/JobData.cs",
+      "layer": "core",
+      "types": [
+        "JobData"
+      ]
+    },
+    {
+      "file": "src/core/jobs/JobExecutionType.cs",
+      "layer": "core",
+      "types": [
+        "JobExecutionType"
+      ]
+    },
+    {
+      "file": "src/core/jobs/JobPriorityTier.cs",
+      "layer": "core",
+      "types": [
+        "JobPriorityTier"
+      ]
+    },
+    {
+      "file": "src/core/jobs/NeedBehavior.cs",
+      "layer": "core",
+      "types": [
+        "NeedBehavior"
+      ]
+    },
+    {
+      "file": "src/core/world/BiomeType.cs",
+      "layer": "core",
+      "types": [
+        "BiomeType",
+        "struct"
+      ]
+    },
+    {
+      "file": "src/core/world/BuildingType.cs",
+      "layer": "core",
+      "types": [
+        "BuildingType"
+      ]
+    },
+    {
+      "file": "src/core/world/access/IWorldAccess.cs",
+      "layer": "core",
+      "types": [
+        "WorldTerrainKind",
+        "IWorldAccess"
+      ]
+    },
+    {
+      "file": "src/core/world/climate/WorldClimateFields.cs",
+      "layer": "core",
+      "types": [
+        "struct",
+        "struct"
+      ]
+    },
+    {
+      "file": "src/core/world/mutation/IslandDeltaApplicator.cs",
+      "layer": "core",
+      "types": [
+        "IslandDeltaApplyResult",
+        "IslandDeltaApplicator"
+      ]
+    },
+    {
+      "file": "src/core/world/mutation/IslandStateSnapshot.cs",
+      "layer": "core",
+      "types": [
+        "IslandStateSnapshot"
+      ]
+    },
+    {
+      "file": "src/core/world/streaming/generation/GeneratedCell.cs",
+      "layer": "core",
+      "types": [
+        "BaseTerrainKind",
+        "struct"
+      ]
+    },
+    {
+      "file": "src/core/world/streaming/generation/RegionKey.cs",
+      "layer": "core",
+      "types": [
+        "struct"
+      ]
+    },
+    {
+      "file": "src/core/world/streaming/generation/WorldClimateParams.cs",
+      "layer": "core",
+      "types": [
+        "struct",
+        "struct"
+      ]
+    },
+    {
+      "file": "src/core/world/streaming/generation/WorldRegions.cs",
+      "layer": "core",
+      "types": [
+        "WorldRegions"
+      ]
+    },
+    {
+      "file": "src/core/world/streaming/integration/IBlockWorld.cs",
+      "layer": "core",
+      "types": [
+        "IBlockWorld"
+      ]
+    },
+    {
+      "file": "src/core/world/streaming/integration/IWorldCellSource.cs",
+      "layer": "core",
+      "types": [
+        "IWorldCellSource"
+      ]
+    },
+    {
+      "file": "src/core/world/streaming/integration/WorldDecor.cs",
+      "layer": "core",
+      "types": [
+        "WorldDecor"
+      ]
+    },
+    {
+      "file": "src/core/world/streaming/integration/WorldPlan.cs",
+      "layer": "core",
+      "types": [
+        "struct"
+      ]
+    },
+    {
+      "file": "src/core/world/streaming/storage/WorldChunkCodec.cs",
+      "layer": "core",
+      "types": [
+        "WorldChunkCodec"
+      ]
+    },
+    {
+      "file": "src/simulation/GameSpeed.cs",
+      "layer": "simulation",
+      "types": [
+        "GameSpeed"
+      ]
+    },
+    {
+      "file": "src/simulation/agents/AgentState.cs",
+      "layer": "simulation",
+      "types": [
+        "AgentState"
+      ]
+    },
+    {
+      "file": "src/simulation/agents/IdleWorkerSpatialGrid.cs",
+      "layer": "simulation",
+      "types": [
+        "IdleWorkerSpatialGrid"
+      ]
+    },
+    {
+      "file": "src/simulation/building/BuildConfig.cs",
+      "layer": "simulation",
+      "types": [
+        "BuildConfig"
+      ]
+    },
+    {
+      "file": "src/simulation/building/BuildObstacles.cs",
+      "layer": "simulation",
+      "types": [
+        "BuildObstacles",
+        "Kind"
+      ]
+    },
+    {
+      "file": "src/simulation/building/ConstructionPipeline.cs",
+      "layer": "simulation",
+      "types": [
+        "ConstructionPipeline"
+      ]
+    },
+    {
+      "file": "src/simulation/farming/CropData.cs",
+      "layer": "simulation",
+      "types": [
+        "CropData"
+      ]
+    },
+    {
+      "file": "src/simulation/gpu/GpuAgentTransformSimulator.cs",
+      "layer": "simulation",
+      "types": [
+        "GpuAgentTransformSimulator"
+      ]
+    },
+    {
+      "file": "src/simulation/gpu/GpuHumiditySimulator.cs",
+      "layer": "simulation",
+      "types": [
+        "GpuHumiditySimulator"
+      ]
+    },
+    {
+      "file": "src/simulation/jobs/GenericJobSpatialIndex.cs",
+      "layer": "simulation",
+      "types": [
+        "GenericJobSpatialIndex"
+      ]
+    },
+    {
+      "file": "src/simulation/jobs/IJobHandler.cs",
+      "layer": "simulation",
+      "types": [
+        "IJobHandler"
+      ]
+    },
+    {
+      "file": "src/simulation/offline/OfflineAgentNeeds.cs",
+      "layer": "simulation",
+      "types": [
+        "OfflineAgentActivity",
+        "struct",
+        "OfflineAgentNeeds"
+      ]
+    },
+    {
+      "file": "src/simulation/offline/OfflineCatchUpPolicy.cs",
+      "layer": "simulation",
+      "types": [
+        "OfflineCatchUpPolicy"
+      ]
+    },
+    {
+      "file": "src/simulation/offline/OfflineCropGrowth.cs",
+      "layer": "simulation",
+      "types": [
+        "struct",
+        "OfflineCropGrowth"
+      ]
+    },
+    {
+      "file": "src/simulation/offline/OfflineWorldTicker.cs",
+      "layer": "simulation",
+      "types": [
+        "struct",
+        "struct",
+        "does",
+        "OfflineWorldTicker"
+      ]
+    },
+    {
+      "file": "src/simulation/scheduling/AdaptivePartitioner.cs",
+      "layer": "simulation",
+      "types": [
+        "AdaptivePartitioner"
+      ]
+    },
+    {
+      "file": "src/simulation/structures/StructureCategory.cs",
+      "layer": "simulation",
+      "types": [
+        "StructureCategory"
+      ]
+    },
+    {
+      "file": "src/ui/ICellProbeOverlay.cs",
+      "layer": "ui",
+      "types": [
+        "ICellProbeOverlay"
+      ]
+    },
+    {
+      "file": "src/ui/controllers/IDraftCoordinator.cs",
+      "layer": "ui",
+      "types": [
+        "IDraftCoordinator"
+      ]
+    },
+    {
+      "file": "src/ui/controllers/IZoneWindow.cs",
+      "layer": "ui",
+      "types": [
+        "IZoneWindow",
+        "IFarmJobDisplayHost"
+      ]
+    },
+    {
+      "file": "src/ui/controllers/ZoneWindowRegistry.cs",
+      "layer": "ui",
+      "types": [
+        "ZoneWindowRegistry"
+      ]
+    },
+    {
+      "file": "src/ui/tools/FarmingTool.cs",
+      "layer": "ui",
+      "types": [
+        "FarmingTool"
+      ]
+    },
+    {
+      "file": "src/ui/tools/ITool.cs",
+      "layer": "ui",
+      "types": [
+        "ITool"
+      ]
+    },
+    {
+      "file": "src/ui/tools/IToolWorldPlacement.cs",
+      "layer": "ui",
+      "types": [
+        "IToolWorldPlacement"
+      ]
+    },
+    {
+      "file": "src/ui/tools/WarehouseTool.cs",
+      "layer": "ui",
+      "types": [
+        "WarehouseTool"
+      ]
+    }
+  ],
+  "orphan_types": [
+    {
+      "type": "log_viewer",
+      "file": "addons/godot_ai/dock_panels/log_viewer.gd"
+    },
+    {
+      "type": "test_cycle2_coercion",
+      "file": "addons/godot_ai/tests/test_cycle2_coercion.gd"
+    },
+    {
+      "type": "agent_tools",
+      "file": "autoload/agent_tools.gd"
+    },
+    {
+      "type": "perf_probe",
+      "file": "autoload/perf_probe.gd"
+    },
+    {
+      "type": "diag_csharp",
+      "file": "tests/diag_csharp.gd"
+    },
+    {
+      "type": "probe_controls",
+      "file": "tests/probe_controls.gd"
+    },
+    {
+      "type": "probe_plansource",
+      "file": "tests/probe_plansource.gd"
+    },
+    {
+      "type": "run_activearea_test",
+      "file": "tests/run_activearea_test.gd"
+    },
+    {
+      "type": "run_adversarial_construction_test",
+      "file": "tests/run_adversarial_construction_test.gd"
+    },
+    {
+      "type": "run_adversarial_job_distribution_test",
+      "file": "tests/run_adversarial_job_distribution_test.gd"
+    },
+    {
+      "type": "run_bench_bulk",
+      "file": "tests/run_bench_bulk.gd"
+    },
+    {
+      "type": "run_bench_cellat",
+      "file": "tests/run_bench_cellat.gd"
+    },
+    {
+      "type": "run_bench_chunks",
+      "file": "tests/run_bench_chunks.gd"
+    },
+    {
+      "type": "run_bench_micro",
+      "file": "tests/run_bench_micro.gd"
+    },
+    {
+      "type": "run_bench_windows",
+      "file": "tests/run_bench_windows.gd"
+    },
+    {
+      "type": "run_central_block_test",
+      "file": "tests/run_central_block_test.gd"
+    },
+    {
+      "type": "run_destroyer_camera_test",
+      "file": "tests/run_destroyer_camera_test.gd"
+    },
+    {
+      "type": "run_destroyer_streaming_test",
+      "file": "tests/run_destroyer_streaming_test.gd"
+    },
+    {
+      "type": "run_destroyer_worldgen_test",
+      "file": "tests/run_destroyer_worldgen_test.gd"
+    },
+    {
+      "type": "run_generator_bench",
+      "file": "tests/run_generator_bench.gd"
+    },
+    {
+      "type": "run_island_store_test",
+      "file": "tests/run_island_store_test.gd"
+    },
+    {
+      "type": "run_island_zone_persistence_test",
+      "file": "tests/run_island_zone_persistence_test.gd"
+    },
+    {
+      "type": "run_job_assignment_bench",
+      "file": "tests/run_job_assignment_bench.gd"
+    },
+    {
+      "type": "run_job_race_stress",
+      "file": "tests/run_job_race_stress.gd"
+    },
+    {
+      "type": "run_pathfinding_bench",
+      "file": "tests/run_pathfinding_bench.gd"
+    },
+    {
+      "type": "run_phase3_suite",
+      "file": "tests/run_phase3_suite.gd"
+    },
+    {
+      "type": "run_phase4_suite",
+      "file": "tests/run_phase4_suite.gd"
+    },
+    {
+      "type": "run_phase5_suite",
+      "file": "tests/run_phase5_suite.gd"
+    },
+    {
+      "type": "run_store_exit_test",
+      "file": "tests/run_store_exit_test.gd"
+    },
+    {
+      "type": "run_terrain_window_bench",
+      "file": "tests/run_terrain_window_bench.gd"
+    },
+    {
+      "type": "run_work_progress_persistence_test",
+      "file": "tests/run_work_progress_persistence_test.gd"
+    },
+    {
+      "type": "run_world_gen_seam_audit",
+      "file": "tests/run_world_gen_seam_audit.gd"
+    },
+    {
+      "type": "run_worldgen_v2",
+      "file": "tests/run_worldgen_v2.gd"
+    },
+    {
+      "type": "run_zone_agents_test",
+      "file": "tests/run_zone_agents_test.gd"
+    },
+    {
+      "type": "run_zone_model_test",
+      "file": "tests/run_zone_model_test.gd"
+    },
+    {
+      "type": "run_zone_router_test",
+      "file": "tests/run_zone_router_test.gd"
+    },
+    {
+      "type": "smoke_build_menu",
+      "file": "tests/smoke_build_menu.gd"
+    },
+    {
+      "type": "test_phase0",
+      "file": "tests/test_phase0.gd"
+    },
+    {
+      "type": "test_phase1",
+      "file": "tests/test_phase1.gd"
+    },
+    {
+      "type": "test_phase2",
+      "file": "tests/test_phase2.gd"
+    },
+    {
+      "type": "test_phase3",
+      "file": "tests/test_phase3.gd"
+    },
+    {
+      "type": "test_phase4",
+      "file": "tests/test_phase4.gd"
+    },
+    {
+      "type": "test_phase5",
+      "file": "tests/test_phase5.gd"
+    },
+    {
+      "type": "atlas_probe",
+      "file": "tools/atlas_probe.gd"
+    }
+  ],
+  "scenes_not_referenced": [
+    "scenes/infinite_world/infinite_world_game_demo.tscn",
+    "scenes/ui/Build.tscn",
+    "scenes/ui/Farm.tscn",
+    "scenes/ui/Garden.tscn",
+    "scenes/ui/JobDisplay.tscn",
+    "scenes/ui/Prioritet.tscn",
+    "scenes/ui/WorldMap.tscn",
+    "scenes/ui/menu.tscn",
+    "scenes/ui/villager.tscn"
+  ]
+}
