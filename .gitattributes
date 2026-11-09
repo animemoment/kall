@@ -1,2 +1,7 @@
 # Normalize EOL for all files that Git considers text files.
 * text=auto eol=lf
+build/Game_console.exe filter=lfs diff=lfs merge=lfs -text
+build/Game.pck filter=lfs diff=lfs merge=lfs -text
+build/data_Game_windows_x86_64/** filter=lfs diff=lfs merge=lfs -text
+build/ui/** filter=lfs diff=lfs merge=lfs -text
+build/Game.exe filter=lfs diff=lfs merge=lfs -text
